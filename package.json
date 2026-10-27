@@ -1,0 +1,27 @@
+{
+  "name": "@kingsoftcloud/ksadk-harness-workspace",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/agentkit-harness-core",
+    "packages/agentkit-harness-node"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "build": "node scripts/build-native-harness.mjs && node scripts/build-native-node.mjs",
+    "test:core": "node --test packages/agentkit-harness-core/test/*.test.mjs",
+    "test:node": "node scripts/test-native.mjs",
+    "verify:rpc": "node scripts/verify-native-rpc.mjs",
+    "test:native": "node scripts/test-native.mjs",
+    "test:browser-live": "node --test packages/agentkit-harness-node/test/native-browser-playwright-live.test.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.27.7",
+    "typescript": "6.0.3",
+    "unbash": "4.0.1",
+    "@playwright/test": "1.58.2"
+  }
+}

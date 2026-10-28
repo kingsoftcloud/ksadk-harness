@@ -49,11 +49,17 @@ function canceledEnding(signal, record) {
 
 /** Shared freezing for first admission and explicit adoption of the same Run. */
 export function freezeNativeDshConfiguration(binding, input, contract = binding.configuration.contract, originalConfiguration) {
-  const configuration = configure({ ...binding.configuration, contract, hostBindingDigest: hash({
+  const shared = binding.configuration.backgroundNotificationPolicy === 'completed-before-model/v1'
+    && (!originalConfiguration || Object.hasOwn(originalConfiguration, 'backgroundSessionBindingDigest'))
+    ? { backgroundSessionBindingDigest: hash({ contract: 'agentkit.background-session-binding/v1', scope: binding.scope,
+      buildId: binding.buildId, declared: binding.configuration.hostBindingDigest, instructions: binding.configuration.instructions }) } : {};
+  const configuration = configure({ ...binding.configuration, ...shared, contract, hostBindingDigest: hash({
     contract: NATIVE_DSH_TURN_CONTRACT, declared: binding.configuration.hostBindingDigest,
     goalContractBinding: NATIVE_GOAL_CONTRACT_BINDING, jsonCodec: NATIVE_JSON_CODEC,
     input: input.messages, source: binding.source,
   }) });
+  if (originalConfiguration && !Object.hasOwn(originalConfiguration, 'backgroundSessionBindingDigest'))
+    delete configuration.backgroundSessionBindingDigest;
   if (originalConfiguration && !Object.hasOwn(originalConfiguration, 'policyModules')) {
     // Historical ownership predates explicit manifests. Only the equivalent
     // built-in default may be projected back to absence; custom changes fail.

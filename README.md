@@ -18,6 +18,8 @@ npm run test:ui
 
 浏览器真实运行测试可单独执行 `npm run test:browser-live`，需要本机可用的 Chromium。普通测试覆盖浏览器适配器的确定性行为。
 
-构建后可分别对三个工作区执行 `npm pack`。Core 与 Node 可安装到独立 Node 程序；UI 由浏览器宿主消费。详细接口见各包 README。Studio 的会话和产品资源适配由 Studio 负责，包不依赖 Studio 或 DSH。当前不发布 npm、不接入 Python。
+构建后执行 `npm run pack:all`，统一生成三个可安装的 npm 归档及内容摘要清单。Core 与 Node 可安装到独立 Node 程序；UI 由浏览器宿主消费。详细接口见各包 README。Studio 的会话和产品资源适配由 Studio 负责，包不依赖 Studio 或 DSH。当前不发布 npm、不接入 Python。
 
 本仓库沿用源代码中保留的许可证与第三方归属说明。
+
+完整的前后端包入口、Studio 薄适配器边界与安装步骤见 [接入说明](docs/studio-integration.md)。

@@ -99,3 +99,16 @@ rewrite the ledger. Verification requires bound non-model evidence for required
 checks; absent evidence stays unverified. Projections across separate databases
 must consume committed event identities idempotently. `onCheckpoint` is awaited
 before the next effect; a callback failure leaves a resumable run.
+
+
+## Silent session inbox
+
+`TransactionalRunStore.inject(scope, sessionId, { injectionId, text, source })`
+accepts bounded external text without creating or waking a Run. The Host owns
+caller authentication. New configurations opt in with
+`sessionInjectionPolicy: 'next-turn-inbox/v1'`. At Run creation, pending records
+are assigned to the initial transcript in the same transaction; failed creation
+consumes nothing. A retry returns the original sequence/owner, and a conflicting
+payload is rejected. An active or resumed original Run never drains new data.
+Memory and SQLite implement the same contract. The inbox carries data, not
+system, tool or approval authority. Historical messages retain their sources.

@@ -227,7 +227,7 @@ export function createNativeSessionDelivery({ store, scope, runId, session, turn
     // Admission can contain multiple user/context messages and attachments.
     // They have already been published above, with their original host source
     // and content blocks. Never publish a flattened second copy from Native.
-    const admittedUsers = new Set(messages.flatMap((message, index) => message.role === 'user' && !message.history ? [index] : [])
+    const admittedUsers = new Set(messages.flatMap((message, index) => message.role === 'user' && !message.history && message.kind !== 'session_injection' ? [index] : [])
       .slice(0, record.configuration.inputMessages?.length ?? 1));
     const completed = new Map(events.filter(event => event.kind === 'tool.completed')
       .map(event => [event.payload.callId, event.payload.status]));

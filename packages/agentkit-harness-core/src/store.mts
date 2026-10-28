@@ -1,3 +1,5 @@
+import { appendSessionInjection, emptySessionInbox, stageSessionInjections, validateSessionInjection } from './session-inbox.mjs';
+import type { SessionInjection, SessionInjectionInput, SessionInjectionReceipt, SessionInboxState } from './session-inbox.mjs';
 import { commandPriority, terminal } from './contracts.mjs';
 import type { CommandReceipt, CommitBatch, EffectIntent, Lease, NativeEvent, RunCommand, RunConfiguration, RunScope, RunScanHead, RunSnapshot, RunStore, StoredRun } from './contracts.mjs';
 import { canonical, copy, invariant, runKey, scopeKey } from './values.mjs';
@@ -15,6 +17,9 @@ import type { BackgroundInterruptionReview } from './background-interruption.mjs
 
 /** The backend must serialize read/modify/write atomically, including failures. */
 export interface LedgerBackend {
+  enqueueSessionInjection?(scope: RunScope, sessionId: string, input: SessionInjectionInput): SessionInjectionReceipt;
+  /** Invoked only inside update(), never from an unprotected read. */
+  pendingSessionInjections?(scope: RunScope, sessionId: string): SessionInjection[];
   /** Optional compact, deterministic identity for a canonical commit batch. */
   commitFingerprint?(canonicalBatch: string): string;
   /** Atomic metadata-only updates avoid materializing the history for heartbeats. */
@@ -48,6 +53,7 @@ function unique<T>(items: T[], key: (item: T) => string): void {
   invariant(new Set(items.map(key)).size === items.length, 'duplicate_batch_key');
 }
 function immutableIdentity(previous: RunSnapshot, next: RunSnapshot): void {
+  invariant(canonical(previous.sessionInjections ?? null) === canonical(next.sessionInjections ?? null), 'run_identity_changed');
   invariant(canonical(previous.conversationBranch ?? null) === canonical(next.conversationBranch ?? null), 'run_identity_changed');
   invariant(canonical(previous.backgroundNotification ?? null) === canonical(next.backgroundNotification ?? null), 'run_identity_changed');
   for (const field of ['schemaVersion', 'scope', 'runId', 'sessionId', 'turnId', 'buildId', 'parentRunId', 'taskChainId', 'configDigest'] as const) {
@@ -74,6 +80,13 @@ export class TransactionalRunStore implements RunStore {
       const { record, value } = change(current);
       return { record: { ...found(current), ...record }, value };
     });
+  }
+
+  inject(scope: RunScope, sessionId: string, input: SessionInjectionInput): SessionInjectionReceipt {
+    scopeKey(scope);
+    invariant(typeof sessionId === 'string' && !!sessionId.trim() && sessionId.length <= 256 && !sessionId.includes('\0'), 'invalid_session_id');
+    invariant(this.backend.enqueueSessionInjection, 'session_inbox_unavailable');
+    return this.backend.enqueueSessionInjection(scope, sessionId, validateSessionInjection(input));
   }
 
   create(configuration: RunConfiguration, snapshot: RunSnapshot): RunSnapshot {
@@ -108,6 +121,11 @@ export class TransactionalRunStore implements RunStore {
         : canonical(initial.conversationBranch ?? null) === canonical(parent?.conversationBranch ?? null), 'conversation_rewind_head_conflict');
       if (rewind) invariant((rewind.retainedBackgroundCommands ?? []).every(row => parent?.backgroundCommands.some(original => canonical(original) === canonical(row)))
         && canonical(initial.backgroundCommands) === canonical(rewind.retainedBackgroundCommands ?? []), 'conversation_rewind_command_not_owned');
+      invariant(initial.sessionInjections === undefined, 'session_injection_requires_inbox');
+      if (config.sessionInjectionPolicy) {
+        invariant(this.backend.pendingSessionInjections, 'session_inbox_unavailable');
+        stageSessionInjections(initial, this.backend.pendingSessionInjections(initial.scope, initial.sessionId));
+      }
       return { record: { configuration: config, snapshot: initial, lease: null, fence: 0,
         events: [], intents: [], receipts: [], commands: [], commits: [], projections: {} }, value: { snapshot: copy(initial), created: true } };
     });
@@ -374,6 +392,8 @@ export class TransactionalRunStore implements RunStore {
 export class MemoryRunStore extends TransactionalRunStore {
   constructor() {
     const records = new Map<string, StoredRun>();
+    const inboxes = new Map<string, SessionInboxState>();
+    const inboxKey = (scope: RunScope, sessionId: string) => canonical([scopeKey(scope), sessionId]);
     const sessionHead: LedgerBackend['sessionHead'] = (scope, sessionId) => {
       const key = scopeKey(scope);
       const matches = [...records.values()].filter(record => scopeKey(record.snapshot.scope) === key
@@ -381,12 +401,25 @@ export class MemoryRunStore extends TransactionalRunStore {
       return copy(matches.at(-1)?.snapshot ?? null);
     };
     super({
+      enqueueSessionInjection: (scope, sessionId, input) => {
+        const key = inboxKey(scope, sessionId), result = appendSessionInjection(inboxes.get(key) ?? emptySessionInbox(), input);
+        inboxes.set(key, copy(result.state)); return copy(result.receipt);
+      },
+      pendingSessionInjections: (scope, sessionId) => copy(inboxes.get(inboxKey(scope, sessionId))?.entries.filter(row => row.consumedBy === null) ?? []),
       get: key => copy(records.get(key) ?? null),
       values: () => copy([...records.values()]),
       sessionHead,
       update: (key, change) => {
         const result = change(copy(records.get(key) ?? null), sessionHead);
-        records.set(key, copy(result.record));
+        const next = copy(result.record);
+        if (!records.has(key) && next.snapshot.sessionInjections?.length) {
+          const session = inboxKey(next.snapshot.scope, next.snapshot.sessionId);
+          const state = copy(inboxes.get(session)!);
+          const ids = new Set(next.snapshot.sessionInjections.map(row => row.injectionId));
+          for (const row of state.entries) if (ids.has(row.injectionId)) row.consumedBy = next.snapshot.runId;
+          inboxes.set(session, state);
+        }
+        records.set(key, next);
         return result.value;
       },
       updatePair: (keys, change) => {

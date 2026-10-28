@@ -5,6 +5,7 @@ import { constants as osConstants } from 'node:os';
 import { LocalCommandStore, createLocalBackgroundReader } from './local-background.mjs';
 import { TERMINAL, delay, readRecord } from './local-command-state.mjs';
 import { buildScriptEnvironment, localControlSettings, runBoundedProcess, LOCAL_PROCESS_CONTRACT } from './local-process.mjs';
+import { localEnvironmentPolicy, localOutputPolicy, resolveOutputPolicy } from './local-output-policy.mjs';
 import { checkGovernedCommand, LOCAL_COMMAND_POLICY, GOVERNED_COMMAND_POLICY } from './local-command-policy.mjs';
 import { checkPlanCommand, PLAN_COMMAND_POLICY } from './command-plan.mjs';
 import { commandFailureEvidence, commandExceptionCause } from './local-command-evidence.mjs';
@@ -54,11 +55,23 @@ function utf8Preview(text, maxBytes) {
  */
 export function createLocalCommandTransport({ workspaceRoot, stateRoot, sessionId, settings = {}, sourceEnv = {},
   authorize, resolveOwnedCommand, captureWorkspace, artifacts, assertAuthority = () => true,
-  durableForeground = false } = {}) {
+  durableForeground = false, outputPolicy = null, environmentPolicy = null } = {}) {
   invariant(typeof authorize === 'function' && typeof resolveOwnedCommand === 'function'
     && typeof captureWorkspace === 'function' && typeof assertAuthority === 'function'
     && typeof durableForeground === 'boolean', 'local_command_host_capabilities_missing');
+  // Validate raw policy inputs at this public entrypoint. The output policy
+  // forces the durable foreground path: full output lives in supervisor-owned
+  // files located by task_id/cursors, so an in-process runBoundedProcess receipt
+  // (which holds only a preview under persisted-stream/v1) must never be used.
+  const outPolicy = localOutputPolicy(outputPolicy);
+  const envPolicy = localEnvironmentPolicy(environmentPolicy);
+  if (outPolicy) durableForeground = true;
   const root = realpathSync(workspaceRoot), policy = localControlSettings(settings), definitions = localCommandToolDefinitions(policy);
+  // Under persisted-stream/v1 the automatic foreground receipt uses a bounded
+  // window matching previewBytes (clamped to the 4..65536 UTF-8 cursor range).
+  // Explicit read_command_output retains its own independent pagination.
+  const previewWindow = outPolicy
+    ? Math.min(65536, Math.max(4, resolveOutputPolicy(policy, outPolicy).previewBytes)) : null;
   const environment = { ...sourceEnv }, formal = new Map(definitions.map(item => [item.name, copy(item)]));
   // Exact model integers may be bigint. Clamp before converting rather than
   // throwing after claiming a dispatch for an otherwise valid large timeout.
@@ -182,7 +195,7 @@ export function createLocalCommandTransport({ workspaceRoot, stateRoot, sessionI
         return { status: 'error', content: { code: 'plan_mode_write_denied', executed: false } };
       guard();
       request.signal.throwIfAborted(); checkRoot(); cwdFor(args.cwd || args.env?.KSADK_COMMAND_CWD);
-      const env = buildScriptEnvironment({ ...environment, ...args.env }, { settings: policy });
+      const env = buildScriptEnvironment({ ...environment, ...args.env }, { settings: policy, environmentPolicy: envPolicy });
       const before = captureWorkspace(request);
       guard();
       if (args.background || durableForeground) {
@@ -190,6 +203,7 @@ export function createLocalCommandTransport({ workspaceRoot, stateRoot, sessionI
         const operationKey = request.operationKey, expectedTaskId = store.commandId(operationKey);
         known = { content: { backend: 'sandbox/local_process', task_id: expectedTaskId } };
         const handle = await store.start({ operationKey, command, cwd, env, settings: policy,
+          outputPolicy: outPolicy, environmentPolicy: envPolicy,
           timeoutMs: deadline(args.background ? args.background_timeout : args.timeout), assertCurrent: guard });
         if (!args.background) {
           const cancel = () => { try { handle.requestCancel(); } catch { /* retain unknown */ } };
@@ -215,8 +229,15 @@ export function createLocalCommandTransport({ workspaceRoot, stateRoot, sessionI
           } catch (error) { cancel(); throw error;
           } finally { original.removeEventListener('abort', cancel); }
         }
-        let observed = handle.readOutput();
-        if (!args.background && TERMINAL.has(observed.status) && observed.status !== 'unknown')
+        // The automatic foreground receipt is a bounded PREVIEW under the new
+        // policy (previewWindow bytes); full output stays cursor-readable via
+        // read_command_output's independent pagination. wait() reads the whole
+        // file in legacy mode only — under the policy it must not pull the full
+        // output into the receipt, so re-read with the bounded window instead.
+        let observed = previewWindow ? handle.readOutput({ maxBytes: previewWindow })
+          : handle.readOutput();
+        if (!args.background && TERMINAL.has(observed.status) && observed.status !== 'unknown'
+          && !previewWindow)
           observed = await handle.wait({ timeoutMs: 100 });
         const uncertain = observed.status === 'unknown' || observed.evidenceIncomplete
           || !args.background && !TERMINAL.has(observed.status);

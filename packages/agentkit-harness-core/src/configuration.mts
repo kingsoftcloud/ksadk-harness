@@ -13,8 +13,12 @@ import { validateCoordinatorConfiguration } from './coordinator-response.mjs';
 import { validatePlanModeConfiguration } from './plan-mode.mjs';
 import { defaultPolicyBindings, validatePolicyBindings } from './policy-registry.mjs';
 import { validateConversationSeed } from './conversation-seed.mjs';
+import { modelSurfaceMessages, validateModelSurface } from './model-surface.mjs';
 
 export interface ConfigurationInput {
+  childAllocationPolicy?: RunConfiguration['childAllocationPolicy'];
+  modelSurface?: RunConfiguration['modelSurface'];
+  sessionInjectionPolicy?: RunConfiguration['sessionInjectionPolicy'];
   policyModules?: RunConfiguration['policyModules'];
   profile: Pick<ModelProfile, 'profileId' | 'profileVersion' | 'providerFamily' | 'compatibilityDigest'> & Partial<ModelProfile>;
   contract: Pick<TaskContract, 'objective'> & Partial<TaskContract>;
@@ -43,6 +47,7 @@ export interface ConfigurationInput {
   inputMessages?: Message[] | null;
   conversationSeed?: RunConfiguration['conversationSeed'];
   conversationRewind?: RunConfiguration['conversationRewind'];
+  backgroundSessionBindingDigest?: RunConfiguration['backgroundSessionBindingDigest'];
   backgroundNotificationPolicy?: RunConfiguration['backgroundNotificationPolicy'];
   childLifecyclePolicy?: RunConfiguration['childLifecyclePolicy'];
   childApprovalPolicy?: RunConfiguration['childApprovalPolicy'];
@@ -68,6 +73,9 @@ export function configure(input: ConfigurationInput): RunConfiguration {
   };
   const config: RunConfiguration = {
     engine: NATIVE_ENGINE, profile, limits,
+    ...(input.modelSurface === undefined ? {} : { modelSurface: input.modelSurface }),
+    ...(input.childAllocationPolicy === undefined ? {} : { childAllocationPolicy: input.childAllocationPolicy }),
+    ...(input.sessionInjectionPolicy === undefined ? {} : { sessionInjectionPolicy: input.sessionInjectionPolicy }),
     tools: input.tools ?? [], instructions: input.instructions ?? '', hostBindingDigest: input.hostBindingDigest,
     inputMessages: input.inputMessages ?? null,
     ...(input.conversationSeed === undefined ? {} : { conversationSeed: input.conversationSeed }),
@@ -88,6 +96,7 @@ export function configure(input: ConfigurationInput): RunConfiguration {
     ...(input.toolErrorRecoveryModelCalls === undefined ? {} : { toolErrorRecoveryModelCalls: input.toolErrorRecoveryModelCalls }),
     ...(input.deliveryReviewPolicy === undefined ? {} : { deliveryReviewPolicy: input.deliveryReviewPolicy === null ? null : normalizeDeliveryReviewPolicy(input.deliveryReviewPolicy) }),
     ...(input.hostRecoveryBinding === undefined ? {} : { hostRecoveryBinding: input.hostRecoveryBinding }),
+    ...(input.backgroundSessionBindingDigest === undefined ? {} : { backgroundSessionBindingDigest: input.backgroundSessionBindingDigest }),
     ...(input.backgroundNotificationPolicy === undefined ? {} : { backgroundNotificationPolicy: input.backgroundNotificationPolicy }),
     ...(input.childLifecyclePolicy === undefined ? {} : { childLifecyclePolicy: input.childLifecyclePolicy }),
     ...(input.childApprovalPolicy === undefined ? {} : { childApprovalPolicy: input.childApprovalPolicy }),
@@ -102,12 +111,22 @@ export function configure(input: ConfigurationInput): RunConfiguration {
     contract: { revision: '1', constraints: [], acceptance: [], allowedToolNames: null,
       finalSubmissionSchema: null, finalSubmissionPayloadKey: null, finalOutputFormat: 'text', ...input.contract },
   };
+  invariant(config.backgroundSessionBindingDigest === undefined || config.backgroundNotificationPolicy === 'completed-before-model/v1'
+    && /^[0-9a-f]{64}$/.test(config.backgroundSessionBindingDigest), 'invalid_background_session_binding');
+  invariant(config.sessionInjectionPolicy === undefined || config.sessionInjectionPolicy === 'next-turn-inbox/v1', 'invalid_session_injection_policy');
   // Re-validating an already normalized historical configuration must be idempotent.
   if (Object.hasOwn(input, 'policyModules') || (input as Partial<RunConfiguration>).engine !== NATIVE_ENGINE) {
     config.policyModules = copy(input.policyModules ?? defaultPolicyBindings(config));
     validatePolicyBindings(config.policyModules);
   }
   canonical(config);
+  validateModelSurface(config.modelSurface);
+  invariant(config.childAllocationPolicy === undefined || config.childAllocationPolicy === 'parent-shared/v1', 'invalid_child_allocation_policy');
+  invariant(profile.supportsImages === undefined || typeof profile.supportsImages === 'boolean', 'invalid_model_image_capability');
+  invariant(!config.modelSurface || profile.supportsImages === undefined
+    || config.modelSurface.environment.supportsImages === profile.supportsImages, 'model_surface_image_capability_mismatch');
+  invariant(profile.discoveredToolExposure === undefined || profile.discoveredToolExposure === 'direct-after-search/v1',
+    'invalid_discovered_tool_exposure');
   validateConversationSeed(config);
   validateArtifactConfiguration(config);
   invariant(config.sourceReadPolicy == null || config.sourceReadPolicy === 'studio-source-read/v1'
@@ -129,6 +148,8 @@ export function configure(input: ConfigurationInput): RunConfiguration {
     && config.childLifecyclePolicy === 'owned-background/v2', 'invalid_child_input_policy');
   if (config.childOwnerBinding) {
     const binding = config.childOwnerBinding;
+    invariant(binding.childAllocationPolicy === undefined || binding.childAllocationPolicy === 'parent-shared/v1',
+      'invalid_child_allocation_policy');
     scopeKey(binding.parent.scope);
     invariant(binding.contract === 'agentkit.native-child-owner/v1'
       && [binding.parent.runId, binding.parent.sessionId, binding.parent.turnId, binding.parent.buildId, binding.parent.taskChainId,
@@ -159,6 +180,9 @@ export function configure(input: ConfigurationInput): RunConfiguration {
   }
   invariant(config.tools.every(tool => tool.exactContentPolicy === undefined
     || ['current-goal-utf8/v1', 'complete-write-only/v1'].includes(tool.exactContentPolicy)), 'invalid_exact_content_policy');
+  invariant(config.tools.every(tool => tool.modelGuidance === undefined || Array.isArray(tool.modelGuidance)
+    && tool.modelGuidance.length <= 8 && tool.modelGuidance.every(item => typeof item === 'string' && item.length <= 2048)),
+  'invalid_tool_model_guidance');
   invariant(config.wallDeliveryPolicy == null || typeof config.wallDeliveryPolicy === 'string'
     && /^deadline-delivery\/v[1-7]$/.test(config.wallDeliveryPolicy), 'invalid_wall_delivery_policy');
   for (const [key, value] of Object.entries(limits)) {
@@ -304,6 +328,8 @@ export function configure(input: ConfigurationInput): RunConfiguration {
     || config.backgroundNotificationPolicy === 'completed-before-model/v1', 'invalid_background_notification_policy');
   if (config.contextPolicy) {
     const policy = config.contextPolicy;
+    invariant(policy.summaryFormatPolicy === undefined || policy.summaryFormatPolicy === 'task-continuity/v1',
+      'invalid_summary_format_policy');
     invariant(typeof policy.tokenizerId === 'string' && policy.tokenizerId.trim() && typeof policy.tokenizerDigest === 'string' && policy.tokenizerDigest.trim()
       && typeof policy.enabled === 'boolean' && Number.isFinite(policy.triggerRatio) && Number.isFinite(policy.targetRatio)
       && policy.targetRatio > 0 && policy.targetRatio < policy.triggerRatio && policy.triggerRatio <= 1
@@ -352,6 +378,7 @@ export function initialSnapshot(identity: RunIdentity, configuration: RunConfigu
     taskContract: null, taskContractDigest: null,
     messages: [
       ...(configuration.instructions ? [{ role: 'system' as const, content: configuration.instructions, persistent: true }] : []),
+      ...modelSurfaceMessages(configuration),
       ...(configuration.conversationSeed?.messages ?? []),
       ...(configuration.inputMessages ?? [{ role: 'user' as const, content: configuration.contract.objective }]),
     ], preparedContext: null, queuedGuidance: [],

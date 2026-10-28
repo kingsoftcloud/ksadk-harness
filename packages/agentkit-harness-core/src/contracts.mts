@@ -54,6 +54,8 @@ export interface Message extends ToolContextMessage {
   continuationResponseId?: string; continuationFragmentDigest?: string;
 }
 export interface ToolDefinition {
+  modelGuidance?: string[];
+  workspaceMediaPolicy?: 'bounded-image-read/v1';
   name: string; description: string; parameters: ObjectValue;
   readOnly: boolean; concurrentSafe: boolean;
   permissions: string[]; timeoutMs: number;
@@ -90,6 +92,8 @@ export interface ToolDefinition {
   recoveryPolicy?: 'manual' | 'safe-read/v1' | 'receipt-observation/v1';
 }
 export interface ModelProfile {
+  supportsImages?: boolean;
+  discoveredToolExposure?: 'direct-after-search/v1';
   profileId: string; profileVersion: string; providerFamily: string;
   maxOutputTokens: number; contextWindow: number; maxRetries: number; maxProviderRetries: number;
   maxContinuations: number; requestTimeoutMs: number; retryInitialDelayMs: number;
@@ -172,6 +176,7 @@ export interface HookState {
   feedback: Message[];
 }
 export interface ContextPlanningPolicy {
+  summaryFormatPolicy?: 'task-continuity/v1';
   tokenizerId: string; tokenizerDigest: string; enabled: boolean;
   /** Estimates bound complete requests; exact counters keep the strict summary ceiling. */
   summaryBudgetMode?: 'strict' | 'context_bounded_estimate';
@@ -253,6 +258,9 @@ export interface ConversationSeed {
   discoveredToolNames?: string[];
 }
 export interface RunConfiguration {
+  childAllocationPolicy?: 'parent-shared/v1';
+  modelSurface?: import('./model-surface.mjs').ModelSurface;
+  sessionInjectionPolicy?: 'next-turn-inbox/v1';
   /** Omitted only on historical configurations; new admissions freeze policy identities. */
   policyModules?: import('./policy-registry.mjs').PolicyBinding[];
   conversationRewind?: { contract: 'native-conversation-rewind/v1'; commandId: string;
@@ -286,6 +294,8 @@ export interface RunConfiguration {
   deliveryReviewPolicy?: DeliveryReviewPolicy | null;
   /** Opaque, Host-owned recovery locator. The core never interprets it as authority. */
   hostRecoveryBinding?: ObjectValue;
+  /** Trusted execution binding shared across turns; excludes each turn's input bytes. */
+  backgroundSessionBindingDigest?: string;
   backgroundNotificationPolicy?: 'completed-before-model/v1' | null;
   childLifecyclePolicy?: 'owned-background/v2' | null;
   childApprovalPolicy?: 'owned-child-approval/v1' | null;
@@ -410,6 +420,8 @@ export interface PreparedContext {
 }
 export type TodoItem = { content: string; status: 'pending' | 'in_progress' | 'completed'; priority: 'high' | 'medium' | 'low' };
 export interface RunSnapshot extends RunIdentity {
+  /** Inbox rows atomically assigned to this initial turn; immutable after admission. */
+  sessionInjections?: { injectionId: string; sequence: number }[];
   /** Last committed strategy-context boundary; no execution authority. */
   policyContextCursor?: string;
   conversationBranch?: { commandId: string; generation: number };
@@ -504,6 +516,8 @@ export interface RunScanHead extends Pick<RunSnapshot, 'scope' | 'runId' | 'sess
   lease: Lease | null;
 }
 export interface RunStore {
+  /** Persist external data without starting, steering or waking a Run. */
+  inject?(scope: RunScope, sessionId: string, input: import('./session-inbox.mjs').SessionInjectionInput): import('./session-inbox.mjs').SessionInjectionReceipt;
   create(configuration: RunConfiguration, snapshot: RunSnapshot): RunSnapshot;
   createNotification(configuration: RunConfiguration, snapshot: RunSnapshot): { snapshot: RunSnapshot; created: boolean };
   load(scope: RunScope, runId: string): StoredRun;

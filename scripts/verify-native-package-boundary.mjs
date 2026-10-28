@@ -3,7 +3,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { builtinModules } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { join } from 'node:path';
+import { join, resolve, relative, dirname, isAbsolute } from 'node:path';
 import ts from 'typescript';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -29,13 +29,15 @@ for (const item of packages) {
       else files.push(`${prefix}${entry.name}`);
     }
   }
-  await visit(join(directory, item.source ? 'src' : 'dist'));
-  assert.ok(files.includes('index.mjs'));
+  const sourceRoots = item.source ? ['src'] : item.builtins ? ['dist', 'src'] : ['dist'];
+  for (const sourceRoot of sourceRoots) await visit(join(directory, sourceRoot), sourceRoot + '/');
+  assert.ok(files.includes((item.source ? 'src' : 'dist') + '/index.mjs'));
   let imports = 0;
   for (const file of files.filter(name => name.endsWith('.mjs'))) {
-    const code = await readFile(join(directory, item.source ? 'src' : 'dist', file), 'utf8');
-    // Generated ESM contains no computed dependency loader; inspect static imports and exports.
-    assert.doesNotMatch(code, /\b(?:import|require)\s*\(/, `Dynamic dependency in ${item.name}/${file}`);
+    const code = await readFile(join(directory, file), 'utf8');
+    // Generated ESM has no computed loader. Source adapters may use explicit,
+    // host-bound dynamic transports; static imports must stay inside the package.
+    if (file.startsWith('dist/')) assert.doesNotMatch(code, /\b(?:import|require)\s*\(/, `Dynamic dependency in ${item.name}/${file}`);
     const source = ts.createSourceFile(file, code, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
     const specifiers = source.statements.flatMap(statement =>
       (ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement))
@@ -44,7 +46,11 @@ for (const item of packages) {
     for (const specifier of specifiers) {
       imports++;
       if (specifier.startsWith('.')) {
-        assert.ok(!specifier.includes('..') || !file.includes('/') && !specifier.startsWith('../'), `Escaping relative import ${specifier}`);
+        const target = resolve(dirname(join(directory, file)), specifier), tail = relative(directory, target);
+        assert.ok(tail && !isAbsolute(tail) && tail !== '..' && !tail.startsWith('../'), `Escaping relative import ${file}: ${specifier}`);
+      } else if (specifier === item.name || specifier.startsWith(item.name + '/')) {
+        const key = specifier === item.name ? '.' : '.' + specifier.slice(item.name.length);
+        assert.ok(Object.hasOwn(metadata.exports, key), `Undeclared self import ${specifier}`);
       } else assert.ok(item.dependencies.some(name => specifier === name || specifier.startsWith(`${name}/`))
         || item.builtins && permitted.has(specifier), `Forbidden import ${specifier} in ${item.name}`);
     }

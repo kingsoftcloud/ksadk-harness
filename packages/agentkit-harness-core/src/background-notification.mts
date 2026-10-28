@@ -111,7 +111,10 @@ export async function admitBackgroundNotification({ store, scope, sourceRunId, t
     const { maxContinuations: _, ...binding } = configuration.profile;
     return canonical(binding);
   };
-  invariant(parent.configuration.hostBindingDigest === source.configuration.hostBindingDigest
+  const sessionBinding = source.configuration.backgroundSessionBindingDigest;
+  invariant((sessionBinding === undefined
+    ? parent.configuration.backgroundSessionBindingDigest === undefined && parent.configuration.hostBindingDigest === source.configuration.hostBindingDigest
+    : parent.configuration.backgroundSessionBindingDigest === sessionBinding)
     && profileBinding(parent.configuration) === profileBinding(source.configuration)
     && canonical(parent.configuration.tools) === canonical(source.configuration.tools), 'background_notification_binding_changed');
   const began = now(), used = spent(store, fixedScope, source);

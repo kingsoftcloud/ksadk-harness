@@ -4,7 +4,7 @@ import { canonical, copy, invariant } from './values.mjs';
 
 type Identify = (value: unknown) => string;
 const inheritedKinds = new Set(['user_guidance', 'historical_tool_observation',
-  'guidance', 'steering', 'user_input', 'dsh_context', 'tool_context', 'host_input',
+  'guidance', 'steering', 'session_injection', 'user_input', 'dsh_context', 'tool_context', 'host_input',
   'historical_verification_observation', 'user_document_observation', 'background_child_observation', 'background_command_observation', 'delivery_review_source']);
 
 /** Imported protocol ids are stable across later turns; observations grant no new execution. */

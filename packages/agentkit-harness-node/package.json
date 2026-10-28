@@ -51,6 +51,8 @@
     "./native/local-command-state": "./src/native/local-command-state.mjs",
     "./native/local-command-tools": "./src/native/local-command-tools.mjs",
     "./native/local-process": "./src/native/local-process.mjs",
+    "./native/local-output-policy": "./src/native/local-output-policy.mjs",
+    "./native/tool-guidance": "./src/native/tool-guidance.mjs",
     "./native/memory-candidate": "./src/native/memory-candidate.mjs",
     "./native/memory-extraction-run": "./src/native/memory-extraction-run.mjs",
     "./native/memory-extraction-tools": "./src/native/memory-extraction-tools.mjs",
@@ -95,7 +97,18 @@
     "./native/workspace-tools": "./src/native/workspace-tools.mjs",
     "./native/context-status": "./src/native/context-status.mjs",
     "./native/child-observation": "./src/native/child-observation.mjs",
-    "./native/activity-status": "./src/native/activity-status.mjs"
+    "./native/activity-status": "./src/native/activity-status.mjs",
+    "./native/model-surface-host": "./src/native/model-surface-host.mjs",
+    "./native/child-model-surface": "./src/native/child-model-surface.mjs",
+    "./native/local-execution-profile": "./src/native/local-execution-profile.mjs",
+    "./native/context-profile": "./src/native/context-profile.mjs",
+    "./native/instruction-context": "./src/native/instruction-context.mjs",
+    "./native/tool-authority": "./src/native/tool-authority.mjs",
+    "./native/child-merge": "./src/native/child-merge.mjs",
+    "./native/child-workspace-binding": "./src/native/child-workspace-binding.mjs",
+    "./native/child-workspace-tools": "./src/native/child-workspace-tools.mjs",
+    "./native/a2a-receipt-source": "./src/native/a2a-receipt-source.mjs",
+    "./native/children": "./src/native/children.mjs"
   },
   "bin": {
     "agentkit-native-rpc": "./dist/rpc-entry.mjs"

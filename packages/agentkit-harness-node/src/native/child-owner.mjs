@@ -4,6 +4,11 @@ import { NativeKernel, NativeError, CHILD_OWNER_CONTRACT, canonical, copy, confi
   CHILD_TASK_POLICY, COORDINATOR_RESPONSE_POLICY, activePlanMode, isPlanChildCall, planModeWriteDenial,
   CHILD_PLAN_POLICY, CHILD_PLAN_MODE_POLICY, defaultPolicyBindings } from '@kingsoftcloud/agentkit-harness-core';
 import { loadSessionChild, accountedChildDelivery, hasUnsafeChildReceipt } from './owned-child.mjs';
+import { CHILD_ALLOCATION_POLICY, CHILD_ALLOCATION_DEFAULTS, LEGACY_CALL_DEFAULTS,
+  roleAllocationDefaults, resolveChildCallLimits } from './child-budget-allocation.mjs';
+
+export { CHILD_ALLOCATION_POLICY, CHILD_ALLOCATION_DEFAULTS, LEGACY_CALL_DEFAULTS,
+  roleAllocationDefaults, resolveChildCallLimits };
 
 const hash = value => createHash('sha256').update(canonical(value)).digest('hex');
 const check = (value, code) => { if (!value) throw new NativeError(code); };
@@ -29,9 +34,11 @@ async function observeWhileLive(operation, signal) {
  * an environment/profile fallback. This service does not advertise model tools.
  */
 export function createNativeChildOwner({ scope, childScopes = [scope], store, resolveChild, restoreChild, waitForIdle, canWaitForReceipt, onStream, now = Date.now,
-  owner = `native-children-${randomUUID()}` }) {
+  childAllocationPolicy, owner = `native-children-${randomUUID()}` }) {
   const parentScope = copy(scope), entries = new Map();
   scopeKey(parentScope);
+  check(childAllocationPolicy === undefined || childAllocationPolicy === CHILD_ALLOCATION_POLICY, 'invalid_child_owner_allocation_policy');
+  const allocationPolicy = childAllocationPolicy;
   const scopes = copy(childScopes);
   check(Array.isArray(scopes) && scopes.length > 0 && scopes.every(item => {
     scopeKey(item); return ['tenantId', 'workspaceId', 'userId'].every(key => item[key] === parentScope[key]);
@@ -138,6 +145,7 @@ export function createNativeChildOwner({ scope, childScopes = [scope], store, re
     check(scopes.some(item => same(item, reservation.childScope)), 'child_scope_not_admitted');
     const record = store.load(reservation.childScope, reservation.childRunId), binding = record.configuration.childOwnerBinding;
     check(binding?.contract === CHILD_OWNER_CONTRACT && same(binding.parent, identity(request))
+      && (binding.childAllocationPolicy ?? null) === (allocationPolicy ?? null)
       && binding.parentOperationKey === reservation.parentOperationKey && binding.parentToolCallId === reservation.parentToolCallId
       && binding.childRequestDigest === reservation.childRequestDigest && binding.maxModelCalls === reservation.maxModelCalls
       && binding.deliveryMode === reservation.deliveryMode
@@ -322,23 +330,31 @@ export function createNativeChildOwner({ scope, childScopes = [scope], store, re
             && args.continuation_of.trim() && args.continuation_of.length <= 256), 'child_background_request_invalid');
         const foreground = args.background === false || request.call.name === 'native_delegate' && args.background !== true;
         check(request.budget.depth < request.budget.maxDepth, 'child_depth_exhausted');
-        const modelLimit = args.model_call_limit ?? 4, toolLimit = args.tool_call_limit ?? 8;
-        check(Number.isSafeInteger(modelLimit) && modelLimit >= 1 && Number.isSafeInteger(toolLimit) && toolLimit >= 0, 'child_budget_invalid');
-        const availableTools = request.budget.maxToolCallsRemaining === null ? Infinity
-          : request.budget.maxToolCallsRemaining - (request.definition.childBudgetPolicy === 'start/v1' ? 1 : 0);
-        const maxModelCalls = Math.min(modelLimit, request.budget.maxModelCallsRemaining ?? Infinity);
-        const maxToolCalls = Math.min(toolLimit, availableTools);
-        check(maxModelCalls > 0 && maxToolCalls >= 0, 'child_budget_exhausted');
+        // Omitted call limits defer to the role cap + remaining parent budget under the
+        // allocation policy (no stacked 4/8 default); legacy keeps the historical 4/8.
+        // availableTools stays signed so an exhausted parent (maxToolCallsRemaining 0
+        // for start/v1) is refused here, before any child starts, rather than having core
+        // reject its receipt after execution.
+        const { maxModelCalls: requestedModelCalls, maxToolCalls: requestedToolCalls } = resolveChildCallLimits(
+          { policy: allocationPolicy, modelCallLimit: args.model_call_limit, toolCallLimit: args.tool_call_limit,
+            budget: request.budget, childBudgetPolicy: request.definition.childBudgetPolicy });
+        check(Number.isSafeInteger(requestedModelCalls) && requestedModelCalls > 0
+          && Number.isSafeInteger(requestedToolCalls) && requestedToolCalls >= 0, 'child_budget_exhausted');
+        let maxModelCalls = requestedModelCalls, maxToolCalls = requestedToolCalls;
         const requestDigest = hash({ parent: identity(request), operationKey: request.operationKey, call: request.call, budget: request.budget });
         const binding = { contract: CHILD_OWNER_CONTRACT, parent: identity(request), parentOperationKey: request.operationKey,
           parentToolCallId: request.call.callId, parentExecutionFence: request.executionFence, childRequestDigest: requestDigest,
           ...(inheritedPlan ? { planMode: activePlanMode(parent.snapshot, effective(parent)) } : {}),
+          ...(allocationPolicy ? { childAllocationPolicy } : {}),
           role: args.role, maxModelCalls, maxToolCalls, ...(foreground ? { deliveryMode: 'foreground' } : {}) };
         const runId = locator(request);
         const existing = scopes.flatMap(childScope => store.list(childScope)).find(snapshot => snapshot.runId === runId);
         if (existing) {
           const record = store.load(existing.scope, runId), saved = record.configuration.childOwnerBinding;
+          // A stored child is never re-admitted under a foreign allocation policy: a
+          // legacy child must not silently gain the larger allowance, and vice versa.
           check(saved?.childRequestDigest === requestDigest && saved.parentToolCallId === request.call.callId
+            && (saved.childAllocationPolicy ?? null) === (allocationPolicy ?? null)
             && saved.maxModelCalls <= maxModelCalls && saved.maxToolCalls <= maxToolCalls, 'child_start_identity_conflict');
           const reservation = makeReservation(record, existing.scope);
           ownedChild(request, reservation);

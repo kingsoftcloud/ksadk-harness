@@ -18,7 +18,11 @@
     "verify:rpc": "node scripts/verify-native-rpc.mjs",
     "test:native": "node scripts/test-native.mjs",
     "test:browser-live": "node --test packages/agentkit-harness-node/test/native-browser-playwright-live.test.mjs",
-    "test:ui": "node --test packages/agentkit-harness-ui/test/*.test.mjs"
+    "test:ui": "node --test packages/agentkit-harness-ui/test/*.test.mjs",
+    "pack:all": "node scripts/pack-native.mjs",
+    "verify:boundary": "node scripts/verify-native-package-boundary.mjs",
+    "verify:snapshot": "node scripts/sync-from-studio.mjs --check",
+    "verify:installed-ui": "node scripts/verify-native-installed-ui.mjs"
   },
   "devDependencies": {
     "esbuild": "0.27.7",

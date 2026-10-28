@@ -1,3 +1,4 @@
+import { createSqliteSessionInbox } from './sqlite-session-inbox.mjs';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
@@ -56,6 +57,9 @@ export class SqliteRunStore extends TransactionalRunStore {
 
     let closed = false;
     const open = () => invariant(!closed, 'store_closed');
+    let inbox;
+    try { inbox = createSqliteSessionInbox(db, open); }
+    catch (error) { db.close(); throw error; }
     const sessionHead = (scope, sessionId) => {
       open(); scopeKey(scope);
       const row = db.prepare(`SELECT data FROM native_runs
@@ -91,9 +95,12 @@ export class SqliteRunStore extends TransactionalRunStore {
             .run(key, collection, id, data);
         }
       }
+      if (!previous) inbox.consume(record.snapshot);
       beforeCommit?.({ key, record });
     };
     super({
+      enqueueSessionInjection: inbox.enqueueSessionInjection,
+      pendingSessionInjections: inbox.pendingSessionInjections,
       commitFingerprint,
       sessionHead,
       // A lease update changes only the owned run header. Keeping this path

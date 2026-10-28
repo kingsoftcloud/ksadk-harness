@@ -6,7 +6,7 @@ import { prepareEffect, transition } from './transitions.mjs';
 import { retryDelay } from './retry.mjs';
 import { FINAL_SUBMISSION_TOOL, finalSubmissionTool, submittedFinalText, normalizedFinalText } from './final-submission.mjs';
 import { currentHookState, pendingHookFeedback, planHook } from './hook-runtime.mjs';
-import { toolContext, deferredToolContexts } from './tool-context.mjs';
+import { projectToolResultContext, deferredToolContexts } from './tool-context.mjs';
 import { reduceBrowserReceipt } from './browser-runtime.mjs';
 import { advanceInteractionObservation, browserTaskMessages, browserTaskTools, invalidatesBrowserObservation, webObservationDue, webVerificationOnly } from './task-policy.mjs';
 import { checkpointCandidate, finishCheckpoint } from './verification.mjs';
@@ -490,7 +490,7 @@ export function reduceTools(snapshot: RunSnapshot, results: ToolResult[], calls:
       if (result.sourceObservationState !== 'unread') Object.assign(updated, advanceObservedProgress(updated, result, definition, digest));
       Object.assign(updated, advanceDiagnosticRecovery(updated, updated, call, result, definition, digest));
     }
-    updated.messages.push({ ...(result.context === undefined ? { content: canonical(result.content) } : toolContext(result.context)),
+    updated.messages.push({ ...projectToolResultContext(result, config),
       role: 'tool', callId: call.callId, name: call.name,
       ...(config.contextPolicy?.pruneToolResults || config.contextPolicy?.sourceReusePolicy ? { toolOutcome: result.status } : {}),
       ...(definition?.contextRetention === 'persistent' ? { persistent: true } : {}) });

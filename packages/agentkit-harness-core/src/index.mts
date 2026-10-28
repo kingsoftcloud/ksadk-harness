@@ -48,3 +48,6 @@ export * from './tool-error-recovery.mjs';
 export * from './memory-extraction-scheduler.mjs';
 export * from './auxiliary-run.mjs';
 export * from './policy-registry.mjs';
+export * from './session-inbox.mjs';
+export * from './model-surface.mjs';
+export * from './summary-continuity.mjs';

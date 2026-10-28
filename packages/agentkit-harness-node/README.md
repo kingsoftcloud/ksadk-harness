@@ -25,6 +25,43 @@ import { SqliteRunStore, createNativeModelPort, nativeModelRecoveryPolicy }
   `'pure-inference/v1'` for the plain inference protocols with no parameter
   extensions, else `'manual'`. Used as `RunConfiguration.modelRecoveryPolicy`.
 
+## Command output observations
+
+`./native/local-command-tools` accepts an execution-local observation capability:
+`tools.execute(request, { onProgress })`. It supplies ordered stdout/stderr
+chunks while an authorized foreground command runs, including the supervised
+durable foreground backend. These chunks have no exit status or execution
+verdict. Cancellation or stale authority suppresses further observations;
+observer failures cannot change the final tool result. Background output still
+uses the owned `read_command_output` interface.
+
+`./native/command-progress` provides `createCommandProgressObserver` for a Host
+to bind these chunks to a **required** output projector and publisher. The
+projector receives a bounded cumulative snapshot, can hold or reject it, and
+returns only `command_preview` stdout/stderr. A slow projector coalesces pending
+snapshots; closing, aborting or losing current ownership rejects late output.
+It never writes a receipt or model context and imports no Studio/UI code.
+
+The projector is the streaming output governance boundary. Final-result
+redaction does not authorize publishing raw previews. Hosts must supply their
+streaming redaction/disclosure policy; this package never defaults to raw
+publication. The Studio connection of this capability is a separate integration
+step, not implied by the Node observation API.
+
+Local command failures retain bounded `command_evidence` facts: the request,
+execution, publication or transport stage, fixed cause codes, cleanup issues
+and any observed exit code. Durable supervised commands preserve the same
+facts in their private record across reconnects. These facts contain no raw
+exception text, paths or command input and do not turn an unknown outcome into
+success or authorize replay. Historical records without them remain readable.
+
+The whole-turn adapter can close a reviewed background interruption using
+`closeReviewedBackgroundInterruption`. It requires the scoped durable operator
+review, closes the original presentation owner with an error ending, and binds
+no execution ports. Later tasks retain the original unknown observation in
+their history. A lost response can retry the same review; unknown tool writes
+remain outside this mechanism.
+
 ## External process
 
 The package also ships the `agentkit-native-rpc` bin and `./rpc-entry` export.
@@ -53,10 +90,9 @@ network multi-tenant server. One host process owns each store.
 node scripts/build-native-node.mjs
 ```
 
-esbuild bundles `src/index.mjs` (which re-exports the shared adapters from the
-workspace) into `dist/index.mjs`, externalizing `@kingsoftcloud/agentkit-harness-core`
+esbuild bundles `src/index.mjs` into `dist/index.mjs`, externalizing `@kingsoftcloud/agentkit-harness-core`
 and Node builtins. The build asserts, from the esbuild metafile, that the
-adapter closure contains only `packages/agentkit-harness/src/native/` adapter
+adapter closure contains only this package's entries and `src/native/` adapter
 sources and no Studio/DSH/host code.
 
 ## Install (local tarball)
@@ -66,6 +102,18 @@ published. `scripts/verify-native-standalone.mjs` packs both
 `@kingsoftcloud/agentkit-harness-core` and this package, installs them into a
 fresh temp directory, and drives a standalone example host against the
 installed packages.
+
+## Owned command output
+
+The `native/owned-command` export includes
+`createOwnedCommandOutputReader({scope, store, readers, isClosed})` and
+`OWNED_COMMAND_OUTPUT_CONTRACT`. An authenticated Host may page output from a
+current Session-owned background process after reopening storage. The reader
+checks the original committed launch receipt, selects only that recorded
+backend and checks ownership again before returning. It cannot launch, stop,
+acknowledge or resume work. Returned bytes require a separate Host operator
+disclosure policy before publication. Cursors count backend UTF-8 bytes;
+display redaction must not replace them with displayed-text lengths.
 
 ## License
 

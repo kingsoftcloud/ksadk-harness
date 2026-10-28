@@ -7,8 +7,10 @@ import { TERMINAL, delay, readRecord } from './local-command-state.mjs';
 import { buildScriptEnvironment, localControlSettings, runBoundedProcess, LOCAL_PROCESS_CONTRACT } from './local-process.mjs';
 import { checkGovernedCommand, LOCAL_COMMAND_POLICY, GOVERNED_COMMAND_POLICY } from './local-command-policy.mjs';
 import { checkPlanCommand, PLAN_COMMAND_POLICY } from './command-plan.mjs';
+import { commandFailureEvidence, commandExceptionCause } from './local-command-evidence.mjs';
 
 export const LOCAL_COMMAND_TOOLS_CONTRACT = 'agentkit.local-command-tools/v1';
+export const LOCAL_COMMAND_PROGRESS_CONTRACT = 'agentkit.local-command-progress/v1';
 const schemas = { nullableSeconds: { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] },
   cursor: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER } };
 const base = (name, properties, required, mutating, timeoutMs) => ({ name,
@@ -37,7 +39,8 @@ export function localCommandToolDefinitions(settings = {}) {
 const output = result => ({ status: result.status, stdout: result.stdout, stderr: result.stderr, exit_code: result.exitCode,
   stdout_cursor: result.stdoutCursor, stderr_cursor: result.stderrCursor, cancel_requested: result.cancelRequested,
   output_may_be_truncated: result.outputMayBeTruncated, evidence_incomplete: result.evidenceIncomplete,
-  observed_exit_code: result.observedExitCode, ...(result.outcomeReason ? { outcome_reason: result.outcomeReason } : {}) });
+  observed_exit_code: result.observedExitCode, ...(result.outcomeReason ? { outcome_reason: result.outcomeReason } : {}),
+  ...(result.commandEvidence ? { command_evidence: result.commandEvidence } : {}) });
 const errorResult = (code, extra = {}) => ({ status: 'error', content: { ok: false, error_type: code, ...extra } });
 const changed = (before, after) => [...new Set([...Object.keys(before.entries), ...Object.keys(after.entries)])]
   .filter(path => before.entries[path] !== after.entries[path]).sort();
@@ -102,8 +105,12 @@ export function createLocalCommandTransport({ workspaceRoot, stateRoot, sessionI
       instruction: 'The complete retained result is in the artifact. Output byte cursors refer to the backend stream, not this preview.' };
     return { ...result, content, artifactRefs: [...result.artifactRefs ?? [], ref] };
   }
-  async function execute(request) {
+  // Observation is an execution-local Host capability, outside the immutable
+  // request and the final receipt. It is never published to a client here:
+  // the Host must authorize/project these bytes before displaying a preview.
+  async function execute(request, { onProgress } = {}) {
     let dispatched = false, known, original, sealed;
+    let progressSequence = 0;
     const guard = () => {
       checkRoot();
       invariant(request.signal === original && !original.aborted, 'local_command_signal_stale');
@@ -115,6 +122,17 @@ export function createLocalCommandTransport({ workspaceRoot, stateRoot, sessionI
       const { signal: liveSignal, ...live } = request;
       invariant(liveSignal === original && canonical(live) === sealed, 'local_command_request_drifted');
       original.throwIfAborted(); return true;
+    };
+    const progress = (channel, text) => {
+      if (typeof onProgress !== 'function' || !text || original?.aborted) return;
+      try {
+        guard();
+        const observed = onProgress(Object.freeze({ contract: LOCAL_COMMAND_PROGRESS_CONTRACT,
+          sequence: ++progressSequence, channel, text }));
+        // A presentation consumer cannot delay or fail the command, including
+        // when it returns a rejecting promise instead of throwing directly.
+        Promise.resolve(observed).catch(() => {});
+      } catch { /* unavailable/stale observations grant no execution outcome */ }
     };
     try {
       invariant(request.signal instanceof AbortSignal, 'local_command_signal_required');
@@ -179,7 +197,21 @@ export function createLocalCommandTransport({ workspaceRoot, stateRoot, sessionI
           if (original.aborted) cancel();
           try {
             const until = performance.now() + deadline(args.timeout) + 15000;
-            while (!TERMINAL.has(handle.readOutput().status) && performance.now() < until) { guard(); await delay(20); }
+            let stdoutCursor = 0, stderrCursor = 0;
+            while (performance.now() < until) {
+              guard();
+              const view = handle.readOutput({ stdoutCursor, stderrCursor });
+              const advanced = view.stdoutCursor > stdoutCursor || view.stderrCursor > stderrCursor;
+              if (typeof onProgress === 'function') {
+                progress('stdout', view.stdout); progress('stderr', view.stderr);
+                stdoutCursor = view.stdoutCursor; stderrCursor = view.stderrCursor;
+              }
+              // A completed producer may still have several retained windows.
+              // Drain them before closing the observation, without deriving a
+              // successful receipt from the preview's terminal status.
+              if (TERMINAL.has(view.status) && (typeof onProgress !== 'function' || !advanced)) break;
+              await delay(20);
+            }
           } catch (error) { cancel(); throw error;
           } finally { original.removeEventListener('abort', cancel); }
         }
@@ -196,7 +228,7 @@ export function createLocalCommandTransport({ workspaceRoot, stateRoot, sessionI
       } else {
         dispatched = true;
         const result = await runBoundedProcess({ argv: ['/bin/sh', '-c', command], cwd, env, settings: policy, signal: request.signal,
-          timeoutMs: deadline(args.timeout) });
+          timeoutMs: deadline(args.timeout), onOutput: progress });
         const incomplete = result.controls.status === 'failed' || !!result.cleanupError;
         const resourceReason = result.exitCode === -osConstants.signals.SIGXCPU ? 'cpu_time'
           : result.exitCode === -osConstants.signals.SIGXFSZ ? 'file_size' : null;
@@ -207,7 +239,8 @@ export function createLocalCommandTransport({ workspaceRoot, stateRoot, sessionI
           sandbox_id: `local_process:${sessionId}`, command, stdout: result.stdout,
           stderr: result.stderr + (diagnostics ? (result.stderr ? '\n' : '') + diagnostics : ''),
           exit_code: incomplete ? null : result.timedOut ? 124 : result.outputLimitExceeded ? 122 : result.exitCode,
-          observed_exit_code: incomplete ? result.exitCode : null, evidence_incomplete: incomplete, controls: result.controls } };
+          observed_exit_code: incomplete ? result.exitCode : null, evidence_incomplete: incomplete, controls: result.controls,
+          ...(incomplete ? { command_evidence: commandFailureEvidence('execute', { result }) } : {}) } };
       }
       guard();
       const after = captureWorkspace(request); known.workspaceChangedPaths = changed(before, after);
@@ -216,7 +249,10 @@ export function createLocalCommandTransport({ workspaceRoot, stateRoot, sessionI
       // After dispatch, an exception cannot prove that a command did not run.
       // Keep any known result, including its exit code and background locator.
       return dispatched ? { ...known, status: 'uncertain', content: { ...known?.content, ok: false,
-        error_type: 'command_evidence_incomplete', evidence_incomplete: true, observed_result: known?.content?.status ?? null } }
+        error_type: 'command_evidence_incomplete', evidence_incomplete: true, observed_result: known?.content?.status ?? null,
+        command_evidence: commandFailureEvidence('transport', { previous: known?.content?.command_evidence,
+          result: { exitCode: known?.content?.observed_exit_code ?? known?.content?.exit_code ?? null },
+          failures: [commandExceptionCause(error, 'transport_exception')] }) } }
         : errorResult(request?.signal?.aborted ? 'canceled' : error.code ?? 'local_command_error', { executed: false });
     }
   }
@@ -229,9 +265,9 @@ export function createLocalCommandTransport({ workspaceRoot, stateRoot, sessionI
 export function createNativeLocalCommandTools(options = {}) {
   const transport = createLocalCommandTransport(options);
   return Object.freeze({ get definitions() { return transport.definitions; }, reader: transport.reader, checkPlanMode: transport.checkPlanMode,
-    async execute(request) {
+    async execute(request, observations) {
       const sourceRunId = request?.runId;
-      const { launchedCommand, ...result } = await transport.execute(request);
+      const { launchedCommand, ...result } = await transport.execute(request, observations);
       return { ...result, ...(launchedCommand ? { backgroundCommandRef: { ...launchedCommand, sourceRunId } } : {}) };
     } });
 }

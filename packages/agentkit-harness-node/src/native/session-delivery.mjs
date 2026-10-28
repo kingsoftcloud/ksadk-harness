@@ -5,8 +5,26 @@ import { NATIVE_DSH_CONTENT_FORMAT } from './dsh-turn-contract.mjs';
 import { readNativeDshBackgroundOwnership } from './dsh-background-ownership.mjs';
 import { readNativeDshManagedOwnership } from './dsh-managed-ownership.mjs';
 import { nativeDeliveryClosure, nativeDeliveryId, nativeDeliveryTimeline } from './delivery-timeline.mjs';
+import { WORKSPACE_DISPLAY_CONTRACT } from './workspace-display.mjs';
+import { nativeContextMarkerFacts } from './context-markers.mjs';
 
 export const NATIVE_DELIVERY_PROJECTION = 'agentkitNativeDelivery';
+export const NATIVE_CONTEXT_PRESENTATION_EVENT = 'agentkit-native/context-marker';
+export const NATIVE_CONTEXT_PRESENTATION_CONTRACT = 'agentkit.native-context-presentation/v1';
+export const NATIVE_TOOL_OUTCOME_CONTRACT = 'agentkit.native-tool-outcome/v1';
+
+/** Presentation fact from a scoped committed journal, never model prose. */
+export function nativeToolOutcomeFact(identity, callId, status, presentationTurn = Number(identity.turnId)) {
+  // Native identities may use opaque turn IDs. The external owner separately
+  // validates the SDK's numeric presentation position; never rewrite a Run's
+  // execution identity to manufacture that position.
+  const turn = presentationTurn;
+  invariant(Number.isSafeInteger(turn) && turn > 0 && typeof identity.sessionId === 'string' && identity.sessionId
+    && typeof identity.runId === 'string' && identity.runId && typeof callId === 'string' && callId
+    && ['ok', 'error', 'uncertain'].includes(status), 'native_tool_outcome_identity_invalid');
+  return { contract: NATIVE_TOOL_OUTCOME_CONTRACT, sessionId: identity.sessionId, runId: identity.runId, turn,
+    callId: nativeDeliveryId(identity.scope, identity.runId, `call:${callId}`), status };
+}
 const hash = value => createHash('sha256').update(canonical(value)).digest('hex');
 const ownObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 
@@ -33,6 +51,17 @@ function sessionUsage(usage) {
 }
 
 function atomKey(event) {
+  if (event.type === NATIVE_CONTEXT_PRESENTATION_EVENT) {
+    const { contract, runId, sessionId, turn, marker } = event.data ?? {};
+    invariant(event.ignorable === true && contract === NATIVE_CONTEXT_PRESENTATION_CONTRACT
+      && [runId, sessionId].every(value => typeof value === 'string' && value.trim() && value.length <= 256)
+      && Number.isSafeInteger(turn) && turn > 0 && /^ak-native-[a-f0-9]{64}$/.test(marker?.id ?? '')
+      && ['completed', 'failed', 'interrupted'].includes(marker.status) && marker.origin === 'auto'
+      && ['start', 'tool', 'message'].includes(marker.after?.kind)
+      && (marker.after.kind === 'start' || /^ak-native-[a-f0-9]{64}$/.test(marker.after.id ?? '')),
+    'native_delivery_context_marker_invalid');
+    return `context:${runId}:${marker.id}:${marker.status}`;
+  }
   if (event.type === 'plan/mode' && /^ak-native-[a-f0-9]{64}$/.test(event.data.nativeId ?? '')) return `plan:${event.data.nativeId}`;
   if (event.type === 'todo/write' && /^ak-native-[a-f0-9]{64}$/.test(event.data.nativeId ?? '')) return `todo:${event.data.nativeId}`;
   if (['system/message', 'user/message', 'assistant/message', 'tool/result'].includes(event.type)) {
@@ -48,6 +77,7 @@ function atomKey(event) {
 }
 function atomDigest(event) {
   return hash({ type: event.type, data: event.data,
+    ...(event.ignorable ? { ignorable: true } : {}),
     ...(event.surfaceOp ? { surfaceOp: event.surfaceOp } : {}),
     ...(event.sourceEventSeqs ? { sourceEventSeqs: event.sourceEventSeqs } : {}),
   });
@@ -201,6 +231,20 @@ export function createNativeSessionDelivery({ store, scope, runId, session, turn
       .slice(0, record.configuration.inputMessages?.length ?? 1));
     const completed = new Map(events.filter(event => event.kind === 'tool.completed')
       .map(event => [event.payload.callId, event.payload.status]));
+    // Display metadata is recovered from the same committed receipt as the
+    // observation. It never enters model messages or executes file reads.
+    const displays = new Map();
+    for (const receipt of record.receipts) {
+      if (receipt.status !== 'committed') continue;
+      const intent = record.intents.find(item => item.operationKey === receipt.operationKey);
+      const pairs = intent?.kind === 'tool' ? (intent.payload.calls ?? []).map((call, index) => [call.callId, receipt.result.results?.[index]])
+        : ['tool_receipt', 'workspace_repair'].includes(intent?.kind) ? [[intent.payload.callId, receipt.result.result]] : [];
+      for (const [callId, observation] of pairs) {
+        const meta = observation?.metadata?.nativeTaskDisplay;
+        if (observation?.status === 'ok' && meta?.contract === WORKSPACE_DISPLAY_CONTRACT && meta.display?.kind === 'file_edit')
+          displays.set(callId, meta);
+      }
+    }
     const pending = new Map();
     let cursor = 0, step = 1, modelCount = 0, lastAssistant = null;
     const settlements = [];
@@ -222,8 +266,12 @@ export function createNativeSessionDelivery({ store, scope, runId, session, turn
       ? structuredClone(message.presentation.content) : [{ type: 'text', text: message.content }];
     const result = (key, callId, message, isError) => {
       const projected = projectedCallId(callId);
+      const outcome = completed.get(callId);
+      const nativeOutcome = outcome === 'uncertain' ? nativeToolOutcomeFact(snapshot, callId, outcome, turn) : null;
+      const display = !isError && displays.has(callId) ? structuredClone(displays.get(callId)) : null;
       append('tool/result', { turn, step, message: { id: id(key), role: 'tool', source: { kind: 'tool', callId: projected },
-        toolCallId: projected, content: blocks(message), isError } }, { surfaceOp: 'append' });
+        toolCallId: projected, content: blocks(message), isError },
+        ...(display || nativeOutcome ? { meta: { ...display, ...(nativeOutcome ? { nativeOutcome } : {}) } } : {}) }, { surfaceOp: 'append' });
       pending.delete(callId);
     };
     const drain = through => {
@@ -254,7 +302,14 @@ export function createNativeSessionDelivery({ store, scope, runId, session, turn
         } else if (message.role !== 'assistant' || message.kind !== 'candidate_draft') invariant(false, 'native_delivery_assistant_binding_missing');
       }
     };
+    const contextFacts = nativeContextMarkerFacts(record, { driving: !terminal(snapshot.phase) });
     for (const event of events) {
+      // The adoption/terminal event fixes the durable position across warm
+      // checkpoints, append-before-flush retries and cold replay.
+      for (const { marker, settledSeq } of contextFacts) if (settledSeq === event.seq) {
+        append(NATIVE_CONTEXT_PRESENTATION_EVENT, { contract: NATIVE_CONTEXT_PRESENTATION_CONTRACT,
+          runId, sessionId: String(session.id), turn, marker }, { ignorable: true });
+      }
       if (['plan.initialized', 'plan.mode_changed'].includes(event.kind)) {
         drain(event.payload.messageCursor);
         append('plan/mode', { active: event.payload.active, nativeId: id(`plan:${event.eventId}`) });

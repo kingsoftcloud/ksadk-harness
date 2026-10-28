@@ -1,5 +1,5 @@
 import { commandPriority, terminal } from './contracts.mjs';
-import type { CommandReceipt, CommitBatch, EffectIntent, Lease, RunCommand, RunConfiguration, RunScope, RunSnapshot, RunStore, StoredRun } from './contracts.mjs';
+import type { CommandReceipt, CommitBatch, EffectIntent, Lease, NativeEvent, RunCommand, RunConfiguration, RunScope, RunScanHead, RunSnapshot, RunStore, StoredRun } from './contracts.mjs';
 import { canonical, copy, invariant, runKey, scopeKey } from './values.mjs';
 import { outstandingChildCalls, validateChildBudgetTransition } from './child-budget.mjs';
 import { transcriptExtends } from './context-view.mjs';
@@ -10,11 +10,24 @@ import { guidanceRunnable } from './guidance.mjs';
 import { isContextSourceRefreshBatch } from './context-source-refresh.mjs';
 import { isOutputRestartBatch } from './output-recovery.mjs';
 import { isWallBudgetStopBatch } from './deadline-delivery.mjs';
+import { reviewableBackgroundInterruption } from './background-interruption.mjs';
+import type { BackgroundInterruptionReview } from './background-interruption.mjs';
 
 /** The backend must serialize read/modify/write atomically, including failures. */
 export interface LedgerBackend {
+  /** Optional compact, deterministic identity for a canonical commit batch. */
+  commitFingerprint?(canonicalBatch: string): string;
+  /** Atomic metadata-only updates avoid materializing the history for heartbeats. */
+  updateLease?<T>(key: string, change: (current: Pick<StoredRun, 'lease' | 'fence'> | null) => {
+    record: Pick<StoredRun, 'lease' | 'fence'>; value: T;
+  }): T;
+  /** Read a bounded event suffix without loading unrelated receipts or commits. */
+  eventsAfter?(key: string, after: number): NativeEvent[] | null;
+  commands?(key: string): StoredRun['commands'] | null;
   get(key: string): StoredRun | null;
   values(): StoredRun[];
+  snapshots?(scope: RunScope, sessionId?: string): RunSnapshot[];
+  heads?(scope: RunScope, sessionId?: string): RunScanHead[];
   sessionHead(scope: RunScope, sessionId: string): RunSnapshot | null;
   update<T>(key: string, change: (current: StoredRun | null,
     sessionHead: LedgerBackend['sessionHead']) => { record: StoredRun; value: T }): T;
@@ -22,11 +35,11 @@ export interface LedgerBackend {
     records: [StoredRun, StoredRun]; value: T;
   }): T;
 }
-function found(record: StoredRun | null): StoredRun {
+function found<T>(record: T | null): T {
   invariant(record, 'run_not_found');
   return record;
 }
-function fenced(record: StoredRun, lease: Lease, now: number): void {
+function fenced(record: Pick<StoredRun, 'lease'>, lease: Lease, now: number): void {
   invariant(Number.isFinite(now) && now >= 0, 'invalid_clock');
   invariant(record.lease && record.lease.owner === lease.owner && record.lease.fence === lease.fence
     && record.lease.expiresAt > now, 'stale_fence');
@@ -41,7 +54,7 @@ function immutableIdentity(previous: RunSnapshot, next: RunSnapshot): void {
     invariant(canonical(previous[field]) === canonical(next[field]), 'run_identity_changed');
   }
 }
-export function pendingCommands(record: StoredRun): RunCommand[] {
+export function pendingCommands(record: Pick<StoredRun, 'commands'>): RunCommand[] {
   return record.commands.filter(row => !row.consumed).map(row => copy(row.command))
     .sort((a, b) => commandPriority[b.kind] - commandPriority[a.kind]);
 }
@@ -52,6 +65,16 @@ export function runnableCommands(record: StoredRun): RunCommand[] {
 /** Shared invariants for memory, SQLite, and other transactional backends. */
 export class TransactionalRunStore implements RunStore {
   constructor(private readonly backend: LedgerBackend) {}
+
+  private updateLease<T>(key: string, change: (current: Pick<StoredRun, 'lease' | 'fence'> | null) => {
+    record: Pick<StoredRun, 'lease' | 'fence'>; value: T;
+  }): T {
+    if (this.backend.updateLease) return this.backend.updateLease(key, change);
+    return this.backend.update(key, current => {
+      const { record, value } = change(current);
+      return { record: { ...found(current), ...record }, value };
+    });
+  }
 
   create(configuration: RunConfiguration, snapshot: RunSnapshot): RunSnapshot {
     return this.createWithStatus(configuration, snapshot).snapshot;
@@ -90,18 +113,34 @@ export class TransactionalRunStore implements RunStore {
     });
   }
   load(scope: RunScope, runId: string): StoredRun { return copy(found(this.backend.get(runKey(scope, runId)))); }
+  pendingCommands(scope: RunScope, runId: string): RunCommand[] {
+    if (!this.backend.commands) return pendingCommands(this.load(scope, runId));
+    const commands = found(this.backend.commands(runKey(scope, runId)));
+    return pendingCommands({ commands });
+  }
   sessionHead(scope: RunScope, sessionId: string): RunSnapshot | null {
     scopeKey(scope); invariant(sessionId.trim(), 'invalid_session_id');
     return copy(this.backend.sessionHead(scope, sessionId));
   }
   list(scope: RunScope, sessionId?: string): RunSnapshot[] {
     const key = scopeKey(scope);
-    return this.backend.values().filter(record => scopeKey(record.snapshot.scope) === key
-      && (sessionId === undefined || record.snapshot.sessionId === sessionId)).map(record => copy(record.snapshot));
+    const snapshots = this.backend.snapshots?.(scope, sessionId) ?? this.backend.values().map(record => record.snapshot);
+    return snapshots.filter(snapshot => scopeKey(snapshot.scope) === key
+      && (sessionId === undefined || snapshot.sessionId === sessionId)).map(snapshot => copy(snapshot));
+  }
+  listHeads(scope: RunScope, sessionId?: string): RunScanHead[] {
+    const key = scopeKey(scope);
+    const heads = this.backend.heads?.(scope, sessionId) ?? this.backend.values().map(record => ({
+      scope: record.snapshot.scope, runId: record.snapshot.runId, sessionId: record.snapshot.sessionId,
+      phase: record.snapshot.phase, revision: record.snapshot.revision, eventSeq: record.snapshot.eventSeq,
+      backgroundCommands: record.snapshot.backgroundCommands, lease: record.lease,
+    }));
+    return heads.filter(head => scopeKey(head.scope) === key
+      && (sessionId === undefined || head.sessionId === sessionId)).map(head => copy(head));
   }
   acquire(scope: RunScope, runId: string, owner: string, now: number, ttlMs: number): Lease {
     invariant(owner.trim() && Number.isFinite(now) && now >= 0 && Number.isFinite(ttlMs) && ttlMs > 0, 'invalid_lease');
-    return this.backend.update(runKey(scope, runId), current => {
+    return this.updateLease(runKey(scope, runId), current => {
       const record = found(current);
       invariant(!record.lease || record.lease.expiresAt <= now, 'lease_busy');
       const lease = { owner, fence: record.fence + 1, expiresAt: now + ttlMs };
@@ -111,26 +150,29 @@ export class TransactionalRunStore implements RunStore {
   }
   renew(scope: RunScope, runId: string, lease: Lease, now: number, ttlMs: number): Lease {
     invariant(Number.isFinite(ttlMs) && ttlMs > 0 && Number.isFinite(now + ttlMs), 'invalid_lease');
-    return this.backend.update(runKey(scope, runId), current => {
+    return this.updateLease(runKey(scope, runId), current => {
       const record = found(current); fenced(record, lease, now);
       const next = { ...lease, expiresAt: Math.max(record.lease!.expiresAt, now + ttlMs) };
       return { record: { ...record, lease: next }, value: copy(next) };
     });
   }
   release(scope: RunScope, runId: string, lease: Lease): void {
-    this.backend.update(runKey(scope, runId), current => {
+    this.updateLease(runKey(scope, runId), current => {
       const record = found(current);
       invariant(record.lease?.owner === lease.owner && record.lease.fence === lease.fence, 'stale_fence');
       return { record: { ...record, lease: null }, value: undefined };
     });
   }
   commit(scope: RunScope, runId: string, lease: Lease, now: number, expectedRevision: number, input: CommitBatch): RunSnapshot {
-    const batch = copy(input), fingerprint = canonical(batch);
+    const batch = copy(input), canonicalBatch = canonical(batch);
+    const fingerprint = this.backend.commitFingerprint?.(canonicalBatch) ?? canonicalBatch;
     const apply = (current: StoredRun | null) => {
       const record = found(current); fenced(record, lease, now);
       const duplicate = record.commits.find(item => item.commitId === batch.commitId);
       if (duplicate) {
-        invariant(duplicate.fingerprint === fingerprint, 'commit_replay_conflict');
+        // Legacy backends stored the entire canonical batch. Continue to
+        // recognize those records when a backend adopts compact identities.
+        invariant(duplicate.fingerprint === fingerprint || duplicate.fingerprint === canonicalBatch, 'commit_replay_conflict');
         return { record, value: copy(record.snapshot) };
       }
       const previous = record.snapshot, next = batch.snapshot;
@@ -297,6 +339,7 @@ export class TransactionalRunStore implements RunStore {
   }
   events(scope: RunScope, runId: string, after = 0) {
     invariant(Number.isSafeInteger(after) && after >= 0, 'invalid_event_cursor');
+    if (this.backend.eventsAfter) return copy(found(this.backend.eventsAfter(runKey(scope, runId), after)));
     return this.load(scope, runId).events.filter(event => event.seq > after);
   }
   acknowledge(scope: RunScope, runId: string, projection: string, through: number): void {
@@ -305,6 +348,25 @@ export class TransactionalRunStore implements RunStore {
       invariant(projection.trim() && Number.isSafeInteger(through) && through >= (record.projections[projection] ?? 0)
         && through <= record.snapshot.eventSeq, 'invalid_projection_cursor');
       return { record: { ...record, projections: { ...record.projections, [projection]: through } }, value: undefined };
+    });
+  }
+  reviewBackgroundInterruption(scope: RunScope, runId: string, review: BackgroundInterruptionReview, now: number): void {
+    invariant(review?.contract === 'agentkit.background-interruption-review/v1'
+      && Object.keys(review).sort().join(',') === 'commandId,confirmedStopped,contract,eventSeq'
+      && typeof review.commandId === 'string' && !!review.commandId.trim() && review.commandId.length <= 256
+      && Number.isSafeInteger(review.eventSeq) && review.eventSeq >= 0 && review.confirmedStopped === true
+      && Number.isFinite(now) && now >= 0, 'invalid_background_interruption_review');
+    this.backend.update(runKey(scope, runId), (current, head) => {
+      const record = found(current);
+      if (record.backgroundInterruptionReview) {
+        invariant(canonical(record.backgroundInterruptionReview) === canonical(review), 'command_replay_conflict');
+        return { record, value: undefined };
+      }
+      invariant(head(scope, record.snapshot.sessionId)?.runId === runId
+        && record.snapshot.eventSeq === review.eventSeq, 'background_interruption_review_changed');
+      invariant(!record.lease || record.lease.expiresAt <= now, 'background_interruption_still_owned');
+      invariant(reviewableBackgroundInterruption(record), 'background_interruption_not_reviewable');
+      return { record: { ...record, backgroundInterruptionReview: copy(review) }, value: undefined };
     });
   }
 }

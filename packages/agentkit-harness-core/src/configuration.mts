@@ -235,6 +235,8 @@ export function configure(input: ConfigurationInput): RunConfiguration {
     names.add(tool.name);
     compileToolInput(tool.parameters);
     invariant(Number.isFinite(tool.timeoutMs) && tool.timeoutMs > 0 && tool.timeoutMs < limits.effectTimeoutMs, 'invalid_tool_timeout');
+    invariant(tool.executionTimeoutPolicy === undefined || ['dispatch/v1', 'dispatch/v2'].includes(tool.executionTimeoutPolicy), 'invalid_tool_execution_timeout_policy');
+    invariant(tool.approvalPolicy === undefined || tool.approvalPolicy === 'durable-preflight/v1', 'invalid_tool_approval_policy');
     invariant(!tool.concurrentSafe || tool.readOnly && tool.observationRole === 'none', 'invalid_tool_concurrency');
     invariant(tool.workspaceEditPolicy === undefined || ['zcode-match/v1', 'zcode-match/v2'].includes(tool.workspaceEditPolicy)
       && ['edit_workspace_file', 'multi_edit_workspace_file'].includes(tool.name)
@@ -307,6 +309,11 @@ export function configure(input: ConfigurationInput): RunConfiguration {
       && policy.targetRatio > 0 && policy.targetRatio < policy.triggerRatio && policy.triggerRatio <= 1
       && Number.isSafeInteger(policy.summaryMaxTokens) && policy.summaryMaxTokens > 0
       && ['strict', 'context_bounded_estimate'].includes(policy.summaryBudgetMode ?? 'strict')
+      && (policy.budgetTiming === undefined || policy.budgetTiming === 'before-model/v1')
+      && (policy.continuityPlacement === undefined || policy.continuityPlacement === 'after-history/v1'
+        && profile.operatorGuidancePolicy === undefined)
+      && (policy.sourceReusePolicy === undefined || policy.sourceReusePolicy === 'captured-source/v1'
+        && profile.providerFamily === 'openai-chat' && config.artifactPolicy === 'runtime-artifacts/v1')
       && (policy.maxCompactions === null || Number.isSafeInteger(policy.maxCompactions) && policy.maxCompactions >= 0)
       && [policy.maxCompactionsWithoutProgress, policy.minModelTurnsBetween, policy.maxSummaryRetries].every(value => Number.isSafeInteger(value) && value >= 0),
     'invalid_context_policy');

@@ -12,7 +12,9 @@ const packages = [
   { path: 'packages/agentkit-harness-core', name: '@kingsoftcloud/agentkit-harness-core',
     dependencies: ['ajv', 'ajv-draft-04', 'ajv-formats'], builtins: false },
   { path: 'packages/agentkit-harness-node', name: '@kingsoftcloud/agentkit-harness-node',
-    dependencies: ['@kingsoftcloud/agentkit-harness-core', '@astral-sh/ruff-wasm-nodejs', 'parse5', 'playwright-core', 'pngjs'], builtins: true },
+    dependencies: ['@kingsoftcloud/agentkit-harness-core', '@astral-sh/ruff-wasm-nodejs', 'parse5', 'playwright-core', 'pngjs', 'diff'], builtins: true },
+  { path: 'packages/agentkit-harness-ui', name: '@kingsoftcloud/agentkit-harness-ui',
+    dependencies: ['react', 'react-dom'], builtins: false, source: true },
 ];
 const results = [];
 for (const item of packages) {
@@ -27,11 +29,11 @@ for (const item of packages) {
       else files.push(`${prefix}${entry.name}`);
     }
   }
-  await visit(join(directory, 'dist'));
+  await visit(join(directory, item.source ? 'src' : 'dist'));
   assert.ok(files.includes('index.mjs'));
   let imports = 0;
   for (const file of files.filter(name => name.endsWith('.mjs'))) {
-    const code = await readFile(join(directory, 'dist', file), 'utf8');
+    const code = await readFile(join(directory, item.source ? 'src' : 'dist', file), 'utf8');
     // Generated ESM contains no computed dependency loader; inspect static imports and exports.
     assert.doesNotMatch(code, /\b(?:import|require)\s*\(/, `Dynamic dependency in ${item.name}/${file}`);
     const source = ts.createSourceFile(file, code, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
@@ -52,10 +54,15 @@ for (const item of packages) {
   });
   assert.equal(packed.status, 0, packed.stderr);
   const contents = JSON.parse(packed.stdout)[0];
-  for (const file of contents.files) assert.ok(/^(?:dist\/|src\/|LICENSE$|ZCode-LICENSE$|NOTICE$|THIRD_PARTY_NOTICES\.md$|README\.md$|package\.json$)/.test(file.path)
+  for (const file of contents.files) assert.ok(/^(?:dist\/|src\/|markdown\/(?:source|build|dist)\/|LICENSE$|ZCode-LICENSE$|NOTICE$|THIRD_PARTY_NOTICES\.md$|README\.md$|package\.json$)/.test(file.path)
     && !/(?:^|\/)(?:\.env|config\.ya?ml|credentials|node_modules|test|tests|\.artifacts)(?:$|\/|\.)/.test(file.path),
   `Unexpected packed content ${file.path}`);
   assert.ok(contents.files.some(file => file.path === 'LICENSE'));
+  if (item.source) {
+    for (const path of ['markdown/dist/markdown.mjs', 'markdown/dist/markdown.css', 'markdown/dist/THIRD_PARTY_LICENSES.txt'])
+      assert.ok(contents.files.some(file => file.path === path), `missing UI artifact ${path}`);
+    assert.equal(metadata.exports['./command-output'], './src/command-output.mjs');
+  }
   if (item.builtins) {
     for (const target of ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64'])
       assert.ok(contents.files.some(file => file.path === `src/native/local-process-bin/${target}/launcher`), `missing launcher ${target}`);

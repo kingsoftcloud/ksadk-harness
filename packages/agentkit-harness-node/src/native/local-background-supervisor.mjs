@@ -4,6 +4,7 @@ import { constants, closeSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { commandRequest } from './local-background.mjs';
 import { runBoundedProcess } from './local-process.mjs';
+import { commandFailureEvidence, commandExceptionCause } from './local-command-evidence.mjs';
 import { START_GRACE_MS, TERMINAL, atomicPrivate, check, digest, lockUntil, openPrivate,
   privateDirectory, privateFile, readRecord, unknownRecord, validId, writeRecord } from './local-command-state.mjs';
 
@@ -22,7 +23,7 @@ async function supervise() {
   check(typeof directory === 'string' && validId(owner) && validId(commandId), 'invalid_background_supervisor_arguments');
   privateDirectory(directory);
   const unlock = await lockUntil(join(directory, 'supervisor.sqlite'), performance.now() + START_GRACE_MS);
-  let record;
+  let record, stage = 'request', commandEvidence;
   const controller = new AbortController();
   const cancel = () => controller.abort();
   process.on('SIGTERM', cancel); process.on('SIGINT', cancel);
@@ -41,16 +42,18 @@ async function supervise() {
     const persist = (status, exitCode, stdout, stderr, metadata = {}) => {
       // Complete bytes are fsynced and published BEFORE the terminal receipt.
       for (const [channel, text] of [['stdout', stdout], ['stderr', stderr]]) atomicPrivate(join(directory, channel), text);
-      record = { ...record, ...metadata, status, exitCode, completedAt: Date.now() }; writeRecord(directory, record);
+      const next = { ...record, ...metadata, status, exitCode, completedAt: Date.now() };
+      writeRecord(directory, next); record = next;
     };
     if (privateFile(join(directory, 'cancel'), true) || controller.signal.aborted) {
       persist('canceled', null, '', ''); return;
     }
     record = { ...record, status: 'running', supervisorPid: process.pid }; writeRecord(directory, record);
-    let outputError = false;
+    stage = 'execute';
+    let outputError = false, stateError = false;
     poll = setInterval(() => {
       try { if (privateFile(join(directory, 'cancel'), true)) cancel(); }
-      catch { outputError = true; cancel(); }
+      catch { stateError = true; cancel(); }
     }, 20);
     const result = await runBoundedProcess({ argv: ['/bin/sh', '-c', request.command], cwd: request.cwd,
       env: request.env, timeoutMs: request.timeoutMs, settings: request.settings, signal: controller.signal,
@@ -66,16 +69,22 @@ async function supervise() {
     if (result.canceled) status = 'canceled';
     else if (result.timedOut) { status = 'timed_out'; exitCode = 124; diagnostic = 'command timed out'; }
     else if (result.outputLimitExceeded) { status = 'output_limit'; exitCode = 122; diagnostic = 'command output limit exceeded'; }
-    if (result.controls.status === 'failed' || result.cleanupError || outputError) {
+    commandEvidence = commandFailureEvidence(stage, { result, failures: [
+      ...(outputError ? ['output_recording_failed'] : []), ...(stateError ? ['state_observation_failed'] : [])] });
+    if (result.controls.status === 'failed' || result.cleanupError || outputError || stateError) {
       status = 'unknown'; exitCode = null; diagnostic = 'command supervision or cleanup failed';
     }
     const stderr = result.stderr + (diagnostic ? (result.stderr && !result.stderr.endsWith('\n') ? '\n' : '') + diagnostic : '');
+    stage = 'publish';
     persist(status, exitCode, result.stdout, stderr, { controls: result.controls, outputLimitExceeded: result.outputLimitExceeded,
+      ...(status === 'unknown' ? { commandEvidence } : {}),
       evidenceIncomplete: status === 'unknown', observedExitCode: status === 'unknown' ? result.exitCode : null,
       outcomeReason: status === 'unknown' ? 'process_supervision_failed' : '' });
-  } catch {
+  } catch (error) {
     // Secrets/input exception strings never enter records or diagnostics.
-    if (record && !TERMINAL.has(record.status)) unknownRecord(directory, record, 'supervisor_failed');
+    if (record && !TERMINAL.has(record.status)) unknownRecord(directory, { ...record,
+      commandEvidence: commandFailureEvidence(stage, { previous: commandEvidence,
+        failures: [commandExceptionCause(error, 'supervisor_exception')] }) }, 'supervisor_failed');
   } finally {
     clearInterval(poll); process.off('SIGTERM', cancel); process.off('SIGINT', cancel); unlock();
   }

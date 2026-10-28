@@ -86,6 +86,14 @@ new bounded attempt; `readOnly` alone does not authorize recovery. External
 systems still need idempotency keys or observation/reconciliation: a lease does
 not guarantee exactly-once external effects.
 
+`reviewBackgroundInterruption` records an explicit operator confirmation that
+the original processes have stopped. It is available only for an interrupted
+head whose owned background results were observed, with no unknown tool write,
+unreceipted effect or unsettled descendant. The scoped event cursor, inactive
+lease and idempotent command bind the decision. Its separate durable metadata
+does not change the terminal snapshot, receipt, output or execution verdict.
+It permits a host to stop waiting; it does not reconcile the unknown result.
+
 Cancellation is durable and wins over final completion. Late results cannot
 rewrite the ledger. Verification requires bound non-model evidence for required
 checks; absent evidence stays unverified. Projections across separate databases

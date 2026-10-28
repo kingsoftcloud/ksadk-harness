@@ -1,3 +1,5 @@
+import { nativeChildObservation, nativeChildActivity } from './child-observation.mjs';
+import { nativeDeliveryId } from './delivery-timeline.mjs';
 import { createHash } from 'node:crypto';
 import { addUsage, canonical, copy, invariant, scopeKey, terminal, CHILD_OWNER_CONTRACT } from '@kingsoftcloud/agentkit-harness-core';
 import { accountedChildDelivery, loadOwnedDirectChild } from './owned-child.mjs';
@@ -47,7 +49,7 @@ export function mergeNativeChildHistory(request, inventories) {
 }
 
 /** Read-only product history. No Kernel, factories, leases, commands or accounting writes. */
-export function createNativeChildHistory({ scope, store, liveTasks = () => [] }) {
+export function createNativeChildHistory({ scope, store, liveTasks = () => [], liveObservation = () => null }) {
   scopeKey(scope);
   const hierarchy = request => {
     invariant(id(request.sessionId) && (request.runId === undefined || id(request.runId)), 'child_history_query_invalid');
@@ -117,9 +119,11 @@ export function createNativeChildHistory({ scope, store, liveTasks = () => [] })
     const a2aTasks = child.intents.filter(intent => intent.kind === 'tool').flatMap(intent => (intent.payload.calls ?? [])
       .filter(call => call.name === 'call_a2a_agent').map(call => ({ runId: parent.snapshot.runId, childRunId: snapshot.runId,
         childAgentId: snapshot.scope.agentId, childSessionId: snapshot.sessionId, operationKey: intent.operationKey, callId: call.callId })));
-    return { childRunId: snapshot.runId, sessionId: snapshot.sessionId, parentRunId: parent.snapshot.runId,
+    return { parentToolCallId: nativeDeliveryId(parent.snapshot.scope, parent.snapshot.runId, `call:${binding.parentToolCallId}`),
+      childRunId: snapshot.runId, sessionId: snapshot.sessionId, parentRunId: parent.snapshot.runId,
       ...(a2aTasks.length ? { a2aTasks } : {}),
       role: binding.role, phase: snapshot.phase, outcome: snapshot.outcome, reason: snapshot.reason,
+      activity: nativeChildActivity(child),
       delivery: control?.delivery ?? (binding.deliveryMode === 'foreground'
         && !(parent.snapshot.promotedChildRunIds ?? []).includes(snapshot.runId) ? 'foreground' : 'background'),
       canPromote: control?.canPromote === true, canCancel: control?.canCancel === true, canSendInput: control?.canSendInput === true,
@@ -168,6 +172,7 @@ export function createNativeChildHistory({ scope, store, liveTasks = () => [] })
       invariant(offset <= chars.length, 'child_history_offset_invalid');
       const text = chars.slice(offset, offset + limit).join(''), nextOffset = offset + [...text].length;
       return { contract: NATIVE_CHILD_HISTORY_CONTRACT, sessionId: request.sessionId, runId: head.runId,
+        observation: nativeChildObservation(found.child, liveObservation(found.child)),
         task, text, totalChars: chars.length, offset, nextOffset, complete: nextOffset === chars.length,
         resultDigest: task.resultAvailable ? hash(found.child.snapshot.finalText) : null, parentAcceptance: 'not_evaluated' };
     },

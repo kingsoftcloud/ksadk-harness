@@ -20,6 +20,28 @@ function claimed(store, configuration, kind = 'tool', calls = [call()]) {
 }
 const worker = (store, ports, owner = 'replacement') => new NativeKernel({ store, ports, digest, owner, now: () => 100 });
 
+test('SQLite uncertainty discovery uses durable receipts until a fresh completed observation supersedes them', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'native-outcome-facts-'));
+  const store = new SqliteRunStore(join(directory, 'runs.sqlite'));
+  t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
+  claimed(store, { tools: [tool({ name: 'read', recoveryPolicy: 'safe-read/v1' })] });
+  let enter, release;
+  const entered = new Promise(resolve => { enter = resolve; }), wait = new Promise(resolve => { release = resolve; });
+  const run = worker(store, { model: { generate: async () => final() }, tools: { execute: async () => {
+    enter(); await wait; return { status: 'ok', content: 'Fresh bytes' };
+  } } }).runUntilIdle(scope, 'run');
+  await entered;
+  try {
+    const before = JSON.stringify(store.load(scope, 'run').receipts);
+    assert.deepEqual(store.uncertainToolCalls(scope, 'session'), [{ runId: 'run', turnId: 'turn', callId: 'read' }]);
+    assert.deepEqual(store.uncertainToolCalls({ ...scope, agentId: 'foreign' }, 'session'), []);
+    assert.deepEqual(store.uncertainToolCalls(scope, 'foreign-session'), []);
+    assert.equal(JSON.stringify(store.load(scope, 'run').receipts), before, 'Discovery cannot settle or reclassify a receipt');
+  } finally { release(); await run; }
+  assert.deepEqual(store.uncertainToolCalls(scope, 'session'), [], 'The latest actual read wins over the retained lost-claim receipt');
+  assert.ok(store.load(scope, 'run').receipts.some(receipt => receipt.status === 'uncertain'));
+});
+
 for (const backend of ['memory', 'sqlite']) {
   function setup(t) {
     const directory = mkdtempSync(join(tmpdir(), 'native-recovery-'));

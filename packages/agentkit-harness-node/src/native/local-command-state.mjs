@@ -4,6 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { constants, closeSync, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync,
   openSync, readFileSync, readSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { validCommandEvidence } from './local-command-evidence.mjs';
 
 export const LOCAL_BACKGROUND_CONTRACT = 'agentkit.local-background-command/v1';
 export const START_GRACE_MS = 5000;
@@ -101,6 +102,7 @@ export function readRecord(directory, owner, commandId) {
     && (record.evidenceIncomplete === undefined || typeof record.evidenceIncomplete === 'boolean')
     && (record.observedExitCode === undefined || record.observedExitCode === null || Number.isSafeInteger(record.observedExitCode)),
     'invalid_background_record');
+  check(record.commandEvidence === undefined || validCommandEvidence(record.commandEvidence), 'invalid_background_record');
   return record;
 }
 export function writeRecord(directory, record) {

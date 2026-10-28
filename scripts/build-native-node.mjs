@@ -4,13 +4,8 @@
 // adapters) into dist/rpc-entry.mjs with a node shebang + exec bit. Both bundles
 // externalize @kingsoftcloud/agentkit-harness-core and Node builtins.
 //
-// Reuse, not a fork: the entries re-export or import the existing shared
-// adapter implementations from packages/agentkit-harness/src/native/. esbuild
-// bundles only that adapter closure plus this package's own src; the core
-// kernel/contracts/transitions stay external. The script asserts from the
-// esbuild metafile that every bundled input lives inside the native adapter
-// directory or this package's src, and asserts on each emitted dist that it
-// imports the public core package and no Studio/DSH/host code.
+// Each bundle may include only this package's adapters. Core remains an
+// external npm dependency; Studio, DSH and product configuration stay outside.
 import { build } from 'esbuild';
 import { chmodSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -41,7 +36,6 @@ const externalizeCore = {
 // (host, global config, model-service, dsh, studio, src/..) is a leak.
 const allowed = [
   /^packages\/agentkit-harness-node\/src\/(?:native\/)?[^/]+\.mjs$/,
-  /^packages\/agentkit-harness\/src\/native\/[^/]+\.mjs$/,
 ];
 const forbidden = /(?:from\s+|require\s*\(\s*)['"][^'"]*(?:\/agentkit-harness\/src\/|\/dsh\/|\/studio\/|global-config|model-service|credentials)[^'"]*['"]/;
 

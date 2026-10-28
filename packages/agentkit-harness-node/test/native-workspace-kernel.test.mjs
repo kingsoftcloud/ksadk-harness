@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSyn
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
-import { NativeKernel, configure, initialSnapshot, canonical, emptyUsage } from '../../agentkit-harness-core/dist/index.mjs';
+import { NativeKernel, configure, initialSnapshot, canonical, emptyUsage, prepareEffect } from '../../agentkit-harness-core/dist/index.mjs';
 import { createNativeWorkspaceTools } from '../src/native/workspace-tools.mjs';
 import { sessionKeyFor } from '../src/native/workspace-state.mjs';
 import { SqliteRunStore } from '../src/native/sqlite-store.mjs';
@@ -12,6 +12,38 @@ import { SqliteRunStore } from '../src/native/sqlite-store.mjs';
 const scope = { tenantId: 'tenant', workspaceId: 'workspace', userId: 'user', agentId: 'agent' };
 const identity = { scope, runId: 'run', sessionId: 'session', turnId: 'turn', buildId: 'build', parentRunId: null, taskChainId: 'chain' };
 const digest = value => createHash('sha256').update(canonical(value)).digest('hex');
+
+test('lost workspace read is retried with a fresh observation and does not authorize write replay', async t => {
+  const { base, workspaceRoot, configFor, create } = setup(t);
+  const tools = create(async () => 'allow');
+  const read = tools.definitions.find(item => item.name === 'read_workspace_file');
+  const write = tools.definitions.find(item => item.name === 'write_workspace_file');
+  assert.equal(read.recoveryPolicy, 'safe-read/v1');
+  assert.notEqual(write.recoveryPolicy, 'safe-read/v1');
+  const store = new SqliteRunStore(join(base, 'read-recovery.sqlite')); t.after(() => store.close());
+  const config = configFor(tools), snapshot = initialSnapshot(identity, config, digest(config));
+  store.create(config, snapshot);
+  const lease = store.acquire(scope, 'run', 'lost', 1, 2);
+  const calls = [{ callId: 'read', name: 'read_workspace_file', arguments: { path: 'file.txt' } }];
+  const batch = prepareEffect(snapshot, 'tool', 'executing_tools', { calls, interaction: null }, {
+    pendingTools: calls, messages: [...snapshot.messages, { role: 'assistant', content: '', toolCalls: calls }],
+  });
+  store.commit(scope, 'run', lease, 1, 0, batch);
+  store.claim(scope, 'run', lease, 1, batch.snapshot.pendingIntent);
+  // The lost operation cannot be treated as an observation of the old bytes.
+  writeFileSync(join(workspaceRoot, 'file.txt'), 'changed after interruption\n');
+  const model = { generate: async request => {
+    assert.match(request.messages.at(-1).content, /changed after interruption/);
+    return { kind: 'final_candidate', text: 'read complete', toolCalls: [], usage: emptyUsage() };
+  } };
+  const kernel = new NativeKernel({ store, owner: 'replacement', digest, now: () => 100,
+    ports: { model, tools, workspace: tools } });
+  const result = await kernel.runUntilIdle(scope, 'run');
+  assert.equal(result.phase, 'completed');
+  assert.equal(result.recoveryRetriesUsed, 1);
+  assert.ok(store.load(scope, 'run').events.some(event => event.kind === 'effect.recovery_scheduled'));
+  assert.equal(readFileSync(join(workspaceRoot, 'file.txt'), 'utf8'), 'changed after interruption\n');
+});
 
 test('real Native ledger repairs invalid Python through the Node parser and persists both diagnostics', async t => {
   const { base, workspaceRoot, configFor, create } = setup(t), filename = join(base, 'syntax.sqlite');

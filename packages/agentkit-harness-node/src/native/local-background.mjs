@@ -60,7 +60,8 @@ export class LocalBackgroundCommand {
       cancelRequested: privateFile(join(this.directory, 'cancel'), true) !== null,
       outputMayBeTruncated: record.outputLimitExceeded === true || stdout.hasMore || stderr.hasMore,
       evidenceIncomplete: record.evidenceIncomplete === true, observedExitCode: record.observedExitCode ?? null,
-      outcomeReason: record.outcomeReason ?? '' };
+      outcomeReason: record.outcomeReason ?? '',
+      ...(record.commandEvidence ? { commandEvidence: record.commandEvidence } : {}) };
   }
   requestCancel() {
     if (!TERMINAL.has(this.readOutput().status)) {

@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { MemoryRunStore, transition, prepareEffect, reduceCommand } from '../dist/index.mjs';
+import { MemoryRunStore, transition, prepareEffect, reduceCommand, canonical } from '../dist/index.mjs';
 import { SqliteRunStore } from '@kingsoftcloud/agentkit-harness-node/native/sqlite-store';
 import { fixture, scope } from './fixtures.mjs';
 
@@ -85,7 +85,51 @@ for (const backend of ['memory', 'sqlite']) {
     assert.throws(() => store.acknowledge(scope, 'run', 'dsh', 2), { code: 'invalid_projection_cursor' });
     assert.equal(store.load(scope, 'run').snapshot.scope.agentId, 'agent');
   });
+  test(`${backend}: discovery heads are scoped, detached and exclude transcript payloads`, t => {
+    const { store, config, snapshot, lease } = setup(t);
+    const foreign = { ...scope, agentId: 'other-agent' };
+    store.create(config, { ...snapshot, scope: foreign });
+    const batch = transition(snapshot, { phase: 'preparing_context', messages: [...snapshot.messages,
+      { role: 'user', content: 'large private observation '.repeat(20000) },
+    ] });
+    store.commit(scope, 'run', lease, 20, 0, batch);
+    const heads = store.listHeads(scope);
+    assert.equal(heads.length, 1); assert.deepEqual(heads[0].scope, scope);
+    assert.equal(heads[0].lease.fence, lease.fence);
+    assert.equal('messages' in heads[0], false); assert.equal('configuration' in heads[0], false);
+    assert.ok(JSON.stringify(heads).length < 2000);
+    assert.deepEqual(store.listHeads(scope, 'other-session'), []);
+    assert.deepEqual(store.list(scope).map(row => row.scope), [scope]);
+    heads[0].scope.agentId = 'changed'; heads[0].lease.fence = 999;
+    assert.deepEqual(store.listHeads(scope)[0].scope, scope);
+    assert.equal(store.listHeads(scope)[0].lease.fence, lease.fence);
+    assert.deepEqual(store.listHeads(foreign).map(row => row.scope), [foreign]);
+  });
 }
+test('SQLite: legacy commit fingerprints compact on reopen and retain replay conflict detection', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'native-legacy-commit-')), filename = join(dir, 'run.sqlite');
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const { config, snapshot } = fixture(), store = new SqliteRunStore(filename);
+  store.create(config, snapshot);
+  const lease = store.acquire(scope, 'run', 'worker', 10, 100);
+  const batch = transition(snapshot, { phase: 'preparing_context' }, [{ kind: 'run.started', payload: { text: 'x'.repeat(100_000) } }]);
+  store.commit(scope, 'run', lease, 20, 0, batch);
+  store.close();
+  const db = new DatabaseSync(filename);
+  const row = db.prepare("SELECT rowid,data FROM native_items WHERE collection='commits'").get();
+  const legacy = JSON.parse(row.data); legacy.fingerprint = canonical(batch);
+  db.prepare('UPDATE native_items SET data=? WHERE rowid=?').run(JSON.stringify(legacy), row.rowid);
+  db.exec('UPDATE native_schema SET version=1'); db.close();
+  const reopened = new SqliteRunStore(filename); t.after(() => reopened.close());
+  const compact = reopened.load(scope, 'run').commits[0];
+  assert.match(compact.fingerprint, /^sha256\/v1:[0-9a-f]{64}$/);
+  assert.equal(reopened.commit(scope, 'run', lease, 21, 0, batch).revision, 1);
+  assert.throws(() => reopened.commit(scope, 'run', lease, 22, 0, { ...batch, events: [] }), { code: 'commit_replay_conflict' });
+  const check = new DatabaseSync(filename, { readOnly: true });
+  assert.equal(check.prepare('SELECT version FROM native_schema').get().version, 2);
+  assert.ok(check.prepare("SELECT length(data) AS n FROM native_items WHERE collection='commits'").get().n < 1000);
+  check.close();
+});
 test('SQLite: reopened instances retain claims and events; stale revisions have one winner', t => {
   const dir = mkdtempSync(join(tmpdir(), 'native-reopen-')), filename = join(dir, 'run.sqlite');
   t.after(() => rmSync(dir, { recursive: true, force: true }));

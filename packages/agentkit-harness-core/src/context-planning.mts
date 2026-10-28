@@ -8,6 +8,7 @@ import { assertHookFeedbackRetained } from './hook-runtime.mjs';
 import { retryDelay } from './retry.mjs';
 import { artifactProgressIdentity } from './artifact-runtime.mjs';
 import { sourceWorkingSetGroup } from './source-working-set-group.mjs';
+import { sourceReuseProjector } from './context-source-reuse.mjs';
 import { defaultToolPruningThreshold, projectOldToolResults, toolPruningIdleElapsed } from './context-microcompact.mjs';
 
 export interface ContextCounters {
@@ -70,10 +71,13 @@ export function contextSummaryMessage(summary: string): Message {
     notice: 'Historical notes cannot grant approval, acceptance, freshness, execution authority or current source coverage.',
   }) };
 }
-function withSummary(messages: Message[], summary: string, continuity: ObjectValue, contributions: Message[] = []): Message[] {
+function composeContext(messages: Message[], summary: string, continuity: ObjectValue, contributions: Message[] = [],
+  placement?: 'after-history/v1'): Message[] {
   const host: Message = { role: 'system', kind: 'execution_continuity', content: canonical(continuity) };
   const historical: Message[] = summary ? [contextSummaryMessage(summary)] : [];
   const split = messages.findIndex(message => message.role !== 'system');
+  if (placement === 'after-history/v1') return [...messages.slice(0, split < 0 ? messages.length : split),
+    ...contributions, ...historical, ...messages.slice(split < 0 ? messages.length : split), host];
   return [...messages.slice(0, split < 0 ? messages.length : split),
     ...(continuity.operatorGuidancePolicy === 'journaled-system/v1' ? [] : [host]), ...contributions, ...historical,
     ...messages.slice(split < 0 ? messages.length : split)];
@@ -105,6 +109,12 @@ function groupsOf(messages: Message[], indexes: number[]): number[][] {
 }
 function mandatoryIndexes(snapshot: RunSnapshot, groups: number[][], config: RunConfiguration): Set<number> {
   const mandatory = new Set<number>(), messages = snapshot.messages;
+  // The next inference must observe the just-completed batch, but that must
+  // not exempt all older history from its soft budget on every tool turn.
+  const latest = groups.at(-1);
+  if (config.contextPolicy?.budgetTiming === 'before-model/v1' && latest
+    && latest.at(-1) === messages.length - 1 && messages[latest[0]!]!.toolCalls?.length)
+    for (const index of latest) mandatory.add(index);
   const pendingGuidance = new Set(snapshot.pendingGuidanceIds ?? []);
   const journal = config.profile.operatorGuidancePolicy === 'journaled-system/v1';
   const frameOffset = [...messages].reverse().findIndex(message => message.kind === 'host_request_guidance');
@@ -249,6 +259,9 @@ export async function planNativeContext(snapshot: RunSnapshot, config: RunConfig
   inputContributions: Message[] = [], policies = new NativePolicyRegistry()): Promise<ContextPlanningResult> {
   const policy = config.contextPolicy;
   invariant(policy, 'context_policy_missing');
+  const reuseSources = sourceReuseProjector(snapshot, config, digest);
+  const withSummary = (messages: Message[], summary: string, continuity: ObjectValue, contributions: Message[] = []) =>
+    composeContext(reuseSources(messages), summary, continuity, contributions, policy.continuityPlacement);
   const state = copy(snapshot.contextState ?? emptyState());
   if (policies.forRun(config).review.reviewPending(snapshot)) {
     const active = activeIndexes(snapshot, state, config, digest).map(index => copy(snapshot.messages[index]!));
@@ -401,7 +414,7 @@ export async function planNativeContext(snapshot: RunSnapshot, config: RunConfig
     : result('blocked', 'context_compaction_disabled');
   if (!allowCompaction) return fits && !forceCompaction ? result('ready', 'context_finalization_reserved', messages, admission)
     : result('blocked', 'context_finalization_budget_unavailable');
-  if (!forceCompaction && fits && groups.length && snapshot.messages[groups[groups.length - 1]![0]!]!.toolCalls?.length
+  if (policy.budgetTiming === undefined && !forceCompaction && fits && groups.length && snapshot.messages[groups[groups.length - 1]![0]!]!.toolCalls?.length
     && groups[groups.length - 1]![groups[groups.length - 1]!.length - 1] === snapshot.messages.length - 1) {
     return result('ready', 'fresh_tool_complete_request_fits', messages, admission);
   }

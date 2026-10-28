@@ -34,6 +34,7 @@ export * from './browser-contract.mjs';
 export * from './browser-runtime.mjs';
 export * from './task-policy.mjs';
 export * from './background-contract.mjs';
+export * from './background-interruption.mjs';
 export * from './background-runtime.mjs';
 export * from './background-notification.mjs';
 export * from './child-budget.mjs';

@@ -28,6 +28,27 @@ export function projectConversationHistory(parent: StoredRun, transcript: Messag
 function projectHistory(parent: StoredRun, transcript: Message[], configuration: RunConfiguration, identify: Identify,
   options: { identityNamespace?: string }, includeFinal: boolean): Message[] {
   const snapshot = parent.snapshot;
+  const knownResults = new Map<string, { name: string; content: string }>();
+  if (configuration.contextPolicy?.sourceReusePolicy === 'captured-source/v1') {
+    const intents = new Map(parent.intents.map(intent => [intent.operationKey, intent]));
+    const readers = new Set(parent.configuration.tools.filter(tool => tool.readOnly && tool.contextRole === 'workspace_read'
+      && tool.sourceObservationPolicy === 'workspace-source-model/v1' && tool.resultArchivePolicy === 'archived-model-view/v5').map(tool => tool.name));
+    for (const receipt of parent.receipts) {
+      const intent = intents.get(receipt.operationKey), calls = intent?.payload.calls as unknown as Message['toolCalls'];
+      const results = receipt.result.results;
+      if (receipt.status !== 'committed' || intent?.kind !== 'tool' || !Array.isArray(calls) || !Array.isArray(results) || calls.length !== results.length) continue;
+      for (const [index, value] of results.entries()) {
+        if (!readers.has(calls[index]!.name)) continue;
+        if (!value || typeof value !== 'object' || Array.isArray(value) || value.status !== 'ok') continue;
+        const context = value.context;
+        if (!(context && typeof context === 'object' && !Array.isArray(context) && typeof context.content === 'string')
+          && value.content === undefined) continue;
+        const content = context && typeof context === 'object' && !Array.isArray(context) && typeof context.content === 'string'
+          ? context.content : canonical(value.content);
+        knownResults.set(calls[index]!.callId, { name: calls[index]!.name, content });
+      }
+    }
+  }
   const replayAllowed = configuration.profile.providerReplayMode !== 'none'
     && canonical(configuration.profile) === canonical(parent.configuration.profile);
   const output: Message[] = [], seen = new Set<string>();
@@ -55,6 +76,11 @@ function projectHistory(parent: StoredRun, transcript: Message[], configuration:
     if (message.role === 'tool') {
       const pair = message.callId ? pending.get(message.callId) : undefined;
       if (pair) {
+        // Backfill only an immediate source Run's exact committed model view.
+        // Older ancestry without a carried Host outcome remains unproven.
+        const known = message.callId && !original.history ? knownResults.get(message.callId) : null;
+        if (message.toolOutcome === undefined && known && known.name === message.name && known.content === message.content)
+          message.toolOutcome = 'ok';
         // The source receipt is immutable. A new binding may remove tools;
         // imported references must not require or advertise their old schemas.
         if (configuration.profile.providerToolSearchPolicy === 'anthropic-deferred/v1' && message.discoveredToolNames !== undefined) {

@@ -57,6 +57,11 @@ export interface ToolDefinition {
   name: string; description: string; parameters: ObjectValue;
   readOnly: boolean; concurrentSafe: boolean;
   permissions: string[]; timeoutMs: number;
+  /** Negotiated Host preflight is bounded by run/effect limits; this tool's
+   * execution deadline begins only at its actual dispatch boundary. */
+  executionTimeoutPolicy?: 'dispatch/v1' | 'dispatch/v2';
+  /** Host permission waits yield a durable Native interaction before dispatch. */
+  approvalPolicy?: 'durable-preflight/v1';
   contextRole: 'none' | 'workspace_read' | 'workspace_search' | 'workspace_list' | 'artifact_read' | 'task_planning';
   observationRole: 'none' | 'browser';
   progressObservation: boolean; contextRetention: 'normal' | 'persistent';
@@ -170,6 +175,13 @@ export interface ContextPlanningPolicy {
   tokenizerId: string; tokenizerDigest: string; enabled: boolean;
   /** Estimates bound complete requests; exact counters keep the strict summary ceiling. */
   summaryBudgetMode?: 'strict' | 'context_bounded_estimate';
+  /** Enforce the soft budget before task inference, retaining the fresh tool batch in full. */
+  budgetTiming?: 'before-model/v1';
+  /** Count and dispatch current Host state after complete history groups.
+   * Absence preserves the admitted legacy prefix layout. */
+  continuityPlacement?: 'after-history/v1';
+  /** Replace older identical proven captured-source bodies in request views. */
+  sourceReusePolicy?: 'captured-source/v1';
   triggerRatio: number; targetRatio: number; summaryMaxTokens: number;
   maxCompactions: number | null; maxCompactionsWithoutProgress: number; minModelTurnsBetween: number;
   maxSummaryRetries: number;
@@ -312,6 +324,8 @@ export interface ToolResult {
   /** Deferred until every call in the model's tool batch has a result. */
   additionalContexts?: ToolContextMessage[];
   interactionId?: string; workspaceChangedPaths?: string[]; artifactRefs?: ArtifactRef[];
+  /** A negotiated Host permission reply stays in the ledger; it is not a tool-owned interaction. */
+  approvalPolicy?: 'durable-preflight/v1';
   /** Kernel-derived observation identity excludes freshly minted archive locators. */
   artifactObservationDigest?: string;
   resourceUsage?: Usage; childRunIds?: string[]; metadata?: ObjectValue;
@@ -336,7 +350,10 @@ export interface ModelResult {
   providerReplay?: ObjectValue; retryAfterMs?: number; failureKind?: string;
   replayToolIds?: Record<string, string>;
 }
-export interface PendingInteraction { interactionId: string; hostInteractionId: string; callId: string; operationKey: string }
+export interface PendingInteraction {
+  interactionId: string; hostInteractionId: string; callId: string; operationKey: string;
+  approvalPolicy?: 'durable-preflight/v1';
+}
 export interface VerificationReport {
   status: 'passed' | 'failed' | 'unverified'; reason: string;
   candidateId?: string; contractRevision?: string;
@@ -473,6 +490,8 @@ export interface CommitBatch {
   childControlDelivery?: ChildControlDelivery;
 }
 export interface StoredRun {
+  /** Operator disposition is separate from the immutable execution verdict. */
+  backgroundInterruptionReview?: import('./background-interruption.mjs').BackgroundInterruptionReview;
   configuration: RunConfiguration; snapshot: RunSnapshot; lease: Lease | null; fence: number;
   events: NativeEvent[]; intents: EffectIntent[]; receipts: EffectReceipt[];
   commands: { command: RunCommand; consumed: boolean }[];
@@ -480,11 +499,18 @@ export interface StoredRun {
   projections: Record<string, number>;
 }
 /** All mutations are atomic. Implementations must fence even duplicate commits. */
+/** Discovery metadata; polling must not materialize transcript or tool receipts. */
+export interface RunScanHead extends Pick<RunSnapshot, 'scope' | 'runId' | 'sessionId' | 'phase' | 'revision' | 'eventSeq' | 'backgroundCommands'> {
+  lease: Lease | null;
+}
 export interface RunStore {
   create(configuration: RunConfiguration, snapshot: RunSnapshot): RunSnapshot;
   createNotification(configuration: RunConfiguration, snapshot: RunSnapshot): { snapshot: RunSnapshot; created: boolean };
   load(scope: RunScope, runId: string): StoredRun;
+  /** Unconsumed control inputs without reading the effect journal. */
+  pendingCommands?(scope: RunScope, runId: string): RunCommand[];
   list(scope: RunScope, sessionId?: string): RunSnapshot[];
+  listHeads?(scope: RunScope, sessionId?: string): RunScanHead[];
   sessionHead(scope: RunScope, sessionId: string): RunSnapshot | null;
   acquire(scope: RunScope, runId: string, owner: string, now: number, ttlMs: number): Lease;
   renew(scope: RunScope, runId: string, lease: Lease, now: number, ttlMs: number): Lease;
@@ -495,6 +521,8 @@ export interface RunStore {
   enqueue(scope: RunScope, runId: string, command: RunCommand): CommandReceipt;
   events(scope: RunScope, runId: string, after?: number): NativeEvent[];
   acknowledge(scope: RunScope, runId: string, projection: string, through: number): void;
+  reviewBackgroundInterruption?(scope: RunScope, runId: string,
+    review: import('./background-interruption.mjs').BackgroundInterruptionReview, now: number): void;
 }
 export interface PortContext extends RunIdentity {
   operationKey: string; signal: AbortSignal;
@@ -530,7 +558,9 @@ export interface ToolReceiptObservation {
   result: ToolResult | null;
 }
 export interface ToolPort {
-  execute(request: ToolRequest): Promise<ToolResult>;
+  executionLifecycle?: 'dispatch/v1';
+  approvalPolicy?: 'durable-preflight/v1';
+  execute(request: ToolRequest, lifecycle?: import('./tool-execution.mjs').ToolExecutionLifecycle): Promise<ToolResult>;
   checkPlanMode?(request: ToolRequest): Promise<boolean>;
   observeReceipt?(request: ToolReceiptRequest): Promise<ToolReceiptObservation>;
   repairWorkspace?(request: WorkspaceRepairRequest): Promise<WorkspaceRepairResult>;

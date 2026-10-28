@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
   statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -71,7 +71,7 @@ test('existing receipts remain readable when a replacement installation has no e
   const f = fixture(t), request = f.input('printf retained', { operationKey: 'lookup-only' });
   const h = await f.store.start(request); f.handles.push(h); await h.wait({ timeoutMs: 5000 });
   const copy = join(f.root, 'replacement'); mkdirSync(copy);
-  for (const file of ['local-background.mjs', 'local-command-state.mjs', 'local-process.mjs'])
+  for (const file of ['local-background.mjs', 'local-command-state.mjs', 'local-command-evidence.mjs', 'local-process.mjs'])
     cpSync(new URL('../src/native/' + file, import.meta.url), join(copy, file));
   const replacement = await import(pathToFileURL(join(copy, 'local-background.mjs')).href);
   const store = new replacement.LocalCommandStore(f.config), same = await store.start(request);
@@ -231,6 +231,27 @@ test('supervisor SIGKILL closes the command owner pipe; unknown outcomes cannot 
   assert.equal(result.evidenceIncomplete, true); assert.equal(result.exitCode, null); assert.equal(result.observedExitCode, null);
   await assert.rejects(h.wait(), { code: 'background_command_outcome_unknown' });
   const again = await new LocalCommandStore(f.config).start(request); assert.equal(again.commandId, h.commandId); assert.equal(again.readOutput().status, 'unknown');
+  assert.equal(readFileSync(join(f.workspace, 'counter'), 'utf8'), 'x');
+});
+test('a real output publication failure records its stages and cannot relaunch the command', async t => {
+  const f = fixture(t), request = f.input('printf x >> counter; while [ ! -f release ]; do /bin/sleep 0.02; done; printf result',
+    { operationKey: 'publication-failure' });
+  const h = await f.store.start(request); f.handles.push(h);
+  await until(() => existsSync(join(f.workspace, 'counter')));
+  const stdout = join(h.directory, 'stdout'); chmodSync(stdout, 0o644);
+  writeFileSync(join(f.workspace, 'release'), 'go');
+  const record = await until(() => {
+    const value = JSON.parse(readFileSync(join(h.directory, 'record.json'), 'utf8'));
+    return value.status === 'unknown' && value;
+  });
+  chmodSync(stdout, 0o600);
+  assert.equal(record.commandEvidence.stage, 'publish');
+  assert.deepEqual(record.commandEvidence.causes, ['output_recording_failed', 'private_state_invalid']);
+  assert.equal(record.exitCode, null);
+  const observed = h.readOutput(); assert.equal(observed.status, 'unknown');
+  assert.deepEqual(observed.commandEvidence, record.commandEvidence);
+  const again = await new LocalCommandStore(f.config).start(request);
+  assert.equal(again.commandId, h.commandId); assert.equal(again.readOutput().status, 'unknown');
   assert.equal(readFileSync(join(f.workspace, 'counter'), 'utf8'), 'x');
 });
 test('process exit immediately after durable intent, before supervisor spawn, never starts an effect on recovery', async t => {

@@ -459,3 +459,27 @@ test('persistent tool results protect their complete call/result group during la
   assert.equal(quoted.some(entry => entry.message.callId === 'permanent' || entry.message.toolCalls?.some(call => call.callId === 'permanent')), false);
   assert.equal(result.state.compaction.retainedRefs.length, 3);
 });
+
+test('pre-model budget compacts older history while retaining the entire fresh parallel tool batch', async t => {
+  const run = setup(t, { contextPolicy: { budgetTiming: 'before-model/v1', triggerRatio: .4, targetRatio: .2 } });
+  const old = [
+    { role: 'assistant', content: '', toolCalls: [{ callId: 'old', name: 'read', arguments: {} }] },
+    { role: 'tool', callId: 'old', content: 'Historical result '.repeat(220) },
+  ];
+  const latest = [
+    { role: 'assistant', content: '', toolCalls: [{ callId: 'fresh-a', name: 'read', arguments: {} }, { callId: 'fresh-b', name: 'read', arguments: {} }] },
+    { role: 'tool', callId: 'fresh-a', content: 'Fresh complete A' },
+    { role: 'tool', callId: 'fresh-b', content: 'Fresh complete B' },
+  ];
+  const snapshot = { ...run.snapshot, phase: 'preparing_context', messages: [...run.snapshot.messages, ...old, ...latest] };
+  assert.ok(count(snapshot.messages, run.config.tools) + run.config.profile.maxOutputTokens < run.config.profile.contextWindow);
+  const plan = await planNativeContext(snapshot, run.config, run.config.tools, {
+    countRequest: async (messages, tools) => count(messages, tools), countText: async text => Math.ceil(text.length / 4),
+  }, digest, false, true);
+  assert.equal(plan.action, 'compact');
+  const quoted = JSON.parse(plan.state.compaction.sourceText);
+  assert.deepEqual(quoted.map(entry => entry.message), old);
+  assert.equal(quoted.some(entry => entry.message.callId?.startsWith('fresh')), false);
+  assert.equal(plan.state.compaction.retainedRefs.length, run.snapshot.messages.length + latest.length);
+  assert.deepEqual(snapshot.messages.slice(-3), latest);
+});

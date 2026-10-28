@@ -27,6 +27,7 @@ import { acquireWorkspaceMutationLock, workspaceMutationGuard } from './workspac
 import { budgetWorkspaceSourcePage, validateSourcePageBudget } from './source-page.mjs';
 import { prepareWorkspaceEdits } from './workspace-edit-match.mjs';
 import { prepareWorkspacePatch } from './workspace-patch.mjs';
+import { workspaceChangeDisplay } from './workspace-display.mjs';
 import { createWorkspaceCheckpointJournal, captureCheckpointFile, checkpointStatesEqual, WORKSPACE_CHECKPOINT_POLICY, CONVERSATION_WORKSPACE_CONTROL } from './workspace-checkpoints.mjs';
 import { parseStructuredPatch } from '@kingsoftcloud/agentkit-harness-core/patch-parser';
 import { canonical } from '@kingsoftcloud/agentkit-harness-core';
@@ -81,7 +82,12 @@ export function createNativeWorkspaceTools({
   // Mutating implementations below are synchronous. Track publications within the
   // current invocation so a later state-write failure cannot masquerade as a
   // definite failure before execution. No tracking state crosses an await.
-  let activeMutations = null, activeGuard = null, activeCheckpoint = null, activePublications = null, activeReads = null;
+  let activeMutations = null, activeGuard = null, activeCheckpoint = null, activePublications = null, activeReads = null, activeDisplayChanges = null;
+  function rememberDisplay(path, before, after) {
+    if (!before || !activeDisplayChanges) return;
+    const previous = activeDisplayChanges.get(path);
+    activeDisplayChanges.set(path, { before: previous?.before ?? before, after });
+  }
   function rememberRead(state) {
     store.recordReadState(state);
     if (!state.partial) activeReads?.set(state.path, serializeReadState(state));
@@ -96,6 +102,8 @@ export function createNativeWorkspaceTools({
       ...(options?.checkpointMode !== undefined ? { mode: options.checkpointMode } : {}) });
     activeGuard?.(); assertCheckpointPath(target);
     publishWorkspaceBytes(target, bytes, options);
+    rememberDisplay(relativeOf(target), before, bytes.length <= 128 * 1024
+      ? { kind: 'file', bytes: bytes.toString('base64') } : { kind: 'unavailable' });
     activeMutations?.add(relativeOf(target));
     activePublications?.set(relativeOf(target), { kind: 'file', sha256: sha256(bytes), mode: before?.kind === 'file' ? before.mode : 0o666 & ~process.umask() });
   }
@@ -110,9 +118,10 @@ export function createNativeWorkspaceTools({
   const checkpoints = createWorkspaceCheckpointJournal({ stateDir, sessionId: store.sessionId, workspaceRoot: pinnedRootReal,
     resolvePath: path => resolvePath(path) });
   function remove(target, directory = false) {
-    activeGuard?.(); assertCheckpointPath(target); activeCheckpoint?.stage(relativeOf(target), { kind: 'absent' });
+    activeGuard?.(); assertCheckpointPath(target); const before = activeCheckpoint?.stage(relativeOf(target), { kind: 'absent' });
     activeGuard?.(); assertCheckpointPath(target);
     if (directory) rmdirSync(target); else unlinkSync(target);
+    rememberDisplay(relativeOf(target), before, { kind: 'absent' });
     activeMutations?.add(relativeOf(target));
     activePublications?.set(relativeOf(target), { kind: 'absent' });
   }
@@ -1126,13 +1135,14 @@ export function createNativeWorkspaceTools({
           error_message: error.message, executed: false } };
       }
     }
-    const mutations = new Set(), publications = new Map(), reads = new Map(), previousMutations = activeMutations, previousGuard = activeGuard,
+    const mutations = new Set(), publications = new Map(), reads = new Map(), displayChanges = new Map(), previousDisplayChanges = activeDisplayChanges,
+      previousMutations = activeMutations, previousGuard = activeGuard,
       previousCheckpoint = activeCheckpoint, previousPublications = activePublications, previousReads = activeReads;
     let release, checkpoint, preparedRewind;
     try {
       if (mutating) release = acquireWorkspaceMutationLock(pinnedRootReal);
       guard();
-      activeMutations = mutations; activeGuard = guard; activeReads = reads;
+      activeMutations = mutations; activeGuard = guard; activeReads = reads; activeDisplayChanges = displayChanges;
       if (name === 'rewind_workspace_files') {
         activePublications = publications;
         if (request.definition?.workspaceCheckpointPolicy !== WORKSPACE_CHECKPOINT_POLICY) throw Object.assign(Error('checkpoint_policy_missing'), { code: 'checkpoint_policy_missing' });
@@ -1170,7 +1180,7 @@ export function createNativeWorkspaceTools({
           : name === 'apply_workspace_patch' ? 'patch_publication_incomplete' : 'state_persist_failed',
         ...(compensationError ? { compensation_reason: compensationError.code || 'compensation_failed' } : {}), executed: true, paths: [...mutations] } };
       return { status: 'error', content: { ok: false, error_type: e.code || 'internal_error', error_message: e.message } };
-    } finally { activeMutations = previousMutations; activeGuard = previousGuard; activeCheckpoint = previousCheckpoint;
+    } finally { activeMutations = previousMutations; activeGuard = previousGuard; activeCheckpoint = previousCheckpoint; activeDisplayChanges = previousDisplayChanges;
       activePublications = previousPublications; activeReads = previousReads; release?.(); }
     // The only asynchronous implementation parses captured read-only bytes.
     // Restore mutation tracking before any await so concurrent writers cannot
@@ -1192,6 +1202,8 @@ export function createNativeWorkspaceTools({
       if (reads.size && ['read_workspace_file', 'write_workspace_file', 'write_workspace_files',
         'edit_workspace_file', 'multi_edit_workspace_file', 'apply_workspace_patch'].includes(name))
         out.metadata = { nativeWorkspaceReads: { contract: 'native-workspace-read-observation/v1', tool: name, states: [...reads.values()] } };
+      const presentation = displayChanges.size ? workspaceChangeDisplay(displayChanges) : null;
+      if (presentation) out.metadata = { ...out.metadata, nativeTaskDisplay: presentation };
       // Only mutating tools report workspace-changed paths; reads must not.
       if (mutating) {
         const changed = extractChangedPaths(result);
@@ -1584,7 +1596,7 @@ export function workspaceToolDefinitions() {
         sort_by: { type: 'string', default: 'name', enum: ['name', 'mtime', 'size'] },
       },
       additionalProperties: false,
-    }, { readOnly: true, concurrentSafe: true, contextRole: 'workspace_list', timeoutMs: 30000 }),
+    }, { readOnly: true, concurrentSafe: true, contextRole: 'workspace_list', timeoutMs: 30000, recoveryPolicy: 'safe-read/v1' }),
     def('read_workspace_file', 'Read a UTF-8 workspace file. Inspect the result before editing it. Do not issue a dependent read and edit in the same parallel tool-call batch.', {
       type: 'object',
       properties: {
@@ -1595,7 +1607,7 @@ export function workspaceToolDefinitions() {
         include_line_numbers: { type: 'boolean', default: true },
       },
       required: ['path'], additionalProperties: false,
-    }, { readOnly: true, concurrentSafe: true, contextRole: 'workspace_read', timeoutMs: 30000 }),
+    }, { readOnly: true, concurrentSafe: true, contextRole: 'workspace_read', timeoutMs: 30000, recoveryPolicy: 'safe-read/v1' }),
     def('write_workspace_file', 'Write a UTF-8 text file inside the AgentEngine workspace. Creating a new file needs no prior read; replacing an existing file requires a complete current read or a successful write in this session.', {
       type: 'object',
       properties: {
@@ -1653,7 +1665,7 @@ export function workspaceToolDefinitions() {
         max_results: { type: 'integer', default: 100, minimum: 1, maximum: 5000 },
       },
       required: ['query'], additionalProperties: false,
-    }, { readOnly: true, concurrentSafe: true, contextRole: 'workspace_search', timeoutMs: 60000 }),
+    }, { readOnly: true, concurrentSafe: true, contextRole: 'workspace_search', timeoutMs: 60000, recoveryPolicy: 'safe-read/v1' }),
     def('delete_workspace_file', 'Delete a file or empty directory inside the AgentEngine workspace.', {
       type: 'object',
       properties: { path: { type: 'string' } },
@@ -1699,6 +1711,7 @@ function def(name, description, parameters, opts) {
     observationRole: 'none',
     progressObservation: false,
     contextRetention: 'normal',
+    ...(opts.recoveryPolicy ? { recoveryPolicy: opts.recoveryPolicy } : {}),
     ...(opts.workspacePatchPolicy ? { workspacePatchPolicy: opts.workspacePatchPolicy } : {}),
   };
 }

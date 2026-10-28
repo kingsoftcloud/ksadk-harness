@@ -3,3 +3,5 @@ packages/*/dist/
 .artifacts/
 *.tgz
 .DS_Store
+
+packages/agentkit-harness-ui/markdown/dist/

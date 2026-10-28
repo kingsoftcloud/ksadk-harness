@@ -89,10 +89,11 @@ export async function executeNativeAuxiliaryRun({ run, store, ports, owner, dige
       await check(request.signal);
       return ports.model.generate({ ...request, signal: AbortSignal.any([signal, request.signal]) }, emit);
     } },
-    tools: { async execute(request) {
+    tools: { ...(ports.tools.executionLifecycle ? { executionLifecycle: ports.tools.executionLifecycle } : {}),
+      async execute(request, lifecycle) {
       await check(request.signal);
       assertNativeAuxiliaryToolExecution({ store, run, request });
-      return ports.tools.execute({ ...request, signal: AbortSignal.any([signal, request.signal]) });
+      return ports.tools.execute({ ...request, signal: AbortSignal.any([signal, request.signal]) }, lifecycle);
     }, ...(ports.tools.observeReceipt ? { async observeReceipt(request) {
       await check(request.signal);
       assertNativeAuxiliaryReceiptObservation({ store, run, request });

@@ -5,18 +5,20 @@
   "type": "module",
   "workspaces": [
     "packages/agentkit-harness-core",
-    "packages/agentkit-harness-node"
+    "packages/agentkit-harness-node",
+    "packages/agentkit-harness-ui"
   ],
   "engines": {
     "node": ">=22.19.0"
   },
   "scripts": {
-    "build": "node scripts/build-native-harness.mjs && node scripts/build-native-node.mjs",
+    "build": "node scripts/build-native-harness.mjs && node scripts/build-native-node.mjs && npm run build --workspace @kingsoftcloud/agentkit-harness-ui",
     "test:core": "node --test packages/agentkit-harness-core/test/*.test.mjs",
     "test:node": "node scripts/test-native.mjs",
     "verify:rpc": "node scripts/verify-native-rpc.mjs",
     "test:native": "node scripts/test-native.mjs",
-    "test:browser-live": "node --test packages/agentkit-harness-node/test/native-browser-playwright-live.test.mjs"
+    "test:browser-live": "node --test packages/agentkit-harness-node/test/native-browser-playwright-live.test.mjs",
+    "test:ui": "node --test packages/agentkit-harness-ui/test/*.test.mjs"
   },
   "devDependencies": {
     "esbuild": "0.27.7",

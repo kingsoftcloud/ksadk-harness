@@ -28,7 +28,7 @@ async function observeWhileLive(operation, signal) {
  * Host bindings; they provide already admitted models/tools/workspaces, never
  * an environment/profile fallback. This service does not advertise model tools.
  */
-export function createNativeChildOwner({ scope, childScopes = [scope], store, resolveChild, restoreChild, waitForIdle, canWaitForReceipt, now = Date.now,
+export function createNativeChildOwner({ scope, childScopes = [scope], store, resolveChild, restoreChild, waitForIdle, canWaitForReceipt, onStream, now = Date.now,
   owner = `native-children-${randomUUID()}` }) {
   const parentScope = copy(scope), entries = new Map();
   scopeKey(parentScope);
@@ -85,7 +85,7 @@ export function createNativeChildOwner({ scope, childScopes = [scope], store, re
     const guarded = { ...ports, model: { ...ports.model, generate: (request, emit) => admitted()
       ? ports.model.generate(request, emit) : Promise.resolve({ kind: 'policy_abort', text: '', toolCalls: [],
         usage: { inputTokens: 0, outputTokens: 0, modelCalls: 0, toolCalls: 0, cost: 0 }, usageReported: true }) },
-    tools: { ...ports.tools, execute: request => admitted() ? ports.tools.execute(request)
+    tools: { ...ports.tools, execute: (request, lifecycle) => admitted() ? ports.tools.execute(request, lifecycle)
       : Promise.resolve({ status: 'error', content: { code: 'child_parent_authority_lost', executed: false } }) } };
     for (const [port, method] of [['hooks', 'invoke'], ['verification', 'verify'], ['artifacts', 'write'], ['input', 'prepare']]) {
       if (typeof ports[port]?.[method] !== 'function') continue;
@@ -97,7 +97,7 @@ export function createNativeChildOwner({ scope, childScopes = [scope], store, re
       }
     }
     const entry = { scope: copy(record.snapshot.scope), runId: record.snapshot.runId, configuration: copy(record.configuration),
-      kernel: new NativeKernel({ store, ports: guarded, owner: `${owner}:${record.snapshot.runId}`, digest: hash }),
+      kernel: new NativeKernel({ store, ports: guarded, owner: `${owner}:${record.snapshot.runId}`, digest: hash, onStream }),
       ports, admitted, idle: null, promise: null, error: null };
     entries.set(record.snapshot.runId, entry); return entry;
   };
@@ -376,7 +376,7 @@ export function createNativeChildOwner({ scope, childScopes = [scope], store, re
         const configuration = configure(childConfiguration);
         const childIdentity = { scope: copy(bound.scope), runId, sessionId: childSessionId,
           turnId: '1', buildId: request.buildId, parentRunId: null, taskChainId: source ? runId : request.taskChainId };
-        const kernel = new NativeKernel({ store, ports: bound.ports, owner: `${owner}:${runId}`, digest: hash });
+        const kernel = new NativeKernel({ store, ports: bound.ports, owner: `${owner}:${runId}`, digest: hash, onStream });
         try { kernel.start(childIdentity, configuration, { expectedParentRunId: source?.child.snapshot.runId ?? null }); }
         catch (error) {
           if (source && ['session_head_conflict', 'session_already_active'].includes(error.code))

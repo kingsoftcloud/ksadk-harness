@@ -10,6 +10,8 @@ import { executeArtifactTool, governArtifactResult, isArtifactTool, RUNTIME_ARTI
 import { coordinatorResponseFacts, executeCoordinatorResponse, isCoordinatorResponse, COORDINATOR_RESPONSE_POLICY } from './coordinator-response.mjs';
 import { runnableCommands } from './store.mjs';
 import { NativeError, canonical, copy, invariant, runKey } from './values.mjs';
+import { executeTimedTool } from './tool-execution.mjs';
+import type { ToolDispatchProof, ToolFailureObservation } from './tool-execution.mjs';
 import { reduceCommand, transition } from './transitions.mjs';
 import { addUsage, modelToolCatalog, modelRoom, objectValue, plan, reduceModel, reduceTools, settle, validateModelResult } from './machine.mjs';
 import { browserTaskMessages } from './task-policy.mjs';
@@ -21,6 +23,7 @@ import { effectiveRunConfiguration } from './task-contract.mjs';
 import { prepareToolReceipt, reduceToolReceipt, toolReceiptRequest, waitingToolReceipt } from './tool-receipt.mjs';
 import { prepareWorkspaceRepair, reduceWorkspaceRepair, workspaceRepairRequest } from './workspace-repair.mjs';
 import { recoverClaimed } from './recovery.mjs';
+import { observedEffectFailure } from './effect-diagnostics.mjs';
 import { toolInputRejection } from './tool-input.mjs';
 import { contextSourceDigest, modelContextMessages, validateContextMessages } from './context-view.mjs';
 import { assertHookFeedbackRetained, deniedByHook, reduceHook, stagePostHooks } from './hook-runtime.mjs';
@@ -254,8 +257,10 @@ export class NativeKernel {
     const heartbeat = setInterval(() => {
       try {
         lease = this.store.renew(scope, runId, lease, this.now(), initial.configuration.limits.leaseMs);
-        const command = runnableCommands(this.store.load(scope, runId))[0];
-        if (command && ['cancel', 'policy_revoked'].includes(command.kind)) controller.abort(new NativeError('command_interrupt'));
+        const commands = this.store.pendingCommands?.(scope, runId)
+          ?? runnableCommands(this.store.load(scope, runId));
+        if (commands.some(command => ['cancel', 'policy_revoked'].includes(command.kind)))
+          controller.abort(new NativeError('command_interrupt'));
       } catch (error) { leaseError = error; controller.abort(new NativeError('lease_lost')); }
     }, Math.max(10, Math.floor(initial.configuration.limits.leaseMs / 3)));
     let deliveredRevision = -1;
@@ -469,7 +474,8 @@ export class NativeKernel {
     } catch { return unavailable('browser_recovery_probe_failed'); }
     finally { clearTimeout(timer); probeSignal.removeEventListener('abort', onAbort); }
   }
-  private async recoverEffect(snapshot: RunSnapshot, config: RunConfiguration, intent: EffectIntent, elapsedMs = 0): Promise<CommitBatch> {
+  private async recoverEffect(snapshot: RunSnapshot, config: RunConfiguration, intent: EffectIntent, elapsedMs = 0,
+    observedFacts: { kind: string; payload: ObjectValue }[] = []): Promise<CommitBatch> {
     const stagedCalls = intent.payload.calls as unknown as ToolCall[] | undefined;
     if (intent.kind === 'tool' && stagedCalls?.length && stagedCalls.every(call => this.policies.forRun(config).todo.isTodoCall(config, call) || this.policies.forRun(config).planning.isPlanModeCall(config, call) || isCoordinatorResponse(config, call))) {
       // These controls stage pure values. The fenced receipt commit is the only
@@ -484,7 +490,7 @@ export class NativeKernel {
         : stagedCalls.some(call => this.policies.forRun(config).planning.isPlanModeCall(config, call)) ? this.policies.forRun(config).planning.PLAN_MODE_POLICY : 'session-todos/v1';
       return settle(snapshot, intent, { operationKey: intent.operationKey, status: 'committed',
         result: { results: results as never, recoveryPolicy } }, changes, elapsedMs,
-      [{ kind: 'effect.reconciled', payload: { operationKey: intent.operationKey, policy: recoveryPolicy } },
+      [...observedFacts, { kind: 'effect.reconciled', payload: { operationKey: intent.operationKey, policy: recoveryPolicy } },
         ...coordinatorResponseFacts(snapshot, config, stagedCalls, results, this.digest),
         ...stagedCalls.map((call, index) => ({ kind: results[index]!.status === 'approval_required' ? 'approval.requested' : 'tool.completed', payload: { callId: call.callId,
           name: call.name, status: results[index]!.status, content: results[index]!.content,
@@ -511,7 +517,7 @@ export class NativeKernel {
           const changes = reduceChildLifecycle(snapshot, config, request, result, this.digest, { observationOnly: true });
           return settle(snapshot, intent, { operationKey: intent.operationKey, status: 'committed',
             result: { ...objectValue(result), recoveryPolicy: 'owned-child-observation/v1' } }, changes, 0,
-          [{ kind: 'effect.reconciled', payload: { operationKey: intent.operationKey, policy: 'owned-child-observation/v1' } },
+          [...observedFacts, { kind: 'effect.reconciled', payload: { operationKey: intent.operationKey, policy: 'owned-child-observation/v1' } },
             { kind: 'child.lifecycle_observed', payload: { action: request.action,
               settledChildRunIds: result.results.map(item => item.childBudgetSettlement!.childRunId), pendingChildRunIds: result.pendingChildRunIds } },
             ...childUsageFacts(snapshot, intent.operationKey, result.results)]);
@@ -538,7 +544,7 @@ export class NativeKernel {
           const promotion = this.startupPromotion(snapshot, config, results, changes);
           return { ...settle(snapshot, intent, { operationKey: intent.operationKey, status: 'committed', result: {
             results: results as never, recoveryPolicy: 'owned-child-start/v1' } }, { ...changes, ...promotion?.changes }, elapsedMs,
-          [...promotion?.facts ?? [], { kind: 'effect.reconciled', payload: { operationKey: intent.operationKey, policy: 'owned-child-start/v1' } },
+          [...observedFacts, ...promotion?.facts ?? [], { kind: 'effect.reconciled', payload: { operationKey: intent.operationKey, policy: 'owned-child-start/v1' } },
             ...childUsageFacts(snapshot, intent.operationKey, results), ...toolResourceUsageFacts(intent.operationKey, calls, results),
             ...(promotion ? [{ kind: 'command.applied', payload: { commandId: promotion.commandId, kind: 'promote_child', reason: 'applied' } }] : []),
             { kind: 'tool.completed', payload: { callId: calls[0]!.callId, name: calls[0]!.name, status: results[0]!.status, content: results[0]!.content } }]),
@@ -547,7 +553,7 @@ export class NativeKernel {
       } catch { /* Missing or invalid owner proof remains unknown; no start is repeated. */ }
       finally { clearTimeout(timer); }
     }
-    return recoverClaimed(snapshot, config, intent, this.now());
+    return recoverClaimed(snapshot, config, intent, this.now(), observedFacts);
   }
   private async execute(snapshot: RunSnapshot, configuration: RunConfiguration, intent: EffectIntent, signal: AbortSignal, executionFence: number): Promise<CommitBatch> {
     const started = this.monotonicNow(), abort = new AbortController();
@@ -555,6 +561,12 @@ export class NativeKernel {
     const context: PortContext = { scope: copy(snapshot.scope), runId: snapshot.runId, sessionId: snapshot.sessionId,
       turnId: snapshot.turnId, buildId: snapshot.buildId, parentRunId: snapshot.parentRunId, taskChainId: snapshot.taskChainId,
       operationKey: intent.operationKey, signal: effectSignal, executionFence };
+    const dispatchProofs = new Map<string, ToolDispatchProof>();
+    if (intent.kind === 'tool' && this.ports.tools.executionLifecycle === 'dispatch/v1') {
+      for (const call of intent.payload.calls as unknown as ToolCall[])
+        if (configuration.tools.find(tool => tool.name === call.name)?.executionTimeoutPolicy === 'dispatch/v2')
+          dispatchProofs.set(call.callId, { dispatched: false });
+    }
     const idleModel = intent.kind === 'model' && configuration.profile.streaming !== false
       && configuration.profile.streamTimeoutPolicy === 'idle/v1';
     const portTimeout = intent.kind === 'model' && !idleModel ? configuration.profile.requestTimeoutMs : configuration.limits.effectTimeoutMs;
@@ -602,6 +614,10 @@ export class NativeKernel {
         renewActivity(event);
         // Liveness has no transcript, display, or execution authority.
         if (!effectSignal.aborted && event.kind !== 'activity') capture?.emit(event);
+      }, dispatchProofs, (call, observation) => {
+        if (receiving) facts.push({ kind: 'tool.failure_observed', payload: { contract: 'agentkit.tool-failure/v1',
+          operationKey: intent.operationKey, callId: call.callId, name: call.name,
+          ...observation, observedAtMs: this.now() } });
       });
       raw = objectValue(await Promise.race([operation, aborted]));
       effectSignal.throwIfAborted();
@@ -803,6 +819,13 @@ export class NativeKernel {
       }
     } catch (error) {
       const code = error instanceof NativeError ? error.code : 'effect_port_error';
+      facts.push(observedEffectFailure({ operationKey: intent.operationKey, kind: intent.kind, code,
+        nativeError: error instanceof NativeError, signalAborted: effectSignal.aborted,
+        elapsedMs: this.monotonicNow() - started, initialTimeoutMs: timeoutMs, observedAtMs: this.now(),
+        proofs: [...dispatchProofs.values()] }));
+      // Revoke every late callback before reading the live dispatch proofs.
+      // v1 and crash recovery keep their original conservative classification.
+      if (dispatchProofs.size) abort.abort(error);
       // Cancellation or timeout may win after a child was durably created but
       // before its startup result reached this transaction. Recover that same
       // ownership before a terminal command can discard its budget liability.
@@ -810,9 +833,23 @@ export class NativeKernel {
       if (intent.kind === 'tool' && configuration.childLifecyclePolicy === 'owned-background/v2' && calls?.length === 1
         && ['start/v1', 'delegate/v1'].includes(configuration.tools.find(tool => tool.name === calls[0]!.name)?.childBudgetPolicy ?? '')
         && this.ports.children?.interruptedReceipts) {
-        return await this.recoverEffect(snapshot, configuration, intent, Math.max(0, this.monotonicNow() - started));
+        return await this.recoverEffect(snapshot, configuration, intent, Math.max(0, this.monotonicNow() - started), facts);
       }
-      if (intent.kind === 'tool_receipt' || intent.kind === 'workspace_repair') {
+      const preflightOnly = intent.kind === 'tool' && calls!.length > 0
+        && calls!.every(call => dispatchProofs.has(call.callId) && !dispatchProofs.get(call.callId)!.dispatched);
+      if (preflightOnly) {
+        const results: ToolResult[] = calls!.map(() => ({ status: 'error',
+          content: { code: 'tool_preflight_aborted', executed: false } }));
+        raw = { results: results as never, settlementPolicy: 'dispatch/v2' };
+        changes = stagePostHooks(snapshot, reduceTools(snapshot, results, calls!, intent, configuration, this.digest, this.policies), configuration, calls!, results);
+        facts.push({ kind: 'tool.preflight_aborted', payload: { operationKey: intent.operationKey, reason: code } },
+          ...calls!.map(call => ({ kind: 'tool.completed', payload: { callId: call.callId, name: call.name,
+            status: 'error', content: { code: 'tool_preflight_aborted', executed: false } } })));
+        if (code === 'wall_time_hard_limit') {
+          Object.assign(changes, { phase: 'finalizing', outcome: 'budget_exhausted', reason: code });
+          facts.push({ kind: 'budget.exhausted', payload: { reason: code } });
+        }
+      } else if (intent.kind === 'tool_receipt' || intent.kind === 'workspace_repair') {
         raw = { code }; status = 'failed'; changes = { pendingIntent: null, phase: 'awaiting_reconciliation' };
         facts.push({ kind: intent.kind === 'workspace_repair' ? 'workspace.repair_unavailable' : 'tool.receipt_unavailable',
           payload: { originalOperationKey: intent.payload.originalOperationKey!, reason: code } });
@@ -895,7 +932,8 @@ export class NativeKernel {
       maxInlineImageBytes: configuration.limits.maxInlineImageBytes };
   }
   private async dispatch(context: PortContext, snapshot: RunSnapshot, configuration: RunConfiguration, intent: EffectIntent,
-    emit: (event: ModelStreamEvent) => void): Promise<unknown> {
+    emit: (event: ModelStreamEvent) => void, dispatchProofs?: Map<string, ToolDispatchProof>,
+    onToolFailure?: (call: ToolCall, observation: ToolFailureObservation) => void): Promise<unknown> {
     context.signal.throwIfAborted();
     switch (intent.kind) {
       case 'workspace_repair': {
@@ -956,6 +994,8 @@ export class NativeKernel {
           invariant(definition, 'unbound_tool');
           const rejection = toolInputRejection(definition, call);
           if (rejection) return { status: 'error' as const, content: rejection };
+          if (definition.approvalPolicy && this.ports.tools.approvalPolicy !== definition.approvalPolicy)
+            return { status: 'error' as const, content: { code: 'tool_approval_protocol_unavailable', executed: false } };
           if (deniedByHook(snapshot, call)) return { status: 'error' as const,
             content: { code: 'pre_tool_hook_denied', executed: false } };
           const planDenied = this.policies.forRun(configuration).planning.planModeDenial(snapshot, configuration, call, definition);
@@ -964,15 +1004,12 @@ export class NativeKernel {
           if (configuration.sourceReadPolicy === SOURCE_READ_POLICY && (definition.sourceObservationPolicy || call.name === 'ArtifactRead')
             && !sourceReadBudget) return { status: 'error' as const, content: { code: call.name === 'ArtifactRead'
               ? 'artifact_page_budget_unavailable' : 'source_read_budget_unavailable' } };
-          const deadline = new AbortController(), started = this.monotonicNow();
-          const toolSignal = AbortSignal.any([context.signal, deadline.signal]);
-          const timer = setTimeout(() => deadline.abort(new NativeError('tool_timeout')), definition.timeoutMs);
-          let onAbort = () => {};
-          const aborted = new Promise<never>((_, reject) => {
-            onAbort = () => reject(toolSignal.reason);
-            if (toolSignal.aborted) onAbort(); else toolSignal.addEventListener('abort', onAbort, { once: true });
-          });
-          try {
+          return executeTimedTool({ signal: context.signal, timeoutMs: definition.timeoutMs,
+            onFailure: observation => onToolFailure?.(call, observation),
+            dispatchTimed: definition.executionTimeoutPolicy === 'dispatch/v1' || definition.executionTimeoutPolicy === 'dispatch/v2',
+            dispatchProof: dispatchProofs?.get(call.callId),
+            lifecycleAvailable: this.ports.tools.executionLifecycle === 'dispatch/v1', now: this.monotonicNow,
+            execute: async (toolSignal, lifecycle) => {
             toolSignal.throwIfAborted();
             const request = { ...context, signal: toolSignal,
               ...(this.policies.forRun(configuration).planning.activePlanMode(snapshot, configuration)
@@ -1004,16 +1041,12 @@ export class NativeKernel {
                   ...(singleReadAdmission ? { admitCompleteRead: singleReadAdmission } : {}),
                   ...(artifactCapacity ? { resultMessageUnits: artifactCapacity.resultMessageUnits,
                     countResult: result => artifactCapacity.countResult(call, result) } : {}) } : undefined)
-              : this.ports.tools.execute(request);
+              : this.ports.tools.execute(request, lifecycle);
             };
-            const result = await Promise.race([execute(), aborted]);
+            const result = await execute();
             toolSignal.throwIfAborted();
-            invariant(this.monotonicNow() - started < definition.timeoutMs, 'tool_timeout');
             return await governArtifactResult(request, definition, result, configuration, this.ports.artifacts);
-          } catch {
-            // A thrown/late tool result cannot establish whether its external mutation happened.
-            return { status: 'uncertain' as const, content: { code: 'tool_outcome_unknown' } };
-          } finally { clearTimeout(timer); toolSignal.removeEventListener('abort', onAbort); }
+          } });
         }));
         if (!artifactCapacity || results.length === 1 && singleReadAdmission && await singleReadAdmission(results[0]!)) return { results };
         const selected = await selectArtifactRequestResults(artifactCapacity, calls, results, this.digest);

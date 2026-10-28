@@ -442,8 +442,12 @@ export function reduceTools(snapshot: RunSnapshot, results: ToolResult[], calls:
       invariant(!result.childBudgetReservation && !result.childBudgetSettlement, 'child_budget_before_approval');
       invariant(!toolUsageIncomplete(result) && Object.values(resources[index]!).every(value => value === 0), 'tool_resource_usage_before_approval');
       invariant(typeof result.interactionId === 'string' && result.interactionId.trim(), 'approval_identity_missing');
+      invariant(result.approvalPolicy === undefined || result.approvalPolicy === 'durable-preflight/v1'
+        && config.tools.find(tool => tool.name === call.name)?.approvalPolicy === result.approvalPolicy,
+      'tool_approval_policy_mismatch');
       return { pendingIntent: null, phase: 'awaiting_interaction', pendingInteraction: {
-        interactionId: `${intent.operationKey}:approval`, hostInteractionId: result.interactionId, callId: call.callId, operationKey: intent.operationKey } };
+        interactionId: `${intent.operationKey}:approval`, hostInteractionId: result.interactionId, callId: call.callId, operationKey: intent.operationKey,
+        ...(result.approvalPolicy ? { approvalPolicy: result.approvalPolicy } : {}) } };
     }
     updated.usage.toolCalls += 1;
     Object.assign(updated, policies.reduceTool(updated, config, call, result));
@@ -488,7 +492,7 @@ export function reduceTools(snapshot: RunSnapshot, results: ToolResult[], calls:
     }
     updated.messages.push({ ...(result.context === undefined ? { content: canonical(result.content) } : toolContext(result.context)),
       role: 'tool', callId: call.callId, name: call.name,
-      ...(config.contextPolicy?.pruneToolResults ? { toolOutcome: result.status } : {}),
+      ...(config.contextPolicy?.pruneToolResults || config.contextPolicy?.sourceReusePolicy ? { toolOutcome: result.status } : {}),
       ...(definition?.contextRetention === 'persistent' ? { persistent: true } : {}) });
     if (updated.toolDiscovery && call.name === TOOL_SEARCH && result.status === 'ok'
       && result.content && typeof result.content === 'object' && !Array.isArray(result.content)) {

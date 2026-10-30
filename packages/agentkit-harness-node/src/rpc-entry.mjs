@@ -252,8 +252,7 @@ export function createNativeRpcServer({ startup, store, ledger, owner = startup.
         if (terminal(existing.snapshot)) {
           const response = compactResponse(existing.snapshot);
           try { ledger.complete(ledgerId(requestId), response, key); } catch { /* another driver may have completed it */ }
-          const completed = ledger.lookup(ledgerId(requestId));
-          if (completed?.status === 'completed') return success(id, { runId, status: 'completed', result: completed.response });
+          return success(id, { runId, status: 'completed', result: response });
         }
         drive(runId); return success(id, { runId, status: 'pending' });
       }

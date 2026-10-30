@@ -9,7 +9,9 @@ import ts from 'typescript';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const PUBLIC_REPOSITORY = 'https://github.com/kingsoftcloud/ksadk-harness.git';
 const PUBLIC_REGISTRY = 'https://registry.npmjs.org';
-const permitted = new Set([...builtinModules, ...builtinModules.map(name => `node:${name}`)]);
+// `node:sqlite` is available in the supported Node 22.19+ line but is still
+// experimental and is omitted from `builtinModules` on some patch releases.
+const permitted = new Set([...builtinModules, ...builtinModules.map(name => `node:${name}`), 'node:sqlite']);
 const packages = [
   { path: 'packages/agentkit-harness-core', name: '@kingsoftcloud/agentkit-harness-core',
     dependencies: ['ajv', 'ajv-draft-04', 'ajv-formats'], builtins: false },

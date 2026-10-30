@@ -1,8 +1,8 @@
 name: Publish npm packages
 
 # Configure npm Trusted Publishing for each package with this repository and
-# workflow before creating a release. `NPM_TOKEN` is accepted only as a
-# one-time bootstrap fallback; OIDC is the normal release path.
+# this workflow before creating a release. The job publishes through GitHub
+# Actions OIDC and intentionally has no long-lived npm token fallback.
 on:
   release:
     types: [published]
@@ -26,17 +26,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22.23.4
-          registry-url: https://registry.npmjs.org
           cache: npm
       - name: Upgrade npm for trusted publishing
         run: npm install -g npm@^11.5.1
-      - name: Configure one-time bootstrap token when supplied
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Assert GitHub OIDC publishing context
         run: |
-          if [ -n "$NODE_AUTH_TOKEN" ]; then
-            npm config set //registry.npmjs.org/:_authToken="$NODE_AUTH_TOKEN"
-          fi
+          test -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
+          test -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
       - run: npm ci --ignore-scripts
       - name: Install verified Gitleaks
         run: |
@@ -45,8 +41,6 @@ jobs:
       - run: make public-gate
       - name: Publish packages with provenance
         shell: bash
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
           for package in \

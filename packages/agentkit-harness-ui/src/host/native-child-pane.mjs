@@ -36,7 +36,7 @@ export function installNativeChildPane(ctx, { React, hostRemote, labels, renderT
       : view?.workspaceView === 'parent' && host ? ({ path }) => {
         void Promise.resolve().then(() => host.openFile(path)).catch(() => setError('无法打开子会话文件'));
       } : undefined;
-    return h(SubagentPane, { state: view?.state, labels, loading: !view, error, onOpenFile,
+    return h(SubagentPane, { state: view?.state, labels, locale: 'zh-CN', showPlanDock: false, loading: !view, error, onOpenFile,
       onCopy: text => { void navigator.clipboard.writeText(text).catch(() => setError('无法复制')); },
       omittedRows: view?.omittedRows, omittedChars: view?.omittedChars,
       renderText: (text, meta) => renderText(text, { ...meta, target,

@@ -5,6 +5,34 @@ import { createSessionTaskProjector, nativeTaskState, nativeHistoricalToolState 
 const entry = (seq, type, data) => ({ type: 'event', event: { seq, type, time: 1000 + seq, data: { turn: 1, step: 1, ...data } } });
 const window = (revision, entries, change = { kind: 'replace', entries }) => ({ revision, entries, change });
 
+test('actual Session response boundaries own stream, committed content and tools across append and replay', () => {
+  const projector = createSessionTaskProjector({ sessionId: 'session' });
+  const start = entry(0, 'turn/start', {});
+  const chunks = [entry(1, 'assistant/live-chunk', { attemptId: 'attempt', chunk: { type: 'reasoning-delta', index: 0, text: 'Reason' } }),
+    entry(2, 'assistant/live-chunk', { attemptId: 'attempt', chunk: { type: 'text-delta', index: 1, text: 'Inspect' } }),
+    entry(3, 'assistant/live-chunk', { attemptId: 'attempt', chunk: { type: 'tool-call-delta', index: 2,
+      name: 'browser_inspect_workspace', argumentsDelta: '{"entry":"index.html"}' } })];
+  const streamed = projector.project(window(1, [start, ...chunks]))[0].state;
+  assert.equal(streamed.items.length, 3);
+  assert.deepEqual(new Set(streamed.items.map(item => item.responseId)), new Set(['["session",1,1]']));
+  const message = entry(4, 'assistant/message', { message: { id: 'durable-message', content: [
+    { type: 'reasoning', text: 'Reason' }, { type: 'text', text: 'Inspect' },
+    { type: 'tool-call', id: 'browser', name: 'browser_inspect_workspace', arguments: '{}' }] } });
+  const call = entry(5, 'tool/call', { callId: 'browser', name: 'browser_inspect_workspace', arguments: '{}' });
+  const settled = [start, ...chunks, message, call];
+  const committed = projector.project(window(2, settled, { kind: 'append', entries: [message, call] }))[0].state;
+  assert.equal(committed.items.some(item => item.kind === 'tool-preview'), false);
+  assert.deepEqual(committed.items.map(item => item.responseId), ['["session",1,1]', '["session",1,1]', '["session",1,1]']);
+  assert.equal(committed.items[0].sourceMessageId, 'durable-message');
+  const later = entry(6, 'assistant/live-chunk', { step: 2, chunk: { type: 'text-delta', index: 0, text: 'Next' } });
+  const appended = projector.project(window(3, [...settled, later], { kind: 'append', entries: [later] }));
+  assert.equal(appended[0].state.items.at(-1).responseId, '["session",1,2]');
+  assert.deepEqual(createSessionTaskProjector({ sessionId: 'session' }).project(window(4, [...settled, later])), appended);
+  const missing = structuredClone(call); delete missing.event.data.step;
+  assert.equal(createSessionTaskProjector({ sessionId: 'session' }).project(window(1, [missing]))[0].state.items[0].responseId, undefined);
+  assert.equal(createSessionTaskProjector().project(window(1, [call]))[0].state.items[0].responseId, undefined);
+});
+
 test('command previews enrich only an unsettled matching call and cannot replace final command output', () => {
   const state = createSessionTaskProjector().project(window(1, [entry(1, 'tool/call', {
     callId: 'command', name: 'run_command', arguments: '{"command":"controlled"}' })]))[0].state;
@@ -212,4 +240,13 @@ test('closed Native background interruption replays as interrupted and unverifie
   assert.deepEqual(createSessionTaskProjector().project(window(2, rows))[0].state, state);
   const unrelated = structuredClone(rows); unrelated[1].event.data.reason.error.code = 'constructor';
   assert.equal(createSessionTaskProjector().project(window(1, unrelated))[0].state.taskState, 'failed');
+});
+
+test('retired browser closure stays interrupted and unknown on both live projection and cold replay',()=>{
+ const rows=[entry(0,'turn/start',{}),entry(1,'turn/end',{reason:{kind:'error',
+  error:{code:'NATIVE_RESOURCE_RESULT_UNKNOWN',message:'operator disposition'}}})];
+ const state=createSessionTaskProjector().project(window(1,rows))[0].state;
+ assert.equal(state.taskState,'interrupted');assert.equal(state.taskOutcome,'unverified');assert.equal(state.taskError,null);
+ assert.match(state.taskSummary,/原操作结果仍未知/);
+ assert.deepEqual(createSessionTaskProjector().project(window(2,rows))[0].state,state);
 });

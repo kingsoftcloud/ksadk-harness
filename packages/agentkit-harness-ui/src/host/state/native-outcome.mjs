@@ -20,7 +20,9 @@ export function nativeRunPresentation(status) {
   if (status.phase === 'interrupted' && status.reason === 'effect_outcome_unknown')
     return { label: '执行中断，结果待核对', detail: '原操作结果尚未确认。请在运行与子任务中核对处置方式；不会自动重跑原操作。' };
   if (nativeRunIsInactive(status) && !['completed', 'paused', 'awaiting_interaction', 'awaiting_reconciliation'].includes(status.phase))
-    return { label: '执行中断，等待恢复', detail: '原运行已没有活动执行者；恢复原任务后才会继续。已提交的回执保持不变。' };
+    return status.canResume === true
+      ? { label: '执行中断，等待恢复', detail: '原运行已没有活动执行者；恢复原任务后才会继续。已提交的回执保持不变。' }
+      : { label: '任务已中断', detail: status.error?.message || '原运行已停止。请查看运行记录和当前可用操作。' };
   if (status.phase !== 'completed') return { label: phases[status.phase] || '处理中', detail: '' };
   if (status.outcome === 'failed' || status.outcome === 'budget_exhausted') return { label: '任务未完成', detail: '本轮已结束，任务未完成。请查看错误、预算和结果记录。' };
   if (status.outcome === 'verified') return { label: '任务已验证', detail: '任务已通过本次配置的验证检查；验证范围以结果证据为准。' };

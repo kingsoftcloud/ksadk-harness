@@ -8,6 +8,7 @@ import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { localControlSettings, resolveLocalProcessLauncher } from './local-process.mjs';
 import { localEnvironmentPolicy, localOutputPolicy } from './local-output-policy.mjs';
+import { shellCommandArgv } from './command-shell.mjs';
 import { LOCAL_BACKGROUND_CONTRACT, START_GRACE_MS, TERMINAL, LocalCommandError,
   check, createPrivate, delay, digest, fsyncPrivate, lockUntil, openPrivate, privateDirectory, privateFile,
   readAll, readRecord, readWindow, syncDirectory, tryLock, unknownRecord, validId, writeRecord } from './local-command-state.mjs';
@@ -23,7 +24,7 @@ const deadline = () => performance.now() + START_GRACE_MS;
 // normalized settings object (and thus the request digest) is byte-identical
 // to legacy when no policy is supplied. Omit absent policies: canonical
 // serialization rejects undefined, and the digest must stay deterministic.
-export function commandRequest({ command, cwd, env, timeoutMs, settings = {}, outputPolicy = null, environmentPolicy = null } = {}) {
+export function commandRequest({ command, cwd, env, timeoutMs, settings = {}, outputPolicy = null, environmentPolicy = null, shellPolicy = null } = {}) {
   settings = localControlSettings(settings);
   const outPolicy = localOutputPolicy(outputPolicy);
   const envPolicy = localEnvironmentPolicy(environmentPolicy);
@@ -36,6 +37,8 @@ export function commandRequest({ command, cwd, env, timeoutMs, settings = {}, ou
   const request = { command, cwd: resolve(cwd), env: Object.fromEntries(Object.entries(env)), timeoutMs, settings };
   if (outPolicy) request.outputPolicy = outPolicy;
   if (envPolicy) request.environmentPolicy = envPolicy;
+  shellCommandArgv(command, shellPolicy);
+  if (shellPolicy) request.shellPolicy = shellPolicy;
   check(Buffer.byteLength(JSON.stringify(request)) <= 1024 * 1024, 'background_command_request_too_large');
   return request;
 }

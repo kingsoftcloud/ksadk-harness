@@ -1,8 +1,12 @@
 import { validateModelSurface } from '@kingsoftcloud/agentkit-harness-core';
 
 /** The tool owner supplies actual roots; neither process.cwd nor ambient host prompt data is a fallback. */
-export function bindNativeModelSurface({ environment, description, original } = {}) {
-  const modelSurface = { contract: 'bound-model-surface/v1', environment: { ...structuredClone(environment),
+export function bindNativeModelSurface({ environment, description, original, executionCapabilities } = {}) {
+  const modelSurface = { contract: 'bound-model-surface/v1',
+    ...(original === undefined ? {verificationProjection:'readable-evidence/v1'}
+      : original.verificationProjection ? {verificationProjection:original.verificationProjection} : {}),
+    ...(executionCapabilities === undefined ? {} : { executionCapabilities: structuredClone(executionCapabilities) }),
+    environment: { ...structuredClone(environment),
     date: original?.environment.date ?? new Date().toISOString().slice(0, 10),
     supportsImages: description.input.includes('image') } };
   validateModelSurface(modelSurface);

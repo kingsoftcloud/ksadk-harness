@@ -192,7 +192,7 @@ test('normalizing invalid UTF-8 cannot expand either preview or persisted output
 // --- Restricted env default excludes HOME/secrets; explicit local env includes basic names ---
 
 test('default (no environmentPolicy) excludes HOME and secrets from the script environment', () => {
-  const env = buildScriptEnvironment({ HOME: '/users/me', SECRET_KEY: 'leak', PATH: '/bin', API_TOKEN: 'x' },
+  const env = buildScriptEnvironment({ HOME: '/tmp/native-home', SECRET_KEY: 'leak', PATH: '/bin', API_TOKEN: 'x' },
     { settings: localControlSettings({}) });
   assert.equal(env.HOME, undefined);
   assert.equal(env.SECRET_KEY, undefined);
@@ -201,24 +201,24 @@ test('default (no environmentPolicy) excludes HOME and secrets from the script e
   assert.equal(env.CI, '1');
 });
 test('local-development environmentPolicy admits only the basic names, never full process.env', () => {
-  const source = { HOME: '/users/me', USER: 'me', LOGNAME: 'me', TMPDIR: '/tmp', USERPROFILE: '/Users/me',
+  const source = { HOME: '/tmp/native-home', USER: 'me', LOGNAME: 'me', TMPDIR: '/tmp', USERPROFILE: '/tmp/native-profile',
     SECRET_KEY: 'leak', PATH: '/bin', NODE_OPTIONS: 'injected' };
   const env = buildScriptEnvironment(source,
     { settings: localControlSettings({}), environmentPolicy: { version: environmentPolicyVersion } });
-  assert.equal(env.HOME, '/users/me');
+  assert.equal(env.HOME, '/tmp/native-home');
   assert.equal(env.USER, 'me');
   assert.equal(env.LOGNAME, 'me');
   assert.equal(env.TMPDIR, '/tmp');
-  assert.equal(env.USERPROFILE, '/Users/me');
+  assert.equal(env.USERPROFILE, '/tmp/native-profile');
   assert.equal(env.SECRET_KEY, undefined);
   assert.equal(env.NODE_OPTIONS, undefined);
   assert.equal(env.PATH, '/bin');
 });
 test('environmentPolicy with a subset of names admits only that subset', () => {
-  const source = { HOME: '/users/me', USER: 'me', TMPDIR: '/tmp', LOGNAME: 'me', USERPROFILE: '/u' };
+  const source = { HOME: '/tmp/native-home', USER: 'me', TMPDIR: '/tmp', LOGNAME: 'me', USERPROFILE: '/u' };
   const env = buildScriptEnvironment(source,
     { settings: localControlSettings({}), environmentPolicy: { names: ['HOME', 'TMPDIR'] } });
-  assert.equal(env.HOME, '/users/me');
+  assert.equal(env.HOME, '/tmp/native-home');
   assert.equal(env.TMPDIR, '/tmp');
   assert.equal(env.USER, undefined);
   assert.equal(env.LOGNAME, undefined);

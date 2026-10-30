@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, readdirSync, mkdirSync, copyFileSync, chmodSync, statSync, realpathSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync, mkdirSync, copyFileSync, chmodSync, statSync, realpathSync, rmSync } from 'node:fs';
 import { resolve, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const packages = ['agentkit-harness-core', 'agentkit-harness-node', 'agentkit-harness-ui'];
 const supporting = ['build-native-harness.mjs', 'build-native-node.mjs', 'build-command-plan.mjs',
-  'check-local-process-launcher.mjs'].map(name => `scripts/${name}`);
+  'check-local-process-launcher.mjs', 'native-command-plan-entry.mjs'].map(name => `scripts/${name}`);
 const skipped = new Set(['node_modules', 'dist', '.artifacts', '.DS_Store']);
 const sha = value => createHash('sha256').update(value).digest('hex');
 function inventory(directory, prefix = '') {
@@ -23,7 +23,7 @@ const packageFacts = source => packages.map(name => {
   const files = inventory(join(source, 'packages', name));
   return { name, files: files.length, sha256: sha(JSON.stringify(files)) };
 });
-const snapshotPath = join(root, 'docs/native-source-snapshot.json');
+const snapshotPath = join(root, 'scripts/native-source-snapshot.json');
 const args = process.argv.slice(2);
 if (args.length === 1 && args[0] === '--check') {
   const snapshot = JSON.parse(readFileSync(snapshotPath, 'utf8'));
@@ -55,6 +55,11 @@ if (args.length === 1 && args[0] === '--check') {
     try { previous = JSON.parse(readFileSync(snapshotPath, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     const unchanged = new Set(packageFacts(root).filter(item => previous?.packages.some(old => old.name === item.name
       && old.sha256 === item.sha256)).map(item => item.name));
+    const sourceFiles = new Set(files);
+    const retired = packages.flatMap(name => inventory(join(root, 'packages', name))
+      .map(file => `packages/${name}/${file.path}`).filter(file => !sourceFiles.has(file)));
+    for (const file of retired) if (!packages.some(name => file.startsWith(`packages/${name}/`) && unchanged.has(name)))
+      throw Error(`Destination has an independent retired source: ${file}`);
     for (const file of changes) if (dirty.includes(file)) {
       const managed = packages.some(name => file.startsWith(`packages/${name}/`) && unchanged.has(name))
         || previous?.supporting.some(old => old.path === file && old.sha256 === sha(readFileSync(join(root, file))));
@@ -64,6 +69,7 @@ if (args.length === 1 && args[0] === '--check') {
       const target = join(root, file); mkdirSync(dirname(target), { recursive: true });
       copyFileSync(join(source, file), target); chmodSync(target, statSync(join(source, file)).mode & 0o777);
     }
+    for (const file of retired) rmSync(join(root, file));
     const revision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: source, encoding: 'utf8' }).trim();
     if (JSON.stringify(packageFacts(source)) !== JSON.stringify(packageFacts(root)))
       throw Error('Destination contains extra source files; review them before recording the snapshot');

@@ -3,6 +3,7 @@ import { createNativeChildrenState } from './state/native-children.mjs';
 import { createNativeRecoveryState } from './state/native-recovery.mjs';
 import { createNativeA2aPanel } from './native-a2a.mjs';
 import { nativeRunPresentation } from './state/native-outcome.mjs';
+import { createNativeSessionStop } from './state/native-session-stop.mjs';
 
 const phases = { created: '已准备', preparing: '准备中', requesting_model: '推理中', requesting_context: '整理上下文',
   requesting_input: '读取输入', executing_tools: '执行工具', awaiting_interaction: '等待审批', paused: '已暂停',
@@ -20,11 +21,19 @@ export function createNativeChildPanel({ ui: { React: { createElement: h, useEff
   const ContextStatus = createContextStatus({ createElement: h });
   const A2aTask = createNativeA2aPanel({ React: { createElement: h, useEffect, useState }, hostRemote, buttonStyle });
   const DshA2aPanel = createForeignRuntimePanel({ ui: { React: { createElement: h, useEffect, useState, Fragment }, ResourceDialog, buttonStyle }, hostRemote });
-  function TaskPanel({ agentId, sessionId }) {
+  function TaskPanel({ agentId, sessionId, transportRunning, requestSessionStop }) {
     const [controller, setController] = useState(null), [state, setState] = useState({ page: null, detail: null }), [open, setOpen] = useState(false);
     const [drafts, setDrafts] = useState({});
     const [backgroundStopped, setBackgroundStopped] = useState(false);
     const [recovery, setRecovery] = useState(null), [recoveryState, setRecoveryState] = useState({ status: null });
+    const [stop, setStop] = useState(null), [stopState, setStopState] = useState({ visible: false });
+    useEffect(() => {
+      if (typeof requestSessionStop !== 'function') { setStop(null); setStopState({ visible: false }); return; }
+      const next = createNativeSessionStop({ sessionId, requestStop: requestSessionStop });
+      setStop(next); setStopState(next.getSnapshot()); const unsubscribe = next.subscribe(setStopState);
+      return () => { unsubscribe(); next.dispose(); };
+    }, [sessionId, requestSessionStop]);
+    useEffect(() => { stop?.observe(recoveryState.status, transportRunning); }, [stop, recoveryState.status, transportRunning]);
     useEffect(() => {
       const next = createNativeRecoveryState({ hostRemote, agentId, sessionId });
       setRecovery(next); setRecoveryState(next.getSnapshot()); const stop = next.subscribe(setRecoveryState);
@@ -53,6 +62,9 @@ export function createNativeChildPanel({ ui: { React: { createElement: h, useEff
       && recoveryState.status?.outcome === 'unverified' && recoveryState.status?.verificationRequired === false;
     return h(Fragment, null,
       presentation && !ordinaryEnd ? h('span', { role: 'status', title: presentation.detail, 'aria-label': 'Native 任务状态', style: { fontSize: '12px', marginRight: '8px' } }, presentation.label) : null,
+      stopState.visible ? h('button', { type: 'button', style: buttonStyle(), disabled: !stopState.canStop,
+        onClick: () => void stop?.request() }, ['requesting', 'requested'].includes(stopState.phase) ? '正在停止…' : '停止当前任务') : null,
+      stopState.visible && stopState.error ? h('span', { role: 'alert' }, stopState.error) : null,
       h('button', { type: 'button', style: buttonStyle(), onClick: () => setOpen(true) }, '运行与子任务'),
       open ? h(ResourceDialog, { title: '本会话的运行与子任务', detail: '查看运行用量、恢复状态及各轮子任务。子任务结果仍需父任务验收。', wide: true, onClose: () => setOpen(false) },
         h('button', { type: 'button', style: buttonStyle(), disabled: !controller || state.loading, onClick: () => { void controller?.refresh(); void recovery?.refresh(); } }, state.loading ? '读取中…' : '刷新'),
@@ -122,6 +134,10 @@ export function createNativeChildPanel({ ui: { React: { createElement: h, useEff
             h('button', { type: 'button', style: buttonStyle(),
               disabled: recoveryState.sending || !backgroundStopped && !recoveryState.status.backgroundInterruptionReview,
               onClick: () => void recovery.reviewBackground() }, '结束等待并保留未知结果')) : null,
+          recoveryState.status.canRetireResources && !recoveryState.pending ? h('section', { 'aria-label': '隔离旧浏览器资源' },
+            h('p', null, '可隔离旧浏览器并结束本轮，之后获取新的页面观察。原动作结果仍为未知，不会重放。'),
+            h('button', {type:'button',style:buttonStyle(),disabled:recoveryState.sending,
+              onClick:()=>void recovery.retireResources()}, '隔离旧浏览器并继续新一轮')) : null,
           recoveryState.status.canRepairWorkspace && !recoveryState.pending ? h('details', null,
             h('summary', null, '无法取得文件操作结果？'),
             h('p', null, '可撤销这次未确认操作的文件修改，再继续原运行。已被外部修改的文件会阻止撤销；请优先核对原结果。'),
@@ -160,7 +176,7 @@ export function createNativeChildPanel({ ui: { React: { createElement: h, useEff
             : h('p', null, detail.task.phase === 'interrupted' ? '结果未知，需要恢复核对。不会自动重跑副作用。' : '尚无安全封存且已结算的结果。'),
           !detail.complete ? h('button', { type: 'button', disabled: state.reading, style: buttonStyle(), onClick: () => void controller.read(detail.task, true) }, '继续读取结果') : null) : null) : null);
   }
-  return function NativeChildPanel({ sessionId, useSessions }) {
+  return function NativeChildPanel({ sessionId, useSessions, requestSessionStop }) {
     const session = useSessions(state => state?.byId?.[sessionId]), presetId = session?.projectionValues?.agentPreset;
     const [agent, setAgent] = useState(null);
     useEffect(() => {
@@ -179,7 +195,8 @@ export function createNativeChildPanel({ ui: { React: { createElement: h, useEff
     }, [sessionId, presetId]);
     return agent?.sessionId === sessionId && agent?.presetId === presetId
       ? h(Fragment, null, agent.runtime === 'harness'
-        ? h(TaskPanel, { key: `${agent.id}:${sessionId}`, agentId: agent.id, sessionId }) : null,
+        ? h(TaskPanel, { key: `${agent.id}:${sessionId}`, agentId: agent.id, sessionId,
+          transportRunning: session?.running === true, requestSessionStop }) : null,
         h(DshA2aPanel, { key: `a2a:${agent.id}:${sessionId}`, agentId: agent.id, sessionId })) : null;
   };
 }

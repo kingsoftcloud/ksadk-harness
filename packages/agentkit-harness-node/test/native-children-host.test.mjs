@@ -1,18 +1,79 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { NativeKernel, MemoryRunStore, emptyUsage, admittedToolBudget } from '@kingsoftcloud/agentkit-harness-core';
+import { NativeKernel, MemoryRunStore, emptyUsage, admittedToolBudget, canonical } from '@kingsoftcloud/agentkit-harness-core';
 import { nativeChildToolDefinitions } from '@kingsoftcloud/agentkit-harness-node/native/child-tools';
-import { workspaceToolDefinitions } from '@kingsoftcloud/agentkit-harness-node/native/workspace-tools';
-import { fixture, scope, digest } from '../../agentkit-harness-core/test/fixtures.mjs';
+import { workspaceToolDefinitions, createNativeWorkspaceTools } from '@kingsoftcloud/agentkit-harness-node/native/workspace-tools';
+import { mkdtemp, mkdir, realpath, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { nativeWorkspaceContextBinding } from '../src/native/workspace-context.mjs';
+import { createStudioNativeChildWorkspaces } from '../src/native/child-workspace-binding.mjs';
+import { fixture, scope, digest, verificationReport } from '../../agentkit-harness-core/test/fixtures.mjs';
 import { createNativeChildren, nativeChildRoles } from '../src/native/children.mjs';
 
-test('two standalone child admissions share the parent ledger, reserve finalization and freeze child-owned model facts', { timeout: 10000 }, async t => {
+for (const isolated of [false, true]) test(`child models use current root and discovered scoped guidance in their ${isolated ? 'isolated write' : 'shared read'} workspace`, { timeout: 10000 }, async t => {
+  const directory = await mkdtemp(join(await realpath(tmpdir()), 'child-current-instructions-'));
+  const root = join(directory, 'workspace'); await mkdir(join(root, 'pkg'), { recursive: true });
+  await writeFile(join(root, 'AGENTS.md'), 'CHILD_ROOT_RULE');
+  await writeFile(join(root, 'pkg', 'AGENTS.md'), 'CHILD_NESTED_RULE');
+  await writeFile(join(root, 'pkg', 'file.ts'), 'export const value = 1;\n');
+  const store = new MemoryRunStore(), roles = nativeChildRoles({ subAgents: [{ name: 'reader',
+    instructions: 'Inspect the assigned file.', maxTurns: 4, concurrentSafe: !isolated,
+    tools: ['read_workspace_file', ...(isolated ? ['write_workspace_file'] : [])] }] });
+  let models = 0, childRoot;
+  const contextPolicy = { tokenizerId: 'child', tokenizerDigest: 'child/v1', enabled: false, triggerRatio: .9, targetRatio: .5,
+    summaryMaxTokens: 100, maxCompactions: 1, maxCompactionsWithoutProgress: 1, minModelTurnsBetween: 1, maxSummaryRetries: 1 };
+  const children = await createNativeChildren({ roles, scope, sessionId: 'session', store, tools: workspaceToolDefinitions(),
+    workspaceContext: nativeWorkspaceContextBinding(root, { instructionRoots: [] }),
+    fileWorkspaces: createStudioNativeChildWorkspaces({ workspaceRoot: root, stateDir: join(directory, 'isolated') }),
+    resolveModel: async () => ({ profile: fixture().config.profile, supportsImages: false, contextPolicy,
+      context: { tokens: { tokenizerId: 'child', tokenizerDigest: 'child/v1',
+        countText: async ({ text }) => Math.ceil(text.length / 4),
+        countRequest: async ({ messages }) => Math.ceil(canonical(messages).length / 4) } },
+      model: { generate: async request => {
+        models++;
+        assert.match(canonical(request.messages), /CHILD_ROOT_RULE/);
+        assert.equal(canonical(request.messages).includes('CHILD_NESTED_RULE'), models > 1);
+        if (models === 1) return { kind: 'tool_calls', text: '', usage: emptyUsage(),
+          toolCalls: [{ callId: 'child-read', name: 'read_workspace_file', arguments: { path: 'pkg/file.ts' } }] };
+        return { kind: 'final_candidate', text: 'Inspected.', toolCalls: [], usage: emptyUsage() };
+      } } }),
+    bindTools: options => {
+      childRoot = options.workspaceRoot ?? root;
+      const workspace = createNativeWorkspaceTools({ workspaceRoot: childRoot, stateDir: join(directory, 'read-state'), sessionId: options.sessionId });
+      return { tools: { execute: request => workspace.execute(request) } };
+    },
+    verificationFactory: async () => ({ verify: async request => verificationReport(request, { checks: [] }) }),
+  });
+  t.after(async () => { await children.owner.releaseRun({ scope, runId: 'run' }); await rm(directory, { recursive: true, force: true }); });
+  const start = nativeChildToolDefinitions(['reader'])[0];
+  const { config, snapshot } = fixture({ tools: [start], childLifecyclePolicy: 'owned-background/v2', limits: { effectTimeoutMs: 130000 } });
+  let rounds = 0;
+  const kernel = new NativeKernel({ store, digest, owner: 'parent', ports: { children: children.owner,
+    tools: { execute: request => children.execute(request) }, model: { generate: async () => ++rounds === 1
+      ? { kind: 'tool_calls', text: '', usage: emptyUsage(), toolCalls: [{ callId: 'start', name: start.name,
+        arguments: { role: 'reader', task: 'Inspect pkg/file.ts.', background: false } }] }
+      : { kind: 'final_candidate', text: 'Delivered.', toolCalls: [], usage: emptyUsage() } } } });
+  kernel.start(snapshot, config);
+  const done = await kernel.runUntilIdle(scope, 'run');
+  assert.equal(done.phase, 'completed', canonical({ reason: done.reason, models }));
+  assert.equal(models, 2);
+  assert.equal(childRoot === root, !isolated);
+  const childScope = { ...scope, agentId: scope.agentId + ':child:reader' };
+  const child = store.load(childScope, store.list(childScope)[0].runId);
+  assert.equal(child.snapshot.phase, 'completed');
+  assert.equal(child.configuration.hostRecoveryBinding.workspaceContext.workspaceRoot, childRoot);
+  assert.deepEqual(child.snapshot.context.instructionScopes.directories, ['', 'pkg']);
+  assert.doesNotMatch(canonical(child.snapshot.messages), /CHILD_ROOT_RULE|CHILD_NESTED_RULE/);
+});
+
+for (const toolExecutionPolicy of [undefined,'owner-execution/v1']) test(`two standalone child admissions freeze parent execution policy (${toolExecutionPolicy??'legacy'}) and child-owned model facts`, { timeout: 10000 }, async t => {
   const policy = 'parent-shared/v1', store = new MemoryRunStore();
   const roles = nativeChildRoles({ subAgents: [{ name: 'reader', instructions: 'Inspect assigned evidence.',
     tools: ['read_workspace_file'] }] }, { childAllocationPolicy: policy });
   let release; const gate = new Promise(resolve => { release = resolve; });
   const children = await createNativeChildren({ roles, scope, sessionId: 'session', store,
-    childAllocationPolicy: policy, tools: workspaceToolDefinitions(), hasSkills: false, hasMcp: false,
+    childAllocationPolicy: policy, toolExecutionPolicy, tools: workspaceToolDefinitions(), hasSkills: false, hasMcp: false,
     modelSurface: { contract: 'bound-model-surface/v1', environment: { workspaceRoot: '/bound/work', cwd: '/bound/work',
       platform: 'linux', date: '2026-10-28', commandBackend: 'none', supportsImages: true } },
     resolveModel: async () => ({ profile: { ...fixture().config.profile, supportsImages: false, requestTimeoutMs: 60000 }, supportsImages: false,
@@ -47,6 +108,7 @@ test('two standalone child admissions share the parent ledger, reserve finalizat
   for (const reservation of held.childBudgetReservations) {
     assert.equal(reservation.settledUsageDigest, null);
     const child = store.load(reservation.childScope, reservation.childRunId);
+    assert.equal(child.configuration.toolExecutionPolicy,toolExecutionPolicy);
     assert.equal(child.configuration.childOwnerBinding.childAllocationPolicy, policy);
     assert.equal(child.configuration.modelSurface.environment.cwd, '/bound/work');
     assert.equal(child.configuration.modelSurface.environment.supportsImages, false);

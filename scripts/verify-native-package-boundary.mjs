@@ -14,7 +14,7 @@ const packages = [
   { path: 'packages/agentkit-harness-node', name: '@kingsoftcloud/agentkit-harness-node',
     dependencies: ['@kingsoftcloud/agentkit-harness-core', '@astral-sh/ruff-wasm-nodejs', 'parse5', 'playwright-core', 'pngjs', 'diff'], builtins: true },
   { path: 'packages/agentkit-harness-ui', name: '@kingsoftcloud/agentkit-harness-ui',
-    dependencies: ['react', 'react-dom'], builtins: false, source: true },
+    dependencies: ['@kingsoftcloud/agentkit-harness-core', 'react', 'react-dom'], builtins: false, source: true },
 ];
 const results = [];
 for (const item of packages) {

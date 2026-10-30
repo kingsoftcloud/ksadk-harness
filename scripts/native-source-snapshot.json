@@ -1,0 +1,47 @@
+{
+  "schemaVersion": "agentkit.native-source-snapshot/v1",
+  "source": {
+    "repository": "agentkit-studio",
+    "revision": "48e5408519a62f4e72128dda246a39d38e7e2ff4",
+    "containsUncommittedChanges": false
+  },
+  "packages": [
+    {
+      "name": "agentkit-harness-core",
+      "files": 198,
+      "sha256": "997165d826465723ed9cf9b816e89c9441b4777bdc054471c0a50f6b4f03d9f4"
+    },
+    {
+      "name": "agentkit-harness-node",
+      "files": 252,
+      "sha256": "8f91cb07cac0bc531c60d922cff188dc3b34c2e1b6815828bfc84daff315a300"
+    },
+    {
+      "name": "agentkit-harness-ui",
+      "files": 94,
+      "sha256": "4c7d3c35d31b3cda78fcb7d80bb69f2939db57059701a0c26dc720b8989229b6"
+    }
+  ],
+  "supporting": [
+    {
+      "path": "scripts/build-native-harness.mjs",
+      "sha256": "f57f7b2a720f587469cf257e5ad3b0f9efcda69a8b9f0430dff7cd0ec5bd28f0"
+    },
+    {
+      "path": "scripts/build-native-node.mjs",
+      "sha256": "63c87b41955e338d4d960453807fe491806ec5a24d54d746b8afcdcd6bd91420"
+    },
+    {
+      "path": "scripts/build-command-plan.mjs",
+      "sha256": "85ed19f78c619fb9a75cd98e7edd84885f2be4be2646f9b8bf0bd2eba2b7b05f"
+    },
+    {
+      "path": "scripts/check-local-process-launcher.mjs",
+      "sha256": "0f86b4abca790a2cd8907a505d516c95a688bb33ec1083d9b2f267c0cf080b86"
+    },
+    {
+      "path": "scripts/native-command-plan-entry.mjs",
+      "sha256": "6d0b81b7bd65bb52d2926359cfec518adb1747dac920d5a6ae3901d709cbff1f"
+    }
+  ]
+}

@@ -1,13 +1,25 @@
-import type { Message, RunConfiguration } from './contracts.mjs';
+import type { ArtifactRef, Message, RunConfiguration, VerificationReport } from './contracts.mjs';
 import { canonical, copy, invariant } from './values.mjs';
 
 /** Facts are supplied by the execution owner, never inferred from prompt prose. */
+export interface WorkspaceBrowserCapability {
+  contract: 'agentkit.workspace-browser-capability/v1'; toolName: 'browser_inspect_workspace';
+  availability: 'available' | 'unavailable'; networkPolicy: 'workspace-origin/v1';
+  servedFiles: 'entry-directory/v1'; externalNetwork: false; viewport: [1280, 720];
+}
 export interface ModelSurface {
   contract: 'bound-model-surface/v1';
+  verificationProjection?: 'readable-evidence/v1';
+  executionCapabilities?: WorkspaceBrowserCapability[];
   environment: {
     workspaceRoot: string; cwd: string; platform: string; date: string;
     commandBackend: 'local_process' | 'e2b' | 'none';
     commandCwd?: string; environmentNames?: string[];
+    commandResources?: {
+      contract: 'agentkit.local-resource-profile/v1'; profile: 'bounded/v1' | 'local-development/v1';
+      requestedLimits: { cpuSeconds: number; addressSpaceBytes: number; maxProcesses: number;
+        maxOpenFiles: number; maxFileBytes: number; wallSeconds: number };
+    };
     supportsImages: boolean;
   };
 }
@@ -15,10 +27,22 @@ const bytes = (value: unknown): number => new TextEncoder().encode(canonical(val
 export function validateModelSurface(surface: ModelSurface | undefined): void {
   if (surface === undefined) return;
   invariant(surface && surface.contract === 'bound-model-surface/v1'
-    && Object.keys(surface).every(key => ['contract', 'environment'].includes(key)), 'invalid_model_surface');
+    && Object.keys(surface).every(key => ['contract', 'environment', 'verificationProjection', 'executionCapabilities'].includes(key))
+    && (surface.verificationProjection === undefined || surface.verificationProjection === 'readable-evidence/v1'), 'invalid_model_surface');
   const env = surface.environment;
+  if (surface.executionCapabilities !== undefined) {
+    invariant(Array.isArray(surface.executionCapabilities) && surface.executionCapabilities.length <= 64
+      && new Set(surface.executionCapabilities.map(item => item?.toolName)).size === surface.executionCapabilities.length
+      && surface.executionCapabilities.every(item => item
+        && Object.keys(item).sort().join(',') === 'availability,contract,externalNetwork,networkPolicy,servedFiles,toolName,viewport'
+        && item.contract === 'agentkit.workspace-browser-capability/v1' && item.toolName === 'browser_inspect_workspace'
+        && ['available', 'unavailable'].includes(item.availability) && item.networkPolicy === 'workspace-origin/v1'
+        && item.servedFiles === 'entry-directory/v1' && item.externalNetwork === false
+        && Array.isArray(item.viewport) && item.viewport.length === 2
+        && item.viewport[0] === 1280 && item.viewport[1] === 720), 'invalid_execution_capabilities');
+  }
   invariant(env && Object.keys(env).every(key => ['workspaceRoot', 'cwd', 'platform', 'date', 'commandBackend',
-    'commandCwd', 'environmentNames', 'supportsImages'].includes(key))
+    'commandCwd', 'environmentNames', 'commandResources', 'supportsImages'].includes(key))
     && ['workspaceRoot', 'cwd', 'platform', 'date'].every(key => typeof env[key as keyof typeof env] === 'string'
       && String(env[key as keyof typeof env]).trim().length > 0)
     && ['local_process', 'e2b', 'none'].includes(env.commandBackend) && typeof env.supportsImages === 'boolean'
@@ -28,6 +52,31 @@ export function validateModelSurface(surface: ModelSurface | undefined): void {
       && new Set(env.environmentNames).size === env.environmentNames.length
       && env.environmentNames.every(name => typeof name === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)))
     && bytes(surface) <= 16384, 'invalid_model_environment');
+  const resources = env.commandResources;
+  if (resources !== undefined) {
+    const keys = ['cpuSeconds', 'addressSpaceBytes', 'maxProcesses', 'maxOpenFiles', 'maxFileBytes', 'wallSeconds'];
+    invariant(env.commandBackend === 'local_process' && resources
+      && Object.keys(resources).sort().join(',') === 'contract,profile,requestedLimits'
+      && resources.contract === 'agentkit.local-resource-profile/v1'
+      && ['bounded/v1', 'local-development/v1'].includes(resources.profile)
+      && resources.requestedLimits && Object.keys(resources.requestedLimits).sort().join(',') === [...keys].sort().join(',')
+      && Object.values(resources.requestedLimits).every(value => Number.isSafeInteger(value) && value > 0),
+    'invalid_model_command_resources');
+  }
+}
+
+/** A model sees only evidence addresses its artifact tools can actually read.
+ * Private verifier payloads and locators stay in the ledger. */
+export function verificationModelView(report: VerificationReport | null, readable: ArtifactRef[]) {
+  if (!report) return null;
+  const granted = new Map(readable.map(ref => [ref.uri, ref]));
+  return { status: report.status, reason: report.reason, candidateId: report.candidateId ?? null,
+    contractRevision: report.contractRevision ?? null, workspaceRevision: report.workspaceRevision,
+    checks: report.checks.map(check => ({ id: check.id, status: check.status, safeSummary: check.safeSummary ?? '',
+      repairable: check.repairable === true,
+      readableEvidence: (check.evidenceRefs ?? []).filter(uri => granted.has(uri)).map(uri => {
+        const ref = granted.get(uri)!;return {uri:ref.uri,digest:ref.digest,mediaType:ref.mediaType,sizeBytes:ref.sizeBytes};
+      }) })) };
 }
 
 export interface CatalogEntry { name: string; description: string; id?: string }
@@ -80,5 +129,7 @@ export function modelSurfaceMessages(config: RunConfiguration): Message[] {
       description: tool.discovery?.searchHint || tool.description })), Math.max(256, Math.min(4096, config.profile.contextWindow * 2))),
     discovery: config.toolDiscoveryPolicy && names.has('ToolSearch') ? 'ToolSearch' : null,
     imageInput: config.modelSurface.environment.supportsImages, guidance,
+    ...(config.modelSurface.executionCapabilities === undefined ? {} : {
+      executionCapabilities: config.modelSurface.executionCapabilities.filter(capability => names.has(capability.toolName)) }),
   }) }];
 }

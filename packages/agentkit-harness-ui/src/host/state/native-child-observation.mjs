@@ -24,6 +24,8 @@ export function nativeChildObservationState(detail) {
   if (['completed', 'failed', 'canceled'].includes(value.phase)) emit('task.finished', {
     outcome: value.phase === 'failed' ? 'failed' : value.phase === 'canceled' ? 'cancelled' : value.outcome === 'verified' ? 'completed'
       : value.outcome === 'blocked' ? 'blocked' : 'unverified', verificationRequired: false,
+    ...(value.phase === 'completed' && state.items.at(-1)?.kind === 'text'
+      ? { finalAnswerId: state.items.at(-1).id } : {}),
   });
   else if (['awaiting_interaction', 'awaiting_reconciliation', 'created'].includes(value.phase)) emit('task.state', { state: 'waiting' });
   else if (!value.driving) emit('task.state', { state: 'interrupted' });

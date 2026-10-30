@@ -15,10 +15,7 @@ import { SqliteRunStore, createNativeModelPort, nativeModelRecoveryPolicy }
 
 - `SqliteRunStore` — a `TransactionalRunStore` backed by `node:sqlite` with WAL,
   full synchronous commits, append-only events and immutable ledger items. Host
-  recovery discovery (`listScopes`) returns only scope identities. Its `inject()`
-  method persists the core silent session inbox; pending data and new Run
-  creation commit atomically. This is a library API; the NDJSON CLI methods
-  below are unchanged.
+  recovery discovery (`listScopes`) returns only scope identities.
 - `createNativeModelPort({ resolveProfile, fetchImpl?, maxResponseBytes?,
   idleTimeoutMs? })` — one host-resolved HTTP request per attempt. Streams
   text/thinking/tool_delta display deltas and seals a single `ModelResult`. The
@@ -64,27 +61,6 @@ review, closes the original presentation owner with an error ending, and binds
 no execution ports. Later tasks retain the original unknown observation in
 their history. A lost response can retry the same review; unknown tool writes
 remain outside this mechanism.
-
-## Reusable Host assembly
-
-The package also owns the reusable child-task assembly and execution-context
-modules. They accept authenticated Host ports; none imports Studio or DSH:
-
-- `native/children`: `createNativeChildren` and `nativeChildRoles`. Supply the
-  store, authorized tools, model resolver, verification and workspace ports.
-  The optional `goalContractFactory` defines business acceptance policy; its
-  default is a plain objective. Child budgets, cancellation, isolation and
-  cold restoration continue through the original Native owner and ledger.
-- `native/child-workspace-binding`, `native/child-merge` and
-  `native/tool-authority`: isolated-workspace binding, accounted publication
-  and original-intent authorization.
-- `native/model-surface-host`, `native/child-model-surface`,
-  `native/context-profile`, `native/local-execution-profile` and
-  `native/instruction-context`: execution-owned facts and reusable context,
-  output-policy and instruction-directory assembly.
-
-Persisted contract names and existing exported compatibility names are retained.
-Host-specific resource resolution and credentials are supplied from outside.
 
 ## External process
 

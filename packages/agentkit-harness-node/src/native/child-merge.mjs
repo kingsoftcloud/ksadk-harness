@@ -1,4 +1,4 @@
-import { canonical, copy, invariant, toolInputRejection } from '@kingsoftcloud/agentkit-harness-core';
+import { canonical, copy, invariant, toolInputRejection, matchesToolExecutionContract } from '@kingsoftcloud/agentkit-harness-core';
 import { loadSessionChild, accountedChildDelivery } from '@kingsoftcloud/agentkit-harness-node/native/owned-child';
 import { createNativeToolAuthority } from './tool-authority.mjs';
 
@@ -36,7 +36,7 @@ export function createStudioNativeChildMerge({ scope, sessionId, store, roles, f
         try {
           return request.signal === signal && signal instanceof AbortSignal && !signal.aborted
             && canonical(body()) === snapshot
-            && canonical(request.definition) === canonical(definition) && authority(request) && childCurrent()
+            && matchesToolExecutionContract(request.definition, definition) && authority(request) && childCurrent()
             && (() => {
               const current = store.load(boundScope, request.runId);
               const allowed = (current.snapshot.taskContract ?? current.configuration.contract).allowedToolNames;

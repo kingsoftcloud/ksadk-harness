@@ -6,20 +6,6 @@
 - `@kingsoftcloud/agentkit-harness-node`：Node 适配器、Native 工具及 JSON-RPC/NDJSON 进程入口。
 - `@kingsoftcloud/agentkit-harness-ui`：通过版本化事件接入的任务过程、思考、工具结果、终端输出与侧栏组件；React 由宿主提供。
 
-使用 Node.js 22.19 或更新版本。
+运行环境为 Node.js 22.19 或更新版本。三个 npm 包独立构建和打包，Studio 的会话与产品资源适配由宿主负责。
 
-```sh
-npm ci --ignore-scripts
-npm run build
-npm run test:core
-npm run test:node
-npm run test:ui
-```
-
-浏览器真实运行测试可单独执行 `npm run test:browser-live`，需要本机可用的 Chromium。普通测试覆盖浏览器适配器的确定性行为。
-
-构建后执行 `npm run pack:all`，统一生成三个可安装的 npm 归档及内容摘要清单。Core 与 Node 可安装到独立 Node 程序；UI 由浏览器宿主消费。详细接口见各包 README。Studio 的会话和产品资源适配由 Studio 负责，包不依赖 Studio 或 DSH。当前不发布 npm、不接入 Python。
-
-本仓库沿用源代码中保留的许可证与第三方归属说明。
-
-完整的前后端包入口、Studio 薄适配器边界与安装步骤见 [接入说明](docs/studio-integration.md)。
+本仓库保留运行实现、测试、构建脚本、许可证与第三方归属说明。

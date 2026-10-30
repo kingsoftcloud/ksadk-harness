@@ -32,6 +32,7 @@ import { readBoundedWorkspaceImage } from './workspace-image.mjs';
 import { createWorkspaceCheckpointJournal, captureCheckpointFile, checkpointStatesEqual, WORKSPACE_CHECKPOINT_POLICY, CONVERSATION_WORKSPACE_CONTROL } from './workspace-checkpoints.mjs';
 import { parseStructuredPatch } from '@kingsoftcloud/agentkit-harness-core/patch-parser';
 import { canonical } from '@kingsoftcloud/agentkit-harness-core';
+import { captureWorkspaceSubject } from './workspace-subject-observer.mjs';
 
 import {
   WorkspacePathError, escapeRegex, fnmatch, publishWorkspaceBytes, sha256,
@@ -1274,12 +1275,24 @@ export function createNativeWorkspaceTools({
       return { revision: null, changedPaths: [], status: 'unavailable', reason: 'workspace_missing' };
     }
     try {
+      if (request.subject !== undefined) {
+        const observation = await captureWorkspaceSubject({ root: real, subject: request.subject, signal: request.signal });
+        checkRootBoundary();
+        return observation;
+      }
       const revision = computeRevision(real);
       return { revision, changedPaths: [], status: 'ok', reason: null };
     } catch (e) {
       if (e instanceof CaptureError) {
         return { revision: null, changedPaths: [], status: 'unavailable', reason: e.code };
       }
+      request.signal?.throwIfAborted();
+      if (request.subject !== undefined) return { revision: null, changedPaths: [], status: 'unavailable',
+        reason: ['capture_limit_exceeded', 'workspace_changed_during_capture', 'workspace_root_changed',
+          'workspace_path_outside_scope', 'unsupported_workspace_entry', 'workspace_subject_file_required',
+          'invalid_workspace_observation_subject', 'invalid_delivery_artifact', 'invalid_delivery_artifacts',
+          'invalid_web_delivery_scope', 'delivery_scope_too_large'].includes(e.code) ? e.code : 'capture_failed',
+        subject: request.subject };
       return { revision: null, changedPaths: [], status: 'unavailable', reason: 'capture_failed' };
     }
   }

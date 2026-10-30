@@ -1,5 +1,5 @@
 import { resolve } from 'node:path';
-import { canonical, boundedCapabilityCatalog, invariant } from '@kingsoftcloud/agentkit-harness-core';
+import { canonical, boundedCapabilityCatalog, invariant, WORKSPACE_TOUCH_EVIDENCE, projectWorkspaceTouchEvidence } from '@kingsoftcloud/agentkit-harness-core';
 import { createHash } from 'node:crypto';
 const hash = value => createHash('sha256').update(canonical(value)).digest('hex');
 
@@ -40,18 +40,15 @@ export function nativeInstructionTouches(record, { sessionId, builtinNames, work
   // Only committed parent receipts feed the parent's scoped instructions.
   // Recomputing at pre-step also covers a crash after the tool receipt but
   // before its process-local Host notification; no tool is re-executed.
-  invariant(record.snapshot.sessionId === String(sessionId), 'studio_native_instruction_session_mismatch');
-  const after = record.events.findLast(event => event.kind === 'model.completed')?.seq ?? 0;
+  const evidence = record.contract === WORKSPACE_TOUCH_EVIDENCE ? record : projectWorkspaceTouchEvidence(record);
+  invariant(evidence.identity.sessionId === String(sessionId), 'studio_native_instruction_session_mismatch');
   const touched = new Set();
-  for (const event of record.events) {
-    const value = event.payload;
-    if (event.seq <= after || event.kind !== 'tool.completed' || value.status !== 'ok'
-      || !builtinNames.has(value.name) || !workspaceToolNames.has(value.name)) continue;
-    if (typeof value.content?.path === 'string') touched.add(value.content.path);
-    if (value.name === 'write_workspace_files') for (const item of value.content?.written ?? [])
-      if (typeof item?.path === 'string') touched.add(item.path);
-    if (['apply_workspace_patch', 'rewind_workspace_files'].includes(value.name)) for (const path of value.content?.changed_paths ?? [])
-      if (typeof path === 'string') touched.add(path);
+  for (const item of evidence.observations) {
+    if (!builtinNames.has(item.toolName) || !workspaceToolNames.has(item.toolName)) continue;
+    if (typeof item.path === 'string') touched.add(item.path);
+    if (item.toolName === 'write_workspace_files') for (const path of item.writtenPaths) touched.add(path);
+    if (['apply_workspace_patch', 'rewind_workspace_files'].includes(item.toolName))
+      for (const path of item.changedPaths) touched.add(path);
   }
   return [...touched].map(path => resolve(workspace, path));
 }

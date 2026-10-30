@@ -12,6 +12,7 @@ import { NativeKernel, emptyUsage, transition } from '../../agentkit-harness-cor
 import { fixture as coreFixture, scope, digest as coreDigest, tool } from '../../agentkit-harness-core/test/fixtures.mjs';
 import { SqliteRunStore } from '../src/native/sqlite-store.mjs';
 import { createBackgroundCommandPort } from '../src/native/background-command-port.mjs';
+import { LOCAL_COMMAND_SHELL } from '../src/native/command-shell.mjs';
 
 const moduleUrl = new URL('../src/native/local-background.mjs', import.meta.url).href;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -46,6 +47,18 @@ function nodeChild(code) {
   const exit = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => resolve({ code, signal, stdout, stderr })); });
   return { child, exit, line: () => stdout.split('\n').find(line => line.trim()) };
 }
+
+test('shell selection is persisted, reconnects without replay and cannot change an existing operation', async t => {
+  const f = fixture(t), command = 'test -n "$BASH_VERSION" && printf x >> once.txt';
+  const h = await f.start(command, { operationKey: 'bash-contract', shellPolicy: LOCAL_COMMAND_SHELL });
+  assert.equal((await h.wait()).exitCode, 0);
+  const reopened = new LocalCommandStore(f.config);
+  const same = await reopened.start(f.input(command, { operationKey: 'bash-contract', shellPolicy: LOCAL_COMMAND_SHELL }));
+  assert.equal(same.commandId, h.commandId);
+  assert.equal(readFileSync(join(f.workspace, 'once.txt'), 'utf8'), 'x');
+  await assert.rejects(reopened.start(f.input(command, { operationKey: 'bash-contract' })), { code: 'background_operation_arguments_changed' });
+  await assert.rejects(f.start('printf never', { shellPolicy: 'unknown-shell/v1' }), /unsupported_command_shell/);
+});
 
 test('real supervisor publishes a complete result and reconnects after store re-open', async t => {
   const f = fixture(t), h = await f.start('printf hello; printf diagnostic >&2; exit 7');

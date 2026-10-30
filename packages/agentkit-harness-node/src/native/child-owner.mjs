@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { NativeKernel, NativeError, CHILD_OWNER_CONTRACT, canonical, copy, configure,
+import { NativeKernel, NativeError, isNativeError, CHILD_OWNER_CONTRACT, canonical, copy, configure,
   addUsage, admittedToolBudget, childLifecycleRequest, childReadyProbe, scopeKey, terminal,
   CHILD_TASK_POLICY, COORDINATOR_RESPONSE_POLICY, activePlanMode, isPlanChildCall, planModeWriteDenial,
   CHILD_PLAN_POLICY, CHILD_PLAN_MODE_POLICY, defaultPolicyBindings } from '@kingsoftcloud/agentkit-harness-core';
-import { loadSessionChild, accountedChildDelivery, hasUnsafeChildReceipt } from './owned-child.mjs';
+import { loadSessionChild, accountedChildDelivery, hasUnsafeChildReceipt, childNeedsApproval } from './owned-child.mjs';
 import { CHILD_ALLOCATION_POLICY, CHILD_ALLOCATION_DEFAULTS, LEGACY_CALL_DEFAULTS,
   roleAllocationDefaults, resolveChildCallLimits } from './child-budget-allocation.mjs';
 
@@ -21,7 +21,7 @@ async function observeWhileLive(operation, signal) {
   signal.throwIfAborted();
   let onAbort;
   const canceled = new Promise((_, reject) => {
-      onAbort = () => reject(signal.reason instanceof NativeError ? signal.reason : new NativeError('child_observation_paused'));
+      onAbort = () => reject(isNativeError(signal.reason) ? signal.reason : new NativeError('child_observation_paused'));
     signal.addEventListener('abort', onAbort, { once: true });
   });
   try { const result = await Promise.race([operation, canceled]); signal.throwIfAborted(); return result; }
@@ -34,7 +34,7 @@ async function observeWhileLive(operation, signal) {
  * an environment/profile fallback. This service does not advertise model tools.
  */
 export function createNativeChildOwner({ scope, childScopes = [scope], store, resolveChild, restoreChild, waitForIdle, canWaitForReceipt, onStream, now = Date.now,
-  childAllocationPolicy, owner = `native-children-${randomUUID()}` }) {
+  childAllocationPolicy, admitRequirements, owner = `native-children-${randomUUID()}` }) {
   const parentScope = copy(scope), entries = new Map();
   scopeKey(parentScope);
   check(childAllocationPolicy === undefined || childAllocationPolicy === CHILD_ALLOCATION_POLICY, 'invalid_child_owner_allocation_policy');
@@ -94,7 +94,7 @@ export function createNativeChildOwner({ scope, childScopes = [scope], store, re
         usage: { inputTokens: 0, outputTokens: 0, modelCalls: 0, toolCalls: 0, cost: 0 }, usageReported: true }) },
     tools: { ...ports.tools, execute: (request, lifecycle) => admitted() ? ports.tools.execute(request, lifecycle)
       : Promise.resolve({ status: 'error', content: { code: 'child_parent_authority_lost', executed: false } }) } };
-    for (const [port, method] of [['hooks', 'invoke'], ['verification', 'verify'], ['artifacts', 'write'], ['input', 'prepare']]) {
+    for (const [port, method] of [['hooks', 'invoke'], ['verification', 'verify'], ['artifacts', 'write'], ['input', 'prepare'], ['context', 'readSource']]) {
       if (typeof ports[port]?.[method] !== 'function') continue;
       guarded[port] = { ...ports[port], [method]: (...args) => {
         check(admitted(), 'child_parent_authority_lost'); return ports[port][method](...args);
@@ -222,7 +222,7 @@ export function createNativeChildOwner({ scope, childScopes = [scope], store, re
       request.signal.throwIfAborted();
       toolInvocation(request);
       if (entry && !terminal(record.snapshot.phase)) drive(entry);
-      while (!terminal(record.snapshot.phase) && record.snapshot.phase !== 'awaiting_interaction') {
+      while (!terminal(record.snapshot.phase) && !childNeedsApproval(record)) {
         request.signal.throwIfAborted(); const parent = toolInvocation(request);
         if (parent.commands.some(row => !row.consumed && ['pause', 'promote_child', 'message_child', 'cancel_child'].includes(row.command.kind))
           || entry?.error && entry.error.code !== 'lease_busy') return startup();
@@ -231,13 +231,13 @@ export function createNativeChildOwner({ scope, childScopes = [scope], store, re
         if (entry?.error?.code === 'lease_busy') drive(entry);
       }
       request.signal.throwIfAborted(); toolInvocation(request);
-      if (record.snapshot.phase === 'awaiting_interaction' || record.snapshot.phase === 'interrupted' || unsafeReceipt(record)) return startup();
+      if (childNeedsApproval(record) || record.snapshot.phase === 'interrupted' || unsafeReceipt(record)) return startup();
       return { ...terminalReceipt(record, reservation), childBudgetReservation: copy(reservation) };
     } finally { request.signal.removeEventListener('abort', cancel); }
   };
   const projection = (record, reservation) => ({ runId: record.snapshot.runId, sessionId: record.snapshot.sessionId,
     operationKey: reservation.parentOperationKey, callId: reservation.parentToolCallId,
-    state: unsafeReceipt(record) && !canWaitForReceipt?.(record) ? 'interrupted' : record.snapshot.phase === 'created' ? 'prepared' : record.snapshot.phase === 'awaiting_interaction' ? 'awaiting_interaction'
+    state: unsafeReceipt(record) && !canWaitForReceipt?.(record) ? 'interrupted' : record.snapshot.phase === 'created' ? 'prepared' : childNeedsApproval(record) ? 'awaiting_interaction'
       : terminal(record.snapshot.phase) ? record.snapshot.phase : 'running',
     reservedModelCalls: reservation.maxModelCalls, reservedToolCalls: reservation.maxToolCalls,
     usage: addUsage(record.snapshot.usage, record.snapshot.descendantUsage), notified: false, metadata: {} });
@@ -315,7 +315,7 @@ export function createNativeChildOwner({ scope, childScopes = [scope], store, re
       // Only an exact duplicate of the transactionally admitted command may
       // notify an active Kernel. Cancellation interrupts its existing effect.
       check(submit(entry, delivery.command).status === 'duplicate', 'child_control_delivery_missing');
-      if (record.snapshot.phase !== 'awaiting_interaction' || delivery.command.kind === 'cancel') drive(entry);
+      if (!childNeedsApproval(record) || delivery.command.kind === 'cancel') drive(entry);
     },
     async start(request) {
       try {
@@ -324,6 +324,11 @@ export function createNativeChildOwner({ scope, childScopes = [scope], store, re
         if (activePlanMode(parent.snapshot, effective(parent)) && !isPlanChildCall(effective(parent), request.call, request.definition)) return planModeWriteDenial();
         check(['start/v1', 'delegate/v1'].includes(request.definition.childBudgetPolicy), 'child_start_not_admitted');
         const args = request.call.arguments;
+        if (effective(parent).childCapabilityPolicy === 'required-tools/v1') {
+          check(typeof admitRequirements === 'function', 'child_capability_owner_unavailable');
+          const refusal = admitRequirements(args);
+          if (refusal) return { status: 'error', content: refusal };
+        }
         check(typeof args.role === 'string' && args.role.trim() && typeof args.task === 'string' && args.task.trim()
           && (args.background === undefined || typeof args.background === 'boolean')
           && (args.continuation_of === undefined || typeof args.continuation_of === 'string'
@@ -435,11 +440,11 @@ export function createNativeChildOwner({ scope, childScopes = [scope], store, re
           operationKey: request.operationKey, callId: request.call.callId })}`, kind: args.action === 'send' ? 'guide' : 'cancel',
         payload: args.action === 'send' ? { text: args.message } : {} });
       }
-      if (record.snapshot.phase !== 'awaiting_interaction' || args.action === 'stop') drive(entry);
+      if (!childNeedsApproval(record) || args.action === 'stop') drive(entry);
       const deadline = performance.now() + waitSeconds * 1000;
       while (waitSeconds > 0 && args.action !== 'send') {
         record = ownedChild(request, reservation);
-        if (terminal(record.snapshot.phase) || record.snapshot.phase === 'awaiting_interaction' && args.action !== 'stop' || performance.now() >= deadline) break;
+        if (terminal(record.snapshot.phase) || childNeedsApproval(record) && args.action !== 'stop' || performance.now() >= deadline) break;
         await observeWhileLive(new Promise(resolve => setTimeout(resolve, 25)), request.signal);
         if (entry.error?.code === 'lease_busy' || !entry.promise && record.commands.some(row => !row.consumed)) drive(entry);
       }
@@ -487,7 +492,7 @@ export function createNativeChildOwner({ scope, childScopes = [scope], store, re
               payload: { interactionId: expected.interactionId, decision: request.interaction.decision } });
           }
         }
-        if (record.snapshot.phase !== 'awaiting_interaction' || request.action === 'cancel' || request.childApproval?.childRunId === entry.runId) {
+        if (!childNeedsApproval(record) || request.action === 'cancel' || request.childApproval?.childRunId === entry.runId) {
           const promise = drive(entry);
           if (!request.waitForChildRunIds || request.waitForChildRunIds.includes(entry.runId)) awaited.push(promise);
         }
@@ -512,7 +517,7 @@ export function createNativeChildOwner({ scope, childScopes = [scope], store, re
         while (request.reservations.some(reservation => {
           if (request.waitForChildRunIds && !request.waitForChildRunIds.includes(reservation.childRunId)) return false;
           const record = ownedChild(request, reservation);
-          return !terminal(record.snapshot.phase) && record.snapshot.phase !== 'awaiting_interaction'
+          return !terminal(record.snapshot.phase) && !childNeedsApproval(record)
             && entries.get(record.snapshot.runId)?.error?.code === 'lease_busy';
         })) {
           await observeWhileLive(new Promise(resolve => setTimeout(resolve, 25)), request.signal);
@@ -534,7 +539,7 @@ export function createNativeChildOwner({ scope, childScopes = [scope], store, re
         if (terminal(record.snapshot.phase) && record.snapshot.phase !== 'interrupted' && !unsafeReceipt(record)) result.results.push(terminalReceipt(record, reservation, false));
         else {
           result.pendingChildRunIds.push(record.snapshot.runId);
-          if (record.snapshot.phase === 'awaiting_interaction' && request.action !== 'cancel') result.approvals.push(childApproval(record, reservation));
+          if (childNeedsApproval(record) && request.action !== 'cancel') result.approvals.push(childApproval(record, reservation));
           if (record.snapshot.phase === 'interrupted' || unsafeReceipt(record) && !canWaitForReceipt?.(record)
             || entries.get(record.snapshot.runId)?.error && entries.get(record.snapshot.runId).error.code !== 'lease_busy') result.errorCode = 'child_receipt_unavailable';
         }
@@ -549,7 +554,7 @@ export function createNativeChildOwner({ scope, childScopes = [scope], store, re
       const ids = [];
       for (const reservation of request.reservations) {
         const record = ownedChild(request, reservation);
-        if (terminal(record.snapshot.phase) || request.includeApprovals && record.snapshot.phase === 'awaiting_interaction'
+        if (terminal(record.snapshot.phase) || request.includeApprovals && childNeedsApproval(record)
           || request.responseCursors !== undefined && responses(record, request.responseCursors).length) ids.push(record.snapshot.runId);
       }
       return { childRunIds: ids };

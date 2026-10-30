@@ -1,7 +1,9 @@
 import { appendSessionInjection, emptySessionInbox, stageSessionInjections, validateSessionInjection } from './session-inbox.mjs';
 import type { SessionInjection, SessionInjectionInput, SessionInjectionReceipt, SessionInboxState } from './session-inbox.mjs';
 import { commandPriority, terminal } from './contracts.mjs';
-import type { CommandReceipt, CommitBatch, EffectIntent, Lease, NativeEvent, RunCommand, RunConfiguration, RunScope, RunScanHead, RunSnapshot, RunStore, StoredRun } from './contracts.mjs';
+import type { CommandReceipt, CommitBatch, EffectIntent, Lease, NativeEvent, RunAuthority, RunDrivingState, RunToolAuthority, RunCommand, RunConfiguration, RunScope, RunScanHead, RunSnapshot, RunStore, StoredRun } from './contracts.mjs';
+import { projectWorkspaceTouchEvidence, type WorkspaceTouchEvidence } from './workspace-touch.mjs';
+import { projectRunToolAuthority } from './tool-authority-state.mjs';
 import { canonical, copy, invariant, runKey, scopeKey } from './values.mjs';
 import { outstandingChildCalls, validateChildBudgetTransition } from './child-budget.mjs';
 import { transcriptExtends } from './context-view.mjs';
@@ -12,27 +14,60 @@ import { guidanceRunnable } from './guidance.mjs';
 import { isContextSourceRefreshBatch } from './context-source-refresh.mjs';
 import { isOutputRestartBatch } from './output-recovery.mjs';
 import { isWallBudgetStopBatch } from './deadline-delivery.mjs';
+import { isBrowserReobservationBatch } from './browser-runtime.mjs';
 import { reviewableBackgroundInterruption } from './background-interruption.mjs';
 import type { BackgroundInterruptionReview } from './background-interruption.mjs';
+import { validateResourceRetirement } from './resource-retirement.mjs';
+import type { ResourceRetirementReview } from './resource-retirement.mjs';
+import { projectLedgerCommitState, applyLedgerCommitChanges } from './commit-state.mjs';
+import type { LedgerCommitState, LedgerCommitChanges } from './commit-state.mjs';
+
+/** The control transaction cannot read or replace completed effect evidence. */
+export interface LedgerControlState extends RunAuthority {
+  pendingIntentHasReceipt: boolean;
+  commands: StoredRun['commands'];
+  projections: StoredRun['projections'];
+}
+export interface LedgerControlChanges {
+  /** The shared claim validator permits only the model-attempt charge here. */
+  claim?: { snapshot: RunSnapshot; intent: EffectIntent };
+  /** Admission appends commands; consumption remains part of commit(). */
+  commands?: StoredRun['commands'];
+  projections?: StoredRun['projections'];
+}
 
 /** The backend must serialize read/modify/write atomically, including failures. */
 export interface LedgerBackend {
+  /** Serialize validation and append using only the referenced ledger evidence.
+   * No completed receipt/event payload may be substituted as execution state. */
+  updateCommit?<T>(key: string, batch: CommitBatch, change: (current: LedgerCommitState | null) => {
+    changes: LedgerCommitChanges | null; value: T;
+  }): T;
+  controlState?(key: string): LedgerControlState | null;
+  updateControl?<T>(key: string, change: (current: LedgerControlState | null) => {
+    changes: LedgerControlChanges; value: T;
+  }): T;
   enqueueSessionInjection?(scope: RunScope, sessionId: string, input: SessionInjectionInput): SessionInjectionReceipt;
   /** Invoked only inside update(), never from an unprotected read. */
   pendingSessionInjections?(scope: RunScope, sessionId: string): SessionInjection[];
   /** Optional compact, deterministic identity for a canonical commit batch. */
   commitFingerprint?(canonicalBatch: string): string;
   /** Atomic metadata-only updates avoid materializing the history for heartbeats. */
-  updateLease?<T>(key: string, change: (current: Pick<StoredRun, 'lease' | 'fence'> | null) => {
-    record: Pick<StoredRun, 'lease' | 'fence'>; value: T;
+  updateLease?<T>(key: string, change: (current: Pick<StoredRun, 'lease' | 'fence' | 'resourceRetirementReview'> | null) => {
+    record: Pick<StoredRun, 'lease' | 'fence' | 'resourceRetirementReview'>; value: T;
   }): T;
   /** Read a bounded event suffix without loading unrelated receipts or commits. */
   eventsAfter?(key: string, after: number): NativeEvent[] | null;
   commands?(key: string): StoredRun['commands'] | null;
+  authority?(key: string): RunAuthority | null;
+  toolAuthority?(key: string): RunToolAuthority | null;
+  workspaceTouchEvidence?(key: string): WorkspaceTouchEvidence | null;
+  projectionCursors?(key: string): Record<string, number> | null;
   get(key: string): StoredRun | null;
   values(): StoredRun[];
   snapshots?(scope: RunScope, sessionId?: string): RunSnapshot[];
   heads?(scope: RunScope, sessionId?: string): RunScanHead[];
+  sessionHeadView?(scope: RunScope, sessionId: string): RunScanHead | null;
   sessionHead(scope: RunScope, sessionId: string): RunSnapshot | null;
   update<T>(key: string, change: (current: StoredRun | null,
     sessionHead: LedgerBackend['sessionHead']) => { record: StoredRun; value: T }): T;
@@ -64,7 +99,7 @@ export function pendingCommands(record: Pick<StoredRun, 'commands'>): RunCommand
   return record.commands.filter(row => !row.consumed).map(row => copy(row.command))
     .sort((a, b) => commandPriority[b.kind] - commandPriority[a.kind]);
 }
-export function runnableCommands(record: StoredRun): RunCommand[] {
+export function runnableCommands(record: Pick<StoredRun, 'commands' | 'snapshot' | 'configuration'>): RunCommand[] {
   return pendingCommands(record).filter(command => guidanceRunnable(record.snapshot, command, record.configuration));
 }
 
@@ -72,8 +107,34 @@ export function runnableCommands(record: StoredRun): RunCommand[] {
 export class TransactionalRunStore implements RunStore {
   constructor(private readonly backend: LedgerBackend) {}
 
-  private updateLease<T>(key: string, change: (current: Pick<StoredRun, 'lease' | 'fence'> | null) => {
-    record: Pick<StoredRun, 'lease' | 'fence'>; value: T;
+  private controlState(record: StoredRun): LedgerControlState {
+    return { configuration: record.configuration, snapshot: record.snapshot, lease: record.lease, fence: record.fence,
+      pendingIntent: record.intents.find(item => item.operationKey === record.snapshot.pendingIntent) ?? null,
+      pendingIntentHasReceipt: record.receipts.some(item => item.operationKey === record.snapshot.pendingIntent),
+      commands: record.commands, projections: record.projections };
+  }
+  private updateControl<T>(key: string, change: (current: LedgerControlState | null) => {
+    changes: LedgerControlChanges; value: T;
+  }): T {
+    if (this.backend.updateControl) return this.backend.updateControl(key, change);
+    return this.backend.update(key, current => {
+      const { changes, value } = change(current ? this.controlState(current) : null), record = found(current);
+      const { claim, ...header } = changes;
+      return { record: { ...record, ...header, ...(claim ? {
+        snapshot: claim.snapshot,
+        intents: record.intents.map(item => item.operationKey === claim.intent.operationKey ? claim.intent : item),
+      } : {}) }, value };
+    });
+  }
+
+  projectionCursors(scope: RunScope, runId: string): Record<string, number> {
+    const key = runKey(scope, runId);
+    return copy(this.backend.projectionCursors ? found(this.backend.projectionCursors(key))
+      : found(this.backend.get(key)).projections);
+  }
+
+  private updateLease<T>(key: string, change: (current: Pick<StoredRun, 'lease' | 'fence' | 'resourceRetirementReview'> | null) => {
+    record: Pick<StoredRun, 'lease' | 'fence' | 'resourceRetirementReview'>; value: T;
   }): T {
     if (this.backend.updateLease) return this.backend.updateLease(key, change);
     return this.backend.update(key, current => {
@@ -131,6 +192,30 @@ export class TransactionalRunStore implements RunStore {
     });
   }
   load(scope: RunScope, runId: string): StoredRun { return copy(found(this.backend.get(runKey(scope, runId)))); }
+  workspaceTouchEvidence(scope: RunScope, runId: string): WorkspaceTouchEvidence {
+    const key = runKey(scope, runId), view = this.backend.workspaceTouchEvidence
+      ? found(this.backend.workspaceTouchEvidence(key)) : projectWorkspaceTouchEvidence(found(this.backend.get(key)));
+    invariant(view.identity.runId === runId && canonical(view.identity.scope) === canonical(scope), 'workspace_touch_identity_mismatch');
+    return copy(view);
+  }
+  authority(scope: RunScope, runId: string): RunAuthority {
+    const key = runKey(scope, runId);
+    if (this.backend.authority) return copy(found(this.backend.authority(key)));
+    const record = found(this.backend.get(key));
+    return copy({ configuration: record.configuration, snapshot: record.snapshot, lease: record.lease, fence: record.fence,
+      pendingIntent: record.intents.find(item => item.operationKey === record.snapshot.pendingIntent) ?? null });
+  }
+  toolAuthority(scope: RunScope, runId: string): RunToolAuthority {
+    const key = runKey(scope, runId);
+    return copy(this.backend.toolAuthority ? found(this.backend.toolAuthority(key))
+      : projectRunToolAuthority(this.authority(scope, runId)));
+  }
+  drivingState(scope: RunScope, runId: string): RunDrivingState {
+    const key = runKey(scope, runId), record = this.backend.controlState
+      ? found(this.backend.controlState(key)) : this.controlState(found(this.backend.get(key)));
+    return copy({ configuration: record.configuration, snapshot: record.snapshot, lease: record.lease, fence: record.fence,
+      pendingIntent: record.pendingIntent, pendingCommands: pendingCommands(record) });
+  }
   pendingCommands(scope: RunScope, runId: string): RunCommand[] {
     if (!this.backend.commands) return pendingCommands(this.load(scope, runId));
     const commands = found(this.backend.commands(runKey(scope, runId)));
@@ -139,6 +224,11 @@ export class TransactionalRunStore implements RunStore {
   sessionHead(scope: RunScope, sessionId: string): RunSnapshot | null {
     scopeKey(scope); invariant(sessionId.trim(), 'invalid_session_id');
     return copy(this.backend.sessionHead(scope, sessionId));
+  }
+  sessionHeadView(scope: RunScope, sessionId: string): RunScanHead | null {
+    scopeKey(scope); invariant(sessionId.trim(), 'invalid_session_id');
+    if (this.backend.sessionHeadView) return copy(this.backend.sessionHeadView(scope, sessionId));
+    return this.listHeads(scope, sessionId).at(-1) ?? null;
   }
   list(scope: RunScope, sessionId?: string): RunSnapshot[] {
     const key = scopeKey(scope);
@@ -160,6 +250,7 @@ export class TransactionalRunStore implements RunStore {
     invariant(owner.trim() && Number.isFinite(now) && now >= 0 && Number.isFinite(ttlMs) && ttlMs > 0, 'invalid_lease');
     return this.updateLease(runKey(scope, runId), current => {
       const record = found(current);
+      invariant(!record.resourceRetirementReview, 'resource_retired');
       invariant(!record.lease || record.lease.expiresAt <= now, 'lease_busy');
       const lease = { owner, fence: record.fence + 1, expiresAt: now + ttlMs };
       invariant(Number.isFinite(lease.expiresAt), 'invalid_lease');
@@ -184,14 +275,14 @@ export class TransactionalRunStore implements RunStore {
   commit(scope: RunScope, runId: string, lease: Lease, now: number, expectedRevision: number, input: CommitBatch): RunSnapshot {
     const batch = copy(input), canonicalBatch = canonical(batch);
     const fingerprint = this.backend.commitFingerprint?.(canonicalBatch) ?? canonicalBatch;
-    const apply = (current: StoredRun | null) => {
+    const validate = (current: LedgerCommitState | null) => {
       const record = found(current); fenced(record, lease, now);
-      const duplicate = record.commits.find(item => item.commitId === batch.commitId);
+      const duplicate = record.duplicateCommit;
       if (duplicate) {
         // Legacy backends stored the entire canonical batch. Continue to
         // recognize those records when a backend adopts compact identities.
         invariant(duplicate.fingerprint === fingerprint || duplicate.fingerprint === canonicalBatch, 'commit_replay_conflict');
-        return { record, value: copy(record.snapshot) };
+        return { changes: null, value: copy(record.snapshot) };
       }
       const previous = record.snapshot, next = batch.snapshot;
       invariant(!terminal(previous.phase), 'terminal_immutable');
@@ -228,7 +319,7 @@ export class TransactionalRunStore implements RunStore {
       for (const [index, event] of batch.events.entries()) {
         invariant(event.seq === previous.eventSeq + index + 1 && event.runId === runId
           && event.turnId === previous.turnId && event.eventId === `${runKey(scope, runId)}:event:${event.seq}`
-          && !record.events.some(old => old.eventId === event.eventId), 'invalid_event_sequence');
+          && !record.existingEventIds.includes(event.eventId), 'invalid_event_sequence');
       }
       invariant(next.eventSeq === previous.eventSeq + batch.events.length, 'invalid_event_sequence');
       for (const intent of batch.intents) {
@@ -248,6 +339,8 @@ export class TransactionalRunStore implements RunStore {
           && (previous.browserSessionRefs?.length || previous.lastBrowserObservation)
           && batch.events.some(event => event.kind === 'browser.recovered' && ['lost', 'restarted'].includes(String(event.payload.status)))
           && batch.requireNoPendingCommands;
+        const browserContextRetired = intent && receipt.result.code === 'browser_context_invalidated'
+          && receipt.result.executed === false && isBrowserReobservationBatch(previous, intent, batch);
         const backgroundRetired = intent?.kind === 'model' && receipt.result.code === 'superseded_by_background_observation'
           && receipt.result.executed === false && isCommandObservationBatch(previous, record.configuration, batch, intent);
         const childRetired = intent?.kind === 'model' && receipt.result.code === 'superseded_by_child_observation'
@@ -264,12 +357,13 @@ export class TransactionalRunStore implements RunStore {
           && isWallBudgetStopBatch(previous, record.configuration, intent, batch);
         const undispatched = receipt.status === 'not_dispatched' && intent?.status === 'prepared'
           && previous.pendingIntent === receipt.operationKey && next.pendingIntent === null
-          && (steeringRetired || browserRetired || backgroundRetired || childRetired || childCancelRetired || sourceRefreshed || deadlineRetired);
+          && (steeringRetired || browserRetired || browserContextRetired || backgroundRetired || childRetired || childCancelRetired || sourceRefreshed || deadlineRetired);
         invariant((receipt.status === 'not_dispatched' ? undispatched : intent?.status === 'running')
-          && !record.receipts.some(item => item.operationKey === receipt.operationKey), 'receipt_without_claim');
+          && !record.existingReceiptKeys.includes(receipt.operationKey), 'receipt_without_claim');
       }
       const unsettled = [...record.intents, ...batch.intents].filter(intent =>
-        ![...record.receipts, ...batch.receipts].some(receipt => receipt.operationKey === intent.operationKey));
+        !record.existingReceiptKeys.includes(intent.operationKey)
+          && !batch.receipts.some(receipt => receipt.operationKey === intent.operationKey));
       invariant(next.pendingIntent === null || unsettled.some(intent => intent.operationKey === next.pendingIntent), 'pending_intent_missing');
       if (!terminal(next.phase)) invariant(unsettled.length <= 1 && (unsettled[0]?.operationKey ?? null) === next.pendingIntent, 'orphaned_effect');
       if (batch.consumedCommandId !== null) invariant(record.commands.some(row =>
@@ -294,13 +388,17 @@ export class TransactionalRunStore implements RunStore {
       const events = discarded.length ? entries.map((event, index) => ({ ...event,
         seq: previous.eventSeq + index + 1, eventId: `${runKey(scope, runId)}:event:${previous.eventSeq + index + 1}` })) : entries;
       const finalSnapshot = discarded.length ? { ...next, eventSeq: previous.eventSeq + events.length } : next;
-      const updated = { ...record, snapshot: finalSnapshot, commands,
-        events: [...record.events, ...events], intents: [...record.intents, ...batch.intents],
-        receipts: [...record.receipts, ...batch.receipts], commits: [...record.commits, { commitId: batch.commitId, fingerprint }] };
-      return { record: updated, value: copy(finalSnapshot) };
+      return { changes: { snapshot: finalSnapshot, commands, events, intents: batch.intents,
+        receipts: batch.receipts, commit: { commitId: batch.commitId, fingerprint } }, value: copy(finalSnapshot) };
+    };
+    const apply = (current: StoredRun | null) => {
+      const record = found(current), result = validate(projectLedgerCommitState(record, batch));
+      return { record: applyLedgerCommitChanges(record, result.changes), value: result.value };
     };
     const delivery = batch.childControlDelivery;
-    if (!delivery) return this.backend.update(runKey(scope, runId), apply);
+    if (!delivery) return this.backend.updateCommit
+      ? this.backend.updateCommit(runKey(scope, runId), batch, validate)
+      : this.backend.update(runKey(scope, runId), apply);
     const target = delivery.target;
     const keys: [string, string] = [runKey(scope, runId), runKey(target.scope, target.runId)];
     invariant(keys[0] !== keys[1], 'child_control_origin_changed');
@@ -322,12 +420,12 @@ export class TransactionalRunStore implements RunStore {
     });
   }
   claim(scope: RunScope, runId: string, lease: Lease, now: number, operationKey: string): EffectIntent {
-    return this.backend.update(runKey(scope, runId), current => {
+    return this.updateControl(runKey(scope, runId), current => {
       const record = found(current); fenced(record, lease, now);
       invariant(!terminal(record.snapshot.phase) && record.snapshot.phase !== 'paused', 'run_not_dispatchable');
-      const intent = record.intents.find(item => item.operationKey === operationKey);
+      const intent = record.pendingIntent;
       invariant(intent?.status === 'prepared' && record.snapshot.pendingIntent === operationKey
-        && !record.receipts.some(receipt => receipt.operationKey === operationKey), 'effect_already_claimed');
+        && intent.operationKey === operationKey && !record.pendingIntentHasReceipt, 'effect_already_claimed');
       invariant(runnableCommands(record).length === 0, 'pending_command_conflict');
       const running = { ...intent, status: 'running' as const, claimedAtMs: now, claimedFence: lease.fence };
       // A prepared request reserves execution order, not provider usage. Charge
@@ -338,20 +436,20 @@ export class TransactionalRunStore implements RunStore {
       invariant(Number.isSafeInteger(snapshot.usage.modelCalls), 'usage_overflow');
       if (intent.kind === 'model') invariant(record.configuration.limits.maxModelCalls === null
         || snapshot.usage.modelCalls + snapshot.descendantUsage.modelCalls + outstandingChildCalls(snapshot, 'model') <= record.configuration.limits.maxModelCalls, 'model_budget_exhausted');
-      return { record: { ...record, snapshot, intents: record.intents.map(item => item === intent ? running : item) }, value: copy(running) };
+      return { changes: { claim: { snapshot, intent: running } }, value: copy(running) };
     });
   }
   enqueue(scope: RunScope, runId: string, input: RunCommand): CommandReceipt {
     const command = copy(input);
     invariant(command.commandId.trim() && Object.hasOwn(commandPriority, command.kind), 'invalid_command');
-    return this.backend.update<CommandReceipt>(runKey(scope, runId), current => {
+    return this.updateControl<CommandReceipt>(runKey(scope, runId), current => {
       const record = found(current), existing = record.commands.find(row => row.command.commandId === command.commandId);
       if (existing) {
         invariant(canonical(existing.command) === canonical(command), 'command_replay_conflict');
-        return { record, value: { commandId: command.commandId, status: 'duplicate' as const, reason: null } };
+        return { changes: {}, value: { commandId: command.commandId, status: 'duplicate' as const, reason: null } };
       }
-      if (terminal(record.snapshot.phase)) return { record, value: { commandId: command.commandId, status: 'rejected' as const, reason: 'run_terminal' } };
-      return { record: { ...record, commands: [...record.commands, { command, consumed: false }] },
+      if (terminal(record.snapshot.phase)) return { changes: {}, value: { commandId: command.commandId, status: 'rejected' as const, reason: 'run_terminal' } };
+      return { changes: { commands: [...record.commands, { command, consumed: false }] },
         value: { commandId: command.commandId, status: 'accepted' as const, reason: null } };
     });
   }
@@ -361,11 +459,12 @@ export class TransactionalRunStore implements RunStore {
     return this.load(scope, runId).events.filter(event => event.seq > after);
   }
   acknowledge(scope: RunScope, runId: string, projection: string, through: number): void {
-    this.backend.update(runKey(scope, runId), current => {
+    this.updateControl(runKey(scope, runId), current => {
       const record = found(current);
       invariant(projection.trim() && Number.isSafeInteger(through) && through >= (record.projections[projection] ?? 0)
         && through <= record.snapshot.eventSeq, 'invalid_projection_cursor');
-      return { record: { ...record, projections: { ...record.projections, [projection]: through } }, value: undefined };
+      return { changes: through === record.projections[projection] ? {}
+        : { projections: { ...record.projections, [projection]: through } }, value: undefined };
     });
   }
   reviewBackgroundInterruption(scope: RunScope, runId: string, review: BackgroundInterruptionReview, now: number): void {
@@ -385,6 +484,19 @@ export class TransactionalRunStore implements RunStore {
       invariant(!record.lease || record.lease.expiresAt <= now, 'background_interruption_still_owned');
       invariant(reviewableBackgroundInterruption(record), 'background_interruption_not_reviewable');
       return { record: { ...record, backgroundInterruptionReview: copy(review) }, value: undefined };
+    });
+  }
+  retireResources(scope: RunScope, runId: string, review: ResourceRetirementReview, now: number): void {
+    invariant(Number.isFinite(now) && now >= 0, 'invalid_resource_retirement_time');
+    this.backend.update(runKey(scope, runId), (current, head) => {
+      const record = found(current), checked = validateResourceRetirement(record, review);
+      if (record.resourceRetirementReview) {
+        invariant(canonical(record.resourceRetirementReview) === canonical(checked), 'command_replay_conflict');
+        return { record, value: undefined };
+      }
+      invariant(head(scope, record.snapshot.sessionId)?.runId === runId, 'resource_retirement_head_changed');
+      invariant(!record.lease || record.lease.expiresAt <= now, 'resource_retirement_still_owned');
+      return { record: { ...record, resourceRetirementReview: checked, lease: null, fence: record.fence + 1 }, value: undefined };
     });
   }
 }
@@ -407,6 +519,17 @@ export class MemoryRunStore extends TransactionalRunStore {
       },
       pendingSessionInjections: (scope, sessionId) => copy(inboxes.get(inboxKey(scope, sessionId))?.entries.filter(row => row.consumedBy === null) ?? []),
       get: key => copy(records.get(key) ?? null),
+      authority: key => {
+        const record = records.get(key);
+        return record ? { configuration: record.configuration, snapshot: record.snapshot, lease: record.lease, fence: record.fence,
+          pendingIntent: record.intents.find(item => item.operationKey === record.snapshot.pendingIntent) ?? null } : null;
+      },
+      toolAuthority: key => {
+        const record = records.get(key);
+        return record ? projectRunToolAuthority({ configuration: record.configuration, snapshot: record.snapshot,
+          lease: record.lease, fence: record.fence,
+          pendingIntent: record.intents.find(item => item.operationKey === record.snapshot.pendingIntent) ?? null }) : null;
+      },
       values: () => copy([...records.values()]),
       sessionHead,
       update: (key, change) => {

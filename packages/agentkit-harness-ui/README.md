@@ -80,28 +80,6 @@ host events ──▶ normalizeEvent ──▶ reduce ──▶ state ──▶ 
   thoughts/tools, follow). Event handlers are delegated from the root.
 - **`styles.mjs`** — an optional CSS string (light/dark, reduced-motion aware).
 
-## Complete task interaction through Host ports
-
-`./host/task-timeline` exports `installTaskTimeline(ctx, {ui, hostRemote,
-resolveAgentFromPreset})`. It installs the primary conversation, collapsible
-status panel, child sidebars, terminal output and file preview using injected
-session/theme/slot/sidebar ports. `ui` supplies the Host's React and ReactDOM;
-the package bundles neither a second React nor a product shell.
-
-`./host/native-run-panel` exports `createNativeChildPanel` for run recovery,
-usage and child controls. Supply the product's `resolveAgentFromPreset` and,
-optionally, `createForeignRuntimePanel` for non-Native sessions.
-`./host/native-a2a` provides the Native remote-task interaction.
-
-Pure projection and interaction controllers are available at
-`./host/session-task-events` and `./host/state/{native-children,native-recovery,
-native-a2a,native-status-panel,native-child-observation,native-outcome,task-links}`.
-The terminal, child and isolated-file pane installers have matching
-`./host/native-{command,child,child-file}-pane` subpaths. The Host supplies
-authenticated `hostRemote` methods; these modules have no kernel/store access
-and import no Studio or DSH code. Disposing a view releases observations and
-registrations, not owned background execution.
-
 ## Minimal usage
 
 The host owns the event stream and the reducer state (e.g. in `useReducer` or

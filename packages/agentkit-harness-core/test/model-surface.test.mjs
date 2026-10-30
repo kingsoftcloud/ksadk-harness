@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MemoryRunStore, NativeKernel, emptyUsage, artifactToolDefinitions, boundedCapabilityCatalog, canonical, configure, discoveryModelTools, discoveredCallExposed,
-  executeToolDiscovery, modelSurfaceMessages, planNativeContext, toolDiscoveryDefinitions, validSummaryContinuity } from '../dist/index.mjs';
+  executeToolDiscovery, modelSurfaceMessages, planNativeContext, toolDiscoveryDefinitions, validSummaryContinuity, contextContinuity } from '../dist/index.mjs';
 import { governArtifactResult } from '../dist/artifact-runtime.mjs';
 import { modelObservationBytes } from '../dist/tool-context.mjs';
 import { digest, fixture, scope, tool } from './fixtures.mjs';
@@ -12,6 +12,25 @@ const surface = { contract: 'bound-model-surface/v1', environment: { workspaceRo
 const policy = { tokenizerId: 'counter', tokenizerDigest: 'counter/v1', enabled: true, triggerRatio: .72, targetRatio: .45,
   summaryMaxTokens: 1024, maxCompactions: null, maxCompactionsWithoutProgress: 4, minModelTurnsBetween: 2,
   maxSummaryRetries: 1, summaryFormatPolicy: 'task-continuity/v1' };
+
+test('verification continuity exposes actionable summaries and only readable evidence, preserving private ledger facts', () => {
+  const {config,snapshot}=fixture({modelSurface:{...surface,verificationProjection:'readable-evidence/v1'},
+    artifactPolicy:'runtime-artifacts/v1',tools:artifactToolDefinitions()});
+  const readable={uri:'artifact://readable',digest:'sha256:readable',mediaType:'text/plain',sizeBytes:8};
+  snapshot.artifactRefs=[readable];
+  snapshot.verification={status:'failed',reason:'delivery_rejected',candidateId:'candidate',contractRevision:'contract',workspaceRevision:'revision',
+    checks:[{id:'delivery',status:'failed',evidence:{private:'HOST_PRIVATE_PAYLOAD',locator:'artifact://private-verifier'},
+      evidenceRefs:['artifact://private-verifier',readable.uri],safeSummary:'Correct the declared file.',repairable:true}]};
+  const before=canonical(snapshot),continuity=contextContinuity(snapshot,config);
+  assert.equal(continuity.schemaVersion,'agentkit.native-context-continuity/v2');
+  assert.equal(continuity.verification.checks[0].safeSummary,'Correct the declared file.');
+  assert.deepEqual(continuity.verification.checks[0].readableEvidence,[readable]);
+  assert.doesNotMatch(canonical(continuity),/HOST_PRIVATE_PAYLOAD|private-verifier/);
+  assert.equal(canonical(snapshot),before,'projection cannot change evidence or grant artifact access');
+  const legacy={...config,modelSurface:surface};
+  assert.equal(contextContinuity(snapshot,legacy).schemaVersion,'agentkit.native-context-continuity/v1');
+  assert.match(canonical(contextContinuity(snapshot,legacy)),/HOST_PRIVATE_PAYLOAD/);
+});
 
 test('the admitted model surface is frozen transcript data, not a transport-only prompt patch', () => {
   const { config, snapshot } = fixture({ modelSurface: surface, tools: [tool({ name: 'custom_business_tool',

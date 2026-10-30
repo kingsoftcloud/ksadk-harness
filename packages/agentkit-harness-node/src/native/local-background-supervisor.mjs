@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { commandRequest } from './local-background.mjs';
 import { runBoundedProcess } from './local-process.mjs';
 import { commandFailureEvidence, commandExceptionCause } from './local-command-evidence.mjs';
+import { shellCommandArgv } from './command-shell.mjs';
 import { START_GRACE_MS, TERMINAL, atomicPrivate, check, digest, fsyncPrivate, lockUntil, openPrivate,
   privateDirectory, privateFile, readRecord, unknownRecord, validId, writeRecord } from './local-command-state.mjs';
 
@@ -66,7 +67,7 @@ async function supervise() {
       try { if (privateFile(join(directory, 'cancel'), true)) cancel(); }
       catch { stateError = true; cancel(); }
     }, 20);
-    const result = await runBoundedProcess({ argv: ['/bin/sh', '-c', request.command], cwd: request.cwd,
+    const result = await runBoundedProcess({ argv: shellCommandArgv(request.command, request.shellPolicy ?? null), cwd: request.cwd,
       env: request.env, timeoutMs: request.timeoutMs, settings: request.settings, outputPolicy: request.outputPolicy,
       signal: controller.signal,
       onOutput(channel, text) {

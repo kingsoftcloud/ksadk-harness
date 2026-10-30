@@ -1,7 +1,8 @@
 name: Publish npm packages
 
 # Configure npm Trusted Publishing for each package with this repository and
-# workflow before creating a release. No npm token is stored in GitHub.
+# workflow before creating a release. `NPM_TOKEN` is accepted only as a
+# one-time bootstrap fallback; OIDC is the normal release path.
 on:
   release:
     types: [published]

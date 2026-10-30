@@ -14,7 +14,8 @@ import { E2BCommandStore, createE2BBackgroundReader } from '../src/native/e2b-ba
 import { TERMINAL } from '../src/native/e2b-command-state.mjs';
 import { ownedCommandReceipt, createOwnedCommandResolver } from '../src/native/owned-command.mjs';
 
-const tmp = realpathSync(tmpdir());
+const tmp = mkdtempSync(join(realpathSync(tmpdir()), 'native-e2b-private-'));
+process.once('exit', () => rmSync(tmp, { recursive: true, force: true }));
 const delay = ms => new Promise(r => setTimeout(r, ms));
 const poll = async (fn, { timeoutMs = 10000 } = {}) => {
   const until = performance.now() + timeoutMs;

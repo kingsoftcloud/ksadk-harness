@@ -16,7 +16,8 @@ import { TERMINAL } from '../src/native/local-command-state.mjs';
 
 // macOS /tmp is a symlink to /private/tmp; the private-state helpers reject
 // symlinked roots, so resolve tmpdir first (matching the local-background tests).
-const tmp = realpathSync(tmpdir());
+const tmp = mkdtempSync(join(realpathSync(tmpdir()), 'native-e2b-private-'));
+process.once('exit', () => rmSync(tmp, { recursive: true, force: true }));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 // Per-setup workspace (not global) to avoid cross-test interference.
 let seq = 0;

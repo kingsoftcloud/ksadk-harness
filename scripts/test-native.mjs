@@ -6,6 +6,8 @@ const directory = fileURLToPath(new URL('../packages/agentkit-harness-node/test/
 const tests = readdirSync(directory).filter(name => name.endsWith('.test.mjs')
   && name !== 'native-browser-playwright-live.test.mjs').map(name => directory + name).sort();
 if (!tests.length) throw Error('Native test suite is empty');
-const result = spawnSync(process.execPath, ['--test', '--test-concurrency=4', ...tests], { stdio: 'inherit' });
+const concurrency = process.env.TEST_CONCURRENCY || '1';
+if (!/^\d+$/.test(concurrency) || Number(concurrency) < 1) throw Error('TEST_CONCURRENCY must be a positive integer');
+const result = spawnSync(process.execPath, ['--test', `--test-concurrency=${concurrency}`, ...tests], { stdio: 'inherit' });
 if (result.error) throw result.error;
 process.exitCode = result.status ?? 1;

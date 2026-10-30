@@ -50,29 +50,6 @@ Studio / 其他 Node 宿主 / Python 进程客户端
 | `outcome: unverified` | 结果尚未得到充分验证，不能当成验收通过 |
 | 取消、失败、预算耗尽或结果未知 | 保留相应原因和回执边界；不能由展示层改写成成功 |
 
-## 自研与开源复用范围
-
-执行状态、持久化与恢复、租约与回执、权限与预算、父子任务归属及宿主组装由 KSADK 实现和维护。本项目没有安装或启动 ZCode 应用的运行要求，但包含保留、改造的 ZCode 源码和参考其交互实现的组件。
-
-| 来源或模块 | 当前用途 |
-| --- | --- |
-| ZCode 的命令解析和只读规则 | Plan／只读模式的命令分类；构建时与 `unbash` 一起打包进 Node 产物 |
-| ZCode 的补丁解析、补丁应用和编辑匹配 | 结构化文件补丁，以及换行、空白、缩进和引号等编辑匹配行为 |
-| ZCode 的工具搜索、Todo、协调者汇报及部分缓存／记忆代码 | 工具发现、任务清单、子任务汇报和对应可选策略；并非每项都在当前 Studio 生产路径启用 |
-| ZCode 的表格、过程分类及任务界面设计 | 表格操作、工作阶段分组、思考摘要队列、任务面板和子任务交互；部分保留派生源码，部分重新实现 |
-| Vercel ai-elements、Lucide、Streamdown、Shiki、unbash 等 | 思考交互参考、图标、Markdown、代码高亮及 Shell 解析等基础能力，分别遵循各自许可 |
-
-固定的 ZCode 参考版本为 `3c5b227649371507ddc4eb46ac5133afe6db1cab`。`third-party/zcode-command-plan/` 是构建输入，不是未使用的完整 ZCode 仓库副本。删除它之前，需要替换相应实现和构建依赖。
-
-源码来源、修改说明和许可证以以下文件为准：
-
-- [仓库第三方声明](THIRD_PARTY_NOTICES.md)
-- [Core 第三方声明](packages/agentkit-harness-core/THIRD_PARTY_NOTICES.md)
-- [Node 第三方声明](packages/agentkit-harness-node/THIRD_PARTY_NOTICES.md)
-- [UI 来源与第三方声明](packages/agentkit-harness-ui/NOTICE)
-- [ZCode 源码清单与摘要](third-party/zcode-command-plan/source.json)
-- [项目许可证](LICENSE) 与 [ZCode 许可证](third-party/ZCode-LICENSE)
-
 ## 环境、安装与构建
 
 - Node.js **22.19.0 或更新版本**，需要该版本提供的 `node:sqlite`。

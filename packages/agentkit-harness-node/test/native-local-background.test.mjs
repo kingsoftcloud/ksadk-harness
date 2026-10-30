@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
   statSync, symlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { constants as osConstants, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { LocalCommandStore, createLocalBackgroundReader } from '../src/native/local-background.mjs';
@@ -286,13 +286,16 @@ test('failed supervisor spawn returns an owned unknown locator that a repaired H
   const h = await f.store.start(request); f.handles.push(h); assert.equal(h.readOutput().status, 'unknown');
   assert.equal(existsSync(join(f.workspace, 'forbidden')), false);
 });
-if (process.platform === 'linux' && process.getuid() !== 0) test('failed POSIX control admission preserves unknown evidence and the observed exit code', async t => {
-  const f = fixture(t), request = f.input('printf forbidden > forbidden', { operationKey: 'controls-failure', settings: { wallSeconds: 10, maxProcesses: 1 } });
+if (process.platform === 'linux') test('Linux process-group admission records a verified failure without unknown evidence', async t => {
+  const f = fixture(t), request = f.input('(sleep 5) & wait; printf forbidden > forbidden', {
+    operationKey: 'process-group-bound', settings: { wallSeconds: 10, maxProcesses: 1 },
+  });
   const h = await f.store.start(request); f.handles.push(h);
-  const result = await until(() => { const output = h.readOutput(); return output.status === 'unknown' && output; });
-  assert.equal(result.exitCode, null); assert.equal(result.observedExitCode, 125); assert.equal(result.evidenceIncomplete, true);
+  const result = await h.wait({ timeoutMs: 5000 });
+  assert.equal(result.status, 'failed'); assert.equal(result.exitCode, -osConstants.signals.SIGKILL);
+  assert.equal(result.observedExitCode, null); assert.equal(result.evidenceIncomplete, false);
   assert.equal(existsSync(join(f.workspace, 'forbidden')), false);
-  assert.equal((await f.store.start(request)).readOutput().status, 'unknown');
+  assert.equal((await f.store.start(request)).readOutput().status, 'failed');
 });
 test('crash during private preparation exposes no half-created command and proves no dispatch', async t => {
   const f = fixture(t), request = f.input('printf x >> counter', { operationKey: 'preparation' });

@@ -17,7 +17,7 @@
     "test:node": "node scripts/test-native.mjs",
     "verify:rpc": "node scripts/verify-native-rpc.mjs",
     "test:native": "node scripts/test-native.mjs",
-    "test:browser-live": "node --test packages/agentkit-harness-node/test/native-browser-playwright-live.test.mjs",
+    "test:browser-live": "node --test packages/agentkit-harness-node/test/*-live.test.mjs",
     "test:ui": "node --test packages/agentkit-harness-ui/test/*.test.mjs",
     "pack:all": "node scripts/pack-native.mjs",
     "verify:boundary": "node scripts/verify-native-package-boundary.mjs",

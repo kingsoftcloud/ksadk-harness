@@ -77,10 +77,17 @@ npm run pack:all
 三个子包是可公开安装的 npm 包；workspace 根目录保持 `private: true`，只用于统一构建和测试。发布由受保护的 GitHub release 工作流执行，并使用 npm provenance：
 
 ```sh
+# Runtime host + task UI. Node automatically installs Core.
+npm install @kingsoftcloud/agentkit-harness-node @kingsoftcloud/agentkit-harness-ui
+
+# Only when using the kernel contract directly:
 npm install @kingsoftcloud/agentkit-harness-core
-npm install @kingsoftcloud/agentkit-harness-node
-npm install @kingsoftcloud/agentkit-harness-ui
 ```
+
+The UI package keeps React and ReactDOM as optional peer dependencies so a
+Studio or other React host supplies its existing versions. It is intentionally
+separate from the Node runtime package; installing the runtime does not pull a
+browser UI into a server process.
 
 提交前运行 `make public-gate`。它会检查公开文件面、完整 Git 历史密钥扫描、构建、三套测试、RPC/UI 安装边界、包内容和运行时依赖审计。
 

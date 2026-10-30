@@ -16,6 +16,10 @@ npm ci --ignore-scripts
 make public-gate
 ```
 
+The public gate is deterministic and excludes `*-live.test.mjs` suites that
+need a cached Chromium executable. Run those real-browser checks explicitly
+with `npm run test:browser-live` when the browser fixture is available.
+
 The gate builds the packages, runs the Core, Node and UI suites, verifies the
 RPC and installed UI boundaries, checks package contents and metadata, audits
 the public surface, scans the complete Git history for secrets, and runs the

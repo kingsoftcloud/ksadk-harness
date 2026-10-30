@@ -6,6 +6,10 @@
 #define _DEFAULT_SOURCE 1
 #include <errno.h>
 #include <inttypes.h>
+#if defined(__linux__)
+#include <dirent.h>
+#include <limits.h>
+#endif
 #include <poll.h>
 #include <signal.h>
 #include <stdint.h>
@@ -37,14 +41,66 @@ static int write_all(int fd, const char *text, size_t length) {
     }
     return 0;
 }
-static void watch_owner(int owner, int report, pid_t group) {
+#if defined(__linux__)
+/* RLIMIT_NPROC is scoped to the real user on Linux, so a shared runner can
+ * already be at the requested limit before this command starts. Count only
+ * this process group instead; the watcher itself is excluded from the cap. */
+static int group_processes(pid_t group) {
+    DIR *directory = opendir("/proc");
+    if (!directory) return -1;
+    int count = 0;
+    struct dirent *entry;
+    while ((entry = readdir(directory)) != NULL) {
+        char *end = NULL;
+        errno = 0;
+        long number = strtol(entry->d_name, &end, 10);
+        if (errno || end == entry->d_name || *end || number < 1 || number > INT_MAX) continue;
+        char path[64];
+        int length = snprintf(path, sizeof path, "/proc/%ld/stat", number);
+        if (length <= 0 || (size_t)length >= sizeof path) continue;
+        FILE *file = fopen(path, "r");
+        if (!file) continue;
+        char line[4096];
+        if (fgets(line, sizeof line, file)) {
+            char *closing = strrchr(line, ')');
+            char state;
+            long parent = 0, process_group = 0;
+            if (closing && sscanf(closing + 1, " %c %ld %ld", &state, &parent, &process_group) == 3
+                && (pid_t)process_group == group) count++;
+        }
+        fclose(file);
+    }
+    closedir(directory);
+    return count;
+}
+#endif
+static void watch_owner(int owner, int report, pid_t group, uint64_t max_processes) {
+#if !defined(__linux__)
+    (void)max_processes;
+#endif
     close(report);
     close(STDIN_FILENO); close(STDOUT_FILENO); close(STDERR_FILENO);
     /* Hold the owned group through the caller's TERM->KILL cleanup window. */
     signal(SIGTERM, SIG_IGN);
     char byte;
     for (;;) {
+#if defined(__linux__)
+        int count = group_processes(group);
+        if (count < 0 || (count > 1 && (uint64_t)(count - 1) > max_processes)) {
+            kill(-group, SIGKILL);
+            _exit(0);
+        }
+        struct pollfd item = { .fd = owner, .events = POLLIN | POLLHUP };
+        int ready = poll(&item, 1, 100);
+        if (ready < 0 && errno == EINTR) continue;
+        if (ready < 0) break;
+        if (ready == 0) continue;
+#else
         ssize_t n = read(owner, &byte, 1);
+#endif
+#if defined(__linux__)
+        ssize_t n = read(owner, &byte, 1);
+#endif
         if (n > 0) continue;
         if (n < 0 && errno == EINTR) continue;
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
@@ -75,18 +131,21 @@ int main(int argc, char **argv) {
         { "maxFileBytes", RLIMIT_FSIZE, values[4], 0, 0 },
     };
     /* Fork the owner watchdog before applying the child resource limits.
-     * RLIMIT_NPROC is a limit on the user's process count on Linux, so
-     * creating the watcher after applying it can fail on shared CI runners
-     * even though the target process itself is allowed to start. */
+     * On Linux its process-group counter replaces RLIMIT_NPROC, whose
+     * per-user scope is unsafe on shared runners. */
     pid_t group = getpgrp();
     pid_t watcher = fork();
-    if (watcher == 0) watch_owner(owner, report, group);
+    if (watcher == 0) watch_owner(owner, report, group, values[2]);
     int failed = watcher < 0, unsupported = 0;
     for (int i = 0; i < 5; ++i) {
         struct limit *item = &limits[i];
 #if defined(__APPLE__)
         /* Match the reference's declared Darwin exceptions exactly. */
         if (i == 1 || i == 2) { item->status = 2; unsupported++; continue; }
+#elif defined(__linux__)
+        /* RLIMIT_NPROC is per-user and cannot safely cap one command on a
+         * shared host. The owner watchdog enforces a process-group bound. */
+        if (i == 2) { item->effective = item->requested; item->status = 0; continue; }
 #endif
         struct rlimit before, after;
         if (getrlimit(item->resource, &before) < 0) { item->status = 1; failed++; continue; }

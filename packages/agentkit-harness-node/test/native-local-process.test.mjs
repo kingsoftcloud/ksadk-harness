@@ -15,7 +15,18 @@ async function waitFor(predicate) {
   while (Date.now() < until) { if (predicate()) return; await pause(20); }
   assert.fail('process lifecycle did not settle before deadline');
 }
-function alive(pid) { try { process.kill(pid, 0); return true; } catch (error) { if (error.code === 'ESRCH') return false; throw error; } }
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    if (process.platform === 'linux') {
+      try {
+        const stat = readFileSync(`/proc/${pid}/stat`, 'utf8'), closing = stat.lastIndexOf(')');
+        if (closing > 0 && stat[closing + 2] === 'Z') return false;
+      } catch (error) { if (error.code === 'ENOENT') return false; }
+    }
+    return true;
+  } catch (error) { if (error.code === 'ESRCH') return false; throw error; }
+}
 function readPid(filename) {
   if (!existsSync(filename)) return null;
   const text = readFileSync(filename, 'utf8');
@@ -96,10 +107,10 @@ test('the inherited OS hard limit is clamped rather than raised by the launcher'
   assert.equal(child.status, 0, child.stderr); const result = JSON.parse(child.stdout);
   assert.equal(result.controls.applied.maxOpenFiles, 64); assert.equal(result.stdout.trim(), '64');
 });
-if (process.platform === 'linux' && process.getuid() !== 0) test('non-root Linux refuses exec if the required owner watchdog cannot fork under NPROC', async t => {
-  const directory = workspace(t), result = await run(directory, ['/bin/sh', '-c', 'printf forbidden > must-not-exist'], { settings: { maxProcesses: 1 } });
-  assert.equal(result.controls.status, 'failed'); assert.ok(result.controls.failed.includes('owner_watchdog'));
-  assert.equal(result.exitCode, 125); assert.equal(existsSync(join(directory, 'must-not-exist')), false);
+if (process.platform === 'linux') test('Linux enforces the process-group bound without relying on per-user NPROC', async t => {
+  const directory = workspace(t), result = await run(directory, ['/bin/sh', '-c', '(sleep 5) & wait'], { settings: { maxProcesses: 1 } });
+  assert.equal(result.controls.status, 'applied'); assert.deepEqual(result.controls.failed, []);
+  assert.equal(result.exitCode, -constants.signals.SIGKILL);
 });
 test('CPU hard limit is enforced by the OS without waiting for the Node wall deadline', { timeout: 12_000 }, async t => {
   const result = await run(workspace(t), ['/bin/sh', '-c', 'while :; do :; done'], { settings: { cpuSeconds: 1 }, timeoutMs: 8000 });

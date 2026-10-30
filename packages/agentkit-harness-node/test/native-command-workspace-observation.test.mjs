@@ -38,7 +38,7 @@ printf done &> result.txt`;
 
 test('a repository-sized inventory cannot turn a finished command into an unknown effect or prevent the next command', { timeout: 15000 }, async t => {
   const { workspaceRoot, files, transport, request } = setup(t);
-  const create = `node -e 'const fs=require("node:fs");fs.mkdirSync("many");for(let i=0;i<2050;i++)fs.writeFileSync("many/"+i,"")'`;
+  const create = 'mkdir many; i=0; while [ "$i" -lt 2050 ]; do : > "many/$i"; i=$((i+1)); done';
   const first = await transport.execute(request(create, 'create-many-files'));
   assert.equal(first.status, 'ok'); assert.equal(first.content.exit_code, 0);
   assert.equal(first.content.status, 'completed');

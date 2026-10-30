@@ -1,0 +1,19 @@
+name: Feature request
+description: Propose a consumer-facing improvement.
+title: "feat: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user or host behavior should improve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Describe the API, protocol, or UI change and compatibility impact.
+    validations:
+      required: true

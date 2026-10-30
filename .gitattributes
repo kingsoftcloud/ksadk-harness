@@ -1,0 +1,7 @@
+* text=auto eol=lf
+*.mjs text
+*.cjs text
+*.json text
+*.md text
+*.sh text eol=lf
+packages/agentkit-harness-node/src/native/local-process-bin/*/launcher -text

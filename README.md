@@ -61,7 +61,7 @@ Studio / 其他 Node 宿主 / Python 进程客户端
 
 ```sh
 npm ci --ignore-scripts
-npm run build
+make check
 ```
 
 构建产物主要位于 Core、Node 的 `dist/` 及 UI 的 `markdown/dist/`。构建不会安装或启动 ZCode，也不会自动获得模型服务凭据。
@@ -74,7 +74,15 @@ npm run pack:all
 
 三个可安装的 npm 压缩包输出到 `.artifacts/packages/`，`manifest.json` 记录名称、版本、文件名、SHA-256 和 integrity。消费方应按该清单取同一批 Core、Node、UI 归档，通过 npm 安装实际 `.tgz` 路径。
 
-**当前包仍设置为 `private: true`，尚未发布到公共 npm registry。** 推送本仓库或创建 main 不代表已经完成 npm 发版。
+三个子包是可公开安装的 npm 包；workspace 根目录保持 `private: true`，只用于统一构建和测试。发布由受保护的 GitHub release 工作流执行，并使用 npm provenance：
+
+```sh
+npm install @kingsoftcloud/agentkit-harness-core
+npm install @kingsoftcloud/agentkit-harness-node
+npm install @kingsoftcloud/agentkit-harness-ui
+```
+
+提交前运行 `make public-gate`。它会检查公开文件面、完整 Git 历史密钥扫描、构建、三套测试、RPC/UI 安装边界、包内容和运行时依赖审计。
 
 ## 如何供 Studio 与 Python 仓库使用
 

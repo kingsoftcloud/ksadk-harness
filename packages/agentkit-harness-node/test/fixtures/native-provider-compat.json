@@ -207,6 +207,7 @@
           }
         ],
         "tool_choice": "required",
+        "tool_stream": true,
         "thinking": {
           "type": "disabled"
         }
@@ -280,6 +281,7 @@
           }
         ],
         "tool_choice": "required",
+        "tool_stream": true,
         "thinking": {
           "type": "enabled"
         }
@@ -977,6 +979,7 @@
           }
         ],
         "tool_choice": "required",
+        "tool_stream": true,
         "reasoning_effort": "low",
         "thinking": {
           "type": "disabled"
@@ -1051,6 +1054,7 @@
           }
         ],
         "tool_choice": "required",
+        "tool_stream": true,
         "thinking": {
           "type": "disabled"
         }

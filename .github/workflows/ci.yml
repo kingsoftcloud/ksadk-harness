@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  public-gate:
+    name: public-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.4
+          cache: npm
+      - run: node scripts/check-node-version.mjs
+      - run: npm ci --ignore-scripts
+      - name: Install verified Gitleaks
+        run: |
+          bash ci/install-gitleaks.sh "$RUNNER_TEMP/gitleaks"
+          echo "GITLEAKS_BIN=$RUNNER_TEMP/gitleaks/gitleaks" >> "$GITHUB_ENV"
+      - run: make public-gate

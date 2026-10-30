@@ -95,13 +95,17 @@ and Node builtins. The build asserts, from the esbuild metafile, that the
 adapter closure contains only this package's entries and `src/native/` adapter
 sources and no Studio/DSH/host code.
 
-## Install (local tarball)
+## Install
 
-The package is `private` and is consumed from local tarballs; it is not
-published. `scripts/verify-native-standalone.mjs` packs both
+The package is published on npm and can also be tested from a local tarball.
+`scripts/verify-native-standalone.mjs` packs both
 `@kingsoftcloud/agentkit-harness-core` and this package, installs them into a
 fresh temp directory, and drives a standalone example host against the
 installed packages.
+
+```sh
+npm install @kingsoftcloud/agentkit-harness-node
+```
 
 ## Owned command output
 

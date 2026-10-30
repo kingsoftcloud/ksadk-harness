@@ -1,0 +1,4 @@
+title = "KSADK Native Harness secret gate"
+
+[extend]
+useDefault = true

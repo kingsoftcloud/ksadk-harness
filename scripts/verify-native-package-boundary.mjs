@@ -7,6 +7,8 @@ import { join, resolve, relative, dirname, isAbsolute } from 'node:path';
 import ts from 'typescript';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
+const PUBLIC_REPOSITORY = 'https://github.com/kingsoftcloud/ksadk-harness.git';
+const PUBLIC_REGISTRY = 'https://registry.npmjs.org';
 const permitted = new Set([...builtinModules, ...builtinModules.map(name => `node:${name}`)]);
 const packages = [
   { path: 'packages/agentkit-harness-core', name: '@kingsoftcloud/agentkit-harness-core',
@@ -20,6 +22,12 @@ const results = [];
 for (const item of packages) {
   const directory = join(root, item.path), metadata = JSON.parse(await readFile(join(directory, 'package.json'), 'utf8'));
   assert.equal(metadata.name, item.name); assert.equal(metadata.license, 'Apache-2.0');
+  assert.notEqual(metadata.private, true, `${item.name} must be publishable`);
+  assert.deepEqual(metadata.repository, { type: 'git', url: PUBLIC_REPOSITORY });
+  assert.equal(metadata.publishConfig?.access, 'public');
+  assert.equal(metadata.publishConfig?.registry, PUBLIC_REGISTRY);
+  assert.ok(metadata.homepage?.startsWith('https://github.com/kingsoftcloud/ksadk-harness'));
+  assert.equal(metadata.bugs?.url, 'https://github.com/kingsoftcloud/ksadk-harness/issues');
   for (const name of Object.keys({ ...metadata.dependencies, ...metadata.peerDependencies, ...metadata.optionalDependencies }))
     assert.ok(item.dependencies.includes(name), `Unexpected public dependency: ${name}`);
   const files = [];

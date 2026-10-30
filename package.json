@@ -22,12 +22,25 @@
     "pack:all": "node scripts/pack-native.mjs",
     "verify:boundary": "node scripts/verify-native-package-boundary.mjs",
     "verify:snapshot": "node scripts/sync-from-studio.mjs --check",
-    "verify:installed-ui": "node scripts/verify-native-installed-ui.mjs"
+    "verify:installed-ui": "node scripts/verify-native-installed-ui.mjs",
+    "check:node": "node scripts/check-node-version.mjs",
+    "check": "npm run check:node && npm run build",
+    "test": "npm run test:core && npm run test:node && npm run test:ui"
   },
   "devDependencies": {
     "esbuild": "0.27.7",
     "typescript": "6.0.3",
     "unbash": "4.0.1",
     "@playwright/test": "1.58.2"
+  },
+  "description": "Open-source Native Harness workspace for durable Agent execution, Node adapters and React task UI.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kingsoftcloud/ksadk-harness.git"
+  },
+  "homepage": "https://github.com/kingsoftcloud/ksadk-harness#readme",
+  "bugs": {
+    "url": "https://github.com/kingsoftcloud/ksadk-harness/issues"
   }
 }

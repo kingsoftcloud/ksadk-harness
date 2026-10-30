@@ -1,0 +1,29 @@
+name: Bug report
+description: Report a reproducible problem in a released package.
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include credentials, private endpoints, customer data, or confidential source.
+  - type: input
+    id: package
+    attributes:
+      label: Package and version
+      placeholder: "@kingsoftcloud/agentkit-harness-node@0.0.1"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Include the smallest safe reproduction and the expected and actual behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include Node, OS, and host integration details that are safe to share.
+    validations:
+      required: true

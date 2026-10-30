@@ -6,10 +6,11 @@ imported by the core. SQLite and HTTP model adapters are in
 `@kingsoftcloud/agentkit-harness-node`; Studio composes the same kernel through
 its existing adapter.
 
-The package is private during local acceptance. Build from the repository with
-`node scripts/build-native-harness.mjs`, then pack this directory. Installation
-uses the compiled ESM and declarations in `dist`; no repository build step is
-required by consumers. Packages are not published by these commands.
+The package is published as a public npm package. Build from the repository
+with `node scripts/build-native-harness.mjs`, then pack this directory when
+testing a local artifact. Installation uses the compiled ESM and declarations
+in `dist`; no repository build step is required by consumers. Release tags are
+published by the GitHub workflow with npm provenance.
 
 ## Public composition
 

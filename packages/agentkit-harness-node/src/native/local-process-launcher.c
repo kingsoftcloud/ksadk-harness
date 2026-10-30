@@ -74,7 +74,14 @@ int main(int argc, char **argv) {
         { "maxOpenFiles", RLIMIT_NOFILE, values[3], 0, 0 },
         { "maxFileBytes", RLIMIT_FSIZE, values[4], 0, 0 },
     };
-    int failed = 0, unsupported = 0;
+    /* Fork the owner watchdog before applying the child resource limits.
+     * RLIMIT_NPROC is a limit on the user's process count on Linux, so
+     * creating the watcher after applying it can fail on shared CI runners
+     * even though the target process itself is allowed to start. */
+    pid_t group = getpgrp();
+    pid_t watcher = fork();
+    if (watcher == 0) watch_owner(owner, report, group);
+    int failed = watcher < 0, unsupported = 0;
     for (int i = 0; i < 5; ++i) {
         struct limit *item = &limits[i];
 #if defined(__APPLE__)
@@ -89,12 +96,6 @@ int main(int argc, char **argv) {
         struct rlimit desired = { .rlim_cur = item->effective, .rlim_max = item->effective };
         if (setrlimit(item->resource, &desired) < 0 || getrlimit(item->resource, &after) < 0
             || after.rlim_cur != item->effective || after.rlim_max != item->effective) { item->status = 1; failed++; }
-    }
-    pid_t watcher = -1;
-    if (!failed) {
-        watcher = fork();
-        if (watcher == 0) watch_owner(owner, report, getpgrp());
-        if (watcher < 0) failed++;
     }
     char buffer[4096];
     int at = snprintf(buffer, sizeof buffer, "{\"schemaVersion\":\"%s\",\"status\":\"%s\",\"watcherPid\":%ld,\"applied\":{",

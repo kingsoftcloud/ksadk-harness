@@ -1,6 +1,6 @@
 {
   "name": "@kingsoftcloud/agentkit-harness-node",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "private": false,
   "type": "module",
   "description": "Standalone Native Harness Node adapters: a durable SQLite run store, a one-request model HTTP port, and a minimal versioned JSON-RPC 2.0 over NDJSON process entry. Reuses the shared Native adapter implementations and externalizes @kingsoftcloud/agentkit-harness-core; depends on no Studio/DSH code at runtime.",
@@ -135,7 +135,7 @@
     "THIRD_PARTY_NOTICES.md"
   ],
   "dependencies": {
-    "@kingsoftcloud/agentkit-harness-core": "0.0.2",
+    "@kingsoftcloud/agentkit-harness-core": "0.0.3",
     "@astral-sh/ruff-wasm-nodejs": "0.16.8",
     "parse5": "7.3.0",
     "playwright-core": "1.58.2",

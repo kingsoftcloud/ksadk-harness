@@ -9,17 +9,17 @@
     {
       "name": "agentkit-harness-core",
       "files": 198,
-      "sha256": "997165d826465723ed9cf9b816e89c9441b4777bdc054471c0a50f6b4f03d9f4"
+      "sha256": "e2435b420da2d423f9b666fec929f5ccc9f85a51fc72539dad6ff30258416ee3"
     },
     {
       "name": "agentkit-harness-node",
-      "files": 252,
-      "sha256": "8f91cb07cac0bc531c60d922cff188dc3b34c2e1b6815828bfc84daff315a300"
+      "files": 253,
+      "sha256": "39b5f6f5c0e2f9ff8ba95e9b257c9f265848128ef302366f9d4087ebba69940b"
     },
     {
       "name": "agentkit-harness-ui",
       "files": 94,
-      "sha256": "4c7d3c35d31b3cda78fcb7d80bb69f2939db57059701a0c26dc720b8989229b6"
+      "sha256": "048bd9b25187f69456996f60c60511afa203f87c1628debd166872db0a8fdea1"
     }
   ],
   "supporting": [
@@ -43,5 +43,11 @@
       "path": "scripts/native-command-plan-entry.mjs",
       "sha256": "6d0b81b7bd65bb52d2926359cfec518adb1747dac920d5a6ae3901d709cbff1f"
     }
-  ]
+  ],
+  "maintenance": {
+    "repository": "ksadk-harness",
+    "baseRevision": "7a7ae59",
+    "studioRevision": "86b5de9f64b4afc26bf17fee83f91a33edd2e0b4",
+    "releaseVersion": "0.0.3"
+  }
 }

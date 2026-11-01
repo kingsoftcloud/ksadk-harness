@@ -49,6 +49,21 @@ try {
   await writeFile(join(directory, 'package.json'), JSON.stringify({ name: 'native-installed-ui-proof', private: true,
     type: 'module', dependencies }));
   run('npm', ['install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund', '--workspaces=false']);
+  run(process.execPath, ['--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    import { mkdirSync, writeFileSync } from 'node:fs';
+    import { createHash } from 'node:crypto';
+    import { verifyPackageFiles } from '@kingsoftcloud/agentkit-harness-node/package-integrity';
+    import { redactDiagnosticText } from '@kingsoftcloud/agentkit-harness-core/error-presentation';
+    import { redactError } from '@kingsoftcloud/agentkit-harness-ui';
+    mkdirSync('integrity-probe'); writeFileSync('integrity-probe/index.mjs', 'export const value=1;');
+    const files = { 'index.mjs': createHash('sha256').update('export const value=1;').digest('hex') };
+    assert.equal(verifyPackageFiles('integrity-probe', files), 1);
+    writeFileSync('integrity-probe/extra.mjs', 'unregistered');
+    assert.throws(() => verifyPackageFiles('integrity-probe', files), /Unexpected package file/);
+    for (const project of [redactDiagnosticText, redactError])
+      assert.doesNotMatch(project('Authorization: Bearer fixtureOnlyValue'), /fixtureOnlyValue/);
+  `]);
   await copyFile(join(root, 'tests/fixtures/installed-task-ui.mjs'), join(directory, 'probe.mjs'));
   const result = run(process.execPath, ['probe.mjs']);
   const evidence = JSON.parse(result.trim());

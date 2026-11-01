@@ -37,6 +37,7 @@ import { SqliteRunStore, createNativeModelPort, nativeModelRecoveryPolicy }
   from './index.mjs';
 import { RpcRequestLedger, digestRequest } from './rpc-ledger.mjs';
 import { WORKSPACE_TOOLS, createWorkspaceToolExecutor } from './rpc-tools.mjs';
+import { publicErrorMessage } from '@kingsoftcloud/agentkit-harness-core/error-presentation';
 
 export const RPC_PROTOCOL_VERSION = 'agentkit.native-rpc/v1';
 
@@ -349,7 +350,7 @@ export function createNativeRpcServer({ startup, store, ledger, owner = startup.
       return Object.hasOwn(req, 'id') ? errorResponse(req.id, ERR.invalid_params) : null;
     // JSON-RPC notification: no `id` member. Process but do not respond.
     if (!Object.hasOwn(req, 'id')) {
-      try { await dispatch(req); } catch (e) { process.stderr.write(`notification error: ${e?.stack || e}\n`); }
+      try { await dispatch(req); } catch (e) { process.stderr.write(`notification error: ${publicErrorMessage(e)}\n`); }
       return null;
     }
     return dispatch(req);
@@ -443,7 +444,7 @@ export async function main(argv = process.argv.slice(2)) {
     if (handlers.size >= 64) { writeLine(errorResponse(req?.id ?? null, ERR.not_dispatchable)); continue; }
     const handled = server.handle(req).then(res => { if (res) writeLine(res); },
       e => {
-        process.stderr.write(`handler error: ${e?.stack || e}\n`);
+        process.stderr.write(`handler error: ${publicErrorMessage(e)}\n`);
         writeLine(errorResponse(req?.id ?? null, ERR.internalError));
       });
     handlers.add(handled);

@@ -39,8 +39,8 @@ function fixture(t) {
   return { root, workspace, config, store, input, handles,
     async start(command, overrides = {}) { const h = await store.start(input(command, overrides)); handles.push(h); return h; } };
 }
-function nodeChild(code) {
-  const child = spawn(process.execPath, ['--input-type=module', '-e', code], {
+function nodeChild(code, { imports = [] } = {}) {
+  const child = spawn(process.execPath, [...imports.flatMap(value => ['--import', value]), '--input-type=module', '-e', code], {
     env: { PATH: '/no-programs', NODE_NO_WARNINGS: '1' }, stdio: ['ignore', 'pipe', 'pipe'],
   });
   let stdout = '', stderr = ''; child.stdout.on('data', chunk => { stdout += chunk; }); child.stderr.on('data', chunk => { stderr += chunk; });
@@ -288,6 +288,30 @@ test('failed supervisor spawn returns an owned unknown locator that a repaired H
 });
 if (process.platform === 'linux') test('Linux process-group admission records a verified failure without unknown evidence', async t => {
   const f = fixture(t), request = f.input('(sleep 5) & wait; printf forbidden > forbidden', {
+    operationKey: 'process-group-bound', settings: { wallSeconds: 10, maxProcesses: 1 },
+  });
+  const h = await f.store.start(request); f.handles.push(h);
+  const result = await h.wait({ timeoutMs: 5000 });
+  assert.equal(result.status, 'failed'); assert.equal(result.exitCode, -osConstants.signals.SIGKILL);
+  assert.equal(result.observedExitCode, null); assert.equal(result.evidenceIncomplete, false);
+  assert.equal(existsSync(join(f.workspace, 'forbidden')), false);
+  assert.equal((await f.store.start(request)).readOutput().status, 'failed');
+});
+if (process.platform === 'linux' && process.getuid() !== 0) test('failed POSIX control admission preserves unknown evidence and the observed exit code', async t => {
+  const f = fixture(t), request = f.input('printf forbidden > forbidden', { operationKey: 'controls-failure' });
+  const child = nodeChild(`import{LocalCommandStore}from ${JSON.stringify(moduleUrl)};
+    const h=await new LocalCommandStore(${JSON.stringify(f.config)}).start(${JSON.stringify(request)});
+    console.log(h.commandId);`, { imports: [new URL('./fixtures/fail-watchdog-fork.mjs', import.meta.url).href] });
+  const exited = await child.exit; assert.equal(exited.code, 0, exited.stderr);
+  const commandId = await until(child.line);
+  const h = f.store.connect(commandId); f.handles.push(h);
+  const result = await until(() => { const output = h.readOutput(); return output.status === 'unknown' && output; });
+  assert.equal(result.exitCode, null); assert.equal(result.observedExitCode, 125); assert.equal(result.evidenceIncomplete, true);
+  assert.equal(existsSync(join(f.workspace, 'forbidden')), false);
+  assert.equal((await f.store.start(request)).readOutput().status, 'unknown');
+});
+if (process.platform === 'linux') test('Linux background group-limit failure stays known, never reaches later effects and never relaunches', async t => {
+  const f = fixture(t), request = f.input('(/bin/sleep 5) & wait; printf forbidden > forbidden', {
     operationKey: 'process-group-bound', settings: { wallSeconds: 10, maxProcesses: 1 },
   });
   const h = await f.store.start(request); f.handles.push(h);

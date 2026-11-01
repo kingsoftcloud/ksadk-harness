@@ -21,7 +21,6 @@
     "test:ui": "node --test packages/agentkit-harness-ui/test/*.test.mjs",
     "pack:all": "node scripts/pack-native.mjs",
     "verify:boundary": "node scripts/verify-native-package-boundary.mjs",
-    "verify:snapshot": "node scripts/sync-from-studio.mjs --check",
     "verify:installed-ui": "node scripts/verify-native-installed-ui.mjs",
     "check:node": "node scripts/check-node-version.mjs",
     "check": "npm run check:node && npm run build",

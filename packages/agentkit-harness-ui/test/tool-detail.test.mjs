@@ -105,3 +105,14 @@ test("redactError bounds the message and strips inline secrets", () => {
   const long = redactError("x".repeat(500), { maxChars: 50 });
   assert.ok(long.length <= 52);
 });
+
+test('display errors remove authorization, URL credentials and quoted secrets before truncating', () => {
+  const message = 'upstream rejected Authorization: Bearer fixtureBearerValue; '
+    + 'https://' + 'reader:' + 'fixturePassword@example.invalid/?token=fixtureQueryValue '
+    + '{"password":"fixture password with spaces"}';
+  for (const maxChars of [40, 200, 1000]) {
+    const result = redactError(message, { maxChars });
+    assert.doesNotMatch(result, /fixtureBearerValue|fixturePassword|fixtureQueryValue|fixture password/);
+    assert.ok(result.length <= maxChars);
+  }
+});

@@ -1,3 +1,4 @@
+import { publicErrorMessage, publicErrorCode } from '@kingsoftcloud/agentkit-harness-core/error-presentation';
 /**
  * Native Node workspace tools for the AgentKit Harness.
  *
@@ -527,8 +528,8 @@ export function createNativeWorkspaceTools({
       if (!absent(target)) return stalePreparedEdit(rel);
       const createdText = preparedEdit.createdText;
       try { publish(target, Buffer.from(createdText, 'utf-8'), { createOnly: true }); }
-      catch (error) { return { ok: false, path: rel, error_type: error.code === 'EEXIST' ? 'file_modified_since_read' : error.code || 'publish_failed',
-        error_message: error.message, suggested_action: 'Read the current file and retry.' }; }
+      catch (error) { return { ok: false, path: rel, error_type: error.code === 'EEXIST' ? 'file_modified_since_read' : publicErrorCode(error, 'publish_failed'),
+        error_message: publicErrorMessage(error), suggested_action: 'Read the current file and retry.' }; }
       const stat = statSync(target, { bigint: true }); refreshReadState(rel, stat, createdText, target);
       const diff = buildDiff(rel, '', createdText);
       return { ok: true, path: rel, absolute_path: target, replacements: 1, used_quote_normalization: false,
@@ -694,7 +695,7 @@ export function createNativeWorkspaceTools({
     if (typeof patch !== 'string' || patch.length > 262144) return { error: patchFailure('apply_patch_invalid_patch', 'patch_text must be a string of at most 262144 characters') };
     let sections;
     try { sections = parseStructuredPatch(patch); }
-    catch (error) { return { error: patchFailure('apply_patch_invalid_patch', error.message) }; }
+    catch (error) { return { error: patchFailure('apply_patch_invalid_patch', publicErrorMessage(error)) }; }
     if (!sections.length) return { error: patchFailure('apply_patch_empty_patch', 'Patch has no file changes') };
     if (sections.length > 64) return { error: patchFailure('patch_budget_exceeded', 'At most 64 file sections are allowed') };
     const changes = [], paths = new Set(); let bytes = 0;
@@ -1062,7 +1063,7 @@ export function createNativeWorkspaceTools({
     const mutating = MUTATING.has(name);
     let guard;
     try { guard = workspaceMutationGuard(request, mutating ? assertCurrent : undefined, checkRootBoundary); }
-    catch (error) { return { status: 'error', content: { code: error.code || 'invalid_request' } }; }
+    catch (error) { return { status: 'error', content: { code: publicErrorCode(error, 'invalid_request') } }; }
 
     // The root boundary is pinned at factory creation. Re-check it on every
     // execute: a symlink swap (or parent rewrite) that changes the live
@@ -1128,7 +1129,7 @@ export function createNativeWorkspaceTools({
         if (preparedPatch.error) return { status: 'error', content: preparedPatch.error };
       } catch (error) {
         if (signal?.aborted) return canceled();
-        return { status: 'error', content: { ok: false, error_type: error.code || 'apply_patch_verification_failed', error_message: error.message, executed: false } };
+        return { status: 'error', content: { ok: false, error_type: publicErrorCode(error, 'apply_patch_verification_failed'), error_message: publicErrorMessage(error), executed: false } };
       }
     }
     // Matching runs before the publication lock, with strings only. The locked
@@ -1141,8 +1142,8 @@ export function createNativeWorkspaceTools({
         if (preparedEdit.error) return { status: 'error', content: preparedEdit.error };
       } catch (error) {
         if (signal?.aborted) return canceled();
-        return { status: 'error', content: { ok: false, error_type: error instanceof WorkspacePathError ? 'path_escape' : error.code || 'edit_match_failed',
-          error_message: error.message, executed: false } };
+        return { status: 'error', content: { ok: false, error_type: error instanceof WorkspacePathError ? 'path_escape' : publicErrorCode(error, 'edit_match_failed'),
+          error_message: publicErrorMessage(error), executed: false } };
       }
     }
     const mutations = new Set(), publications = new Map(), reads = new Map(), displayChanges = new Map(), previousDisplayChanges = activeDisplayChanges,
@@ -1199,8 +1200,8 @@ export function createNativeWorkspaceTools({
       try { result = await result; }
       catch (error) {
         if (signal?.aborted) return canceled();
-        return { status: 'error', content: { ok: false, error_type: error.code || 'python_syntax_unavailable',
-          error_message: error.message } };
+        return { status: 'error', content: { ok: false, error_type: publicErrorCode(error, 'python_syntax_unavailable'),
+          error_message: publicErrorMessage(error) } };
       }
     }
     if (signal?.aborted && !(result && result.ok)) return canceled();

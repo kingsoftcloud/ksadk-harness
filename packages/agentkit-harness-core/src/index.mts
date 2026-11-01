@@ -63,3 +63,4 @@ export * from './model-failure.mjs';
 export * from './summary-continuity.mjs';
 export { matchesToolExecutionContract } from './tool-execution-contract.mjs';
 export * from './workspace-change.mjs';
+export * from './error-presentation.mjs';

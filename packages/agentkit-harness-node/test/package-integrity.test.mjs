@@ -44,3 +44,23 @@ test('manifest paths cannot authorize files outside the package', t => {
   for (const path of ['../outside', '/absolute', 'lib/../index.mjs', 'lib\\data.txt'])
     assert.throws(() => verifyPackageFiles(directory, { ...pins, [path]: 'a'.repeat(64) }), /Invalid package file pin/);
 });
+
+test('installed dependencies need their own exact registry file evidence; a dependency directory is never a blanket exclusion', t => {
+  const { directory, pins } = fixture(t);
+  const writePin = (root, name, text, files) => {
+    writeFileSync(join(root, name), text); files[name] = createHash('sha256').update(text).digest('hex');
+  };
+  writePin(directory, 'package.json', JSON.stringify({ dependencies: { dependency: '1.0.0' } }), pins);
+  const dependency = join(directory, 'node_modules/dependency'); mkdirSync(dependency, { recursive: true });
+  const files = {};
+  writePin(dependency, 'package.json', JSON.stringify({ name: 'dependency', version: '1.0.0' }), files);
+  writePin(dependency, 'index.mjs', 'export const value = 1;', files);
+  assert.throws(() => verifyPackageFiles(directory, pins), /Unexpected package directory/);
+  const options = { dependencyPackages: { 'dependency@1.0.0': { files } } };
+  assert.equal(verifyPackageFiles(directory, pins, options), 3);
+  writeFileSync(join(dependency, 'extra.mjs'), 'unregistered');
+  assert.throws(() => verifyPackageFiles(directory, pins, options), /Unexpected package file/);
+  rmSync(join(dependency, 'extra.mjs'));
+  writeFileSync(join(dependency, 'index.mjs'), 'tampered');
+  assert.throws(() => verifyPackageFiles(directory, pins, options), /stale or modified/);
+});

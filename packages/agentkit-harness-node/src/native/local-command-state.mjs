@@ -138,7 +138,17 @@ export function tryLock(path, busyTimeoutMs = 0) {
     try { createPrivate(path); } catch (error) { if (error.code !== 'EEXIST') throw error; }
   }
   const before = privateFile(path);
-  for (const suffix of ['-journal', '-wal', '-shm']) privateFile(path + suffix, true);
+  for (const suffix of ['-journal', '-wal', '-shm']) {
+    try { privateFile(path + suffix, true); }
+    catch (error) {
+      // SQLite may unlink a sidecar while another owner checks its lstat.
+      // No lock has been acquired or effect dispatched: treat this transient
+      // tombstone as contention, then verify the next acquisition afresh.
+      // Main database drift, links and unsafe permissions remain hard errors.
+      if (error.code === 'background_state_changed') return null;
+      throw error;
+    }
+  }
   let db;
   try {
     db = new DatabaseSync(path);

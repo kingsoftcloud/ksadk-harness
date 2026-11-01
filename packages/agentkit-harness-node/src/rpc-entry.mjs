@@ -207,10 +207,10 @@ export function createNativeRpcServer({ startup, store, ledger, owner = startup.
         const snap = await kernel.runUntilIdle(scope, runId, { signal: controller.signal });
         if (terminal(snap.phase)) {
           try { const row = ledger.lookupByRunKey(key); if (row) ledger.complete(row.requestId, compactResponse(snap), key); }
-          catch (e) { process.stderr.write(`complete failed for ${runId}: ${e.message}\n`); }
+          catch (e) { process.stderr.write(`complete failed for ${runId}: ${publicErrorMessage(e)}\n`); }
         }
       } catch (e) {
-        process.stderr.write(`drive failed for ${runId}: ${e.message}\n`);
+        process.stderr.write(`drive failed for ${runId}: ${publicErrorMessage(e)}\n`);
       } finally { resolveDone(); drivers.delete(key); }
     })();
     return true;
@@ -250,7 +250,7 @@ export function createNativeRpcServer({ startup, store, ledger, owner = startup.
         // in separate durable writes. A retry can observe that small window;
         // close it here from the already-terminal run instead of returning a
         // misleading pending response.
-        if (terminal(existing.snapshot)) {
+        if (terminal(existing.snapshot.phase)) {
           const response = compactResponse(existing.snapshot);
           try { ledger.complete(ledgerId(requestId), response, key); } catch { /* another driver may have completed it */ }
           return success(id, { runId, status: 'completed', result: response });
@@ -407,7 +407,7 @@ export async function main(argv = process.argv.slice(2)) {
   }
   let startup;
   try { startup = buildStartup(args); }
-  catch (e) { process.stderr.write(`startup error: ${e.message}\n`); return process.exit(2); }
+  catch (e) { process.stderr.write(`startup error: ${publicErrorMessage(e)}\n`); return process.exit(2); }
   const store = new SqliteRunStore(resolvePath(args.db));
   const ledger = new RpcRequestLedger(resolvePath(args.ledger));
   const server = createNativeRpcServer({ startup, store, ledger, owner: startup.owner });
@@ -416,7 +416,7 @@ export async function main(argv = process.argv.slice(2)) {
   async function shutdown() {
     if (shuttingDown) return;
     shuttingDown = true;
-    try { await server.dispose(); } catch (e) { process.stderr.write(`dispose error: ${e.message}\n`); }
+    try { await server.dispose(); } catch (e) { process.stderr.write(`dispose error: ${publicErrorMessage(e)}\n`); }
     await Promise.allSettled(handlers);
     await writeChain;
     process.exit(0);

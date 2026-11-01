@@ -43,5 +43,6 @@ test('main database drift and unsafe sidecars remain hard errors', t => {
   fs.rmSync(journal); fs.linkSync(target, journal);
   assert.throws(() => tryLock(path), { code: 'background_state_not_private' });
   fs.rmSync(journal); fs.writeFileSync(journal, '', { mode: 0o644 });
+  fs.chmodSync(journal, 0o644); // Keep the unsafe-mode fixture independent of the runner's umask.
   assert.throws(() => tryLock(path), { code: 'background_state_not_private' });
 });

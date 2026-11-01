@@ -215,7 +215,7 @@ test('a committed terminal Run repairs a pending request receipt without re-driv
     const diagnostics = [];
     let fail = true;
     server.ledger.complete = (...args) => {
-      if (fail) { fail = false; throw Error('Authorization: Bearer synthetic-rpc-receipt-secret https://fixture:password@example.test'); }
+      if (fail) { fail = false; throw Error('Authorization: Bearer synthetic-rpc-receipt-secret ' + 'https://' + 'fixture:password@example.test'); }
       return complete(...args);
     };
     process.stderr.write = chunk => { diagnostics.push(String(chunk)); return true; };

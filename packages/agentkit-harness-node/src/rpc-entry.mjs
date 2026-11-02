@@ -37,7 +37,7 @@ import { SqliteRunStore, createNativeModelPort, nativeModelRecoveryPolicy }
   from './index.mjs';
 import { RpcRequestLedger, digestRequest } from './rpc-ledger.mjs';
 import { WORKSPACE_TOOLS, createWorkspaceToolExecutor } from './rpc-tools.mjs';
-import { publicErrorMessage } from '@kingsoftcloud/agentkit-harness-core/error-presentation';
+import { publicErrorMessage, publicFailureContent } from '@kingsoftcloud/agentkit-harness-core/error-presentation';
 
 export const RPC_PROTOCOL_VERSION = 'agentkit.native-rpc/v1';
 
@@ -55,7 +55,7 @@ const ERR = {
 };
 
 const success = (id, result) => ({ jsonrpc: '2.0', id, result });
-const errorResponse = (id, e, data) => ({ jsonrpc: '2.0', id, error: { code: e.code, message: e.message, ...(data ? { data } : {}) } });
+const errorResponse = (id, e, data) => ({ jsonrpc: '2.0', id, error: publicFailureContent({ code: e.code, message: e.message, ...(data ? { data } : {}) }) });
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const digest = value => createHash('sha256').update(canonical(value)).digest('hex');
 

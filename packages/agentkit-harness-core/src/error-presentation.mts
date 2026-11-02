@@ -20,19 +20,28 @@ export function redactDiagnosticText(input: unknown, maxChars = 2048): string {
 
 export function publicErrorMessage(error: unknown, fallback = 'Tool operation failed.'): string {
   const message = error && typeof error === 'object' && 'message' in error ? (error as { message?: unknown }).message : error;
-  return redactDiagnosticText(message, 1024) || fallback;
+  return redactDiagnosticText(message, 1024) || redactDiagnosticText(fallback, 1024) || 'Tool operation failed.';
 }
 
 export function publicErrorCode(error: unknown, fallback: string): string {
   const code = error && typeof error === 'object' && 'code' in error ? (error as { code?: unknown }).code : undefined;
-  return typeof code === 'string' && /^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(code)
-    && redactDiagnosticText(code) === code ? code : fallback;
+  const valid = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(value)
+    && redactDiagnosticText(value) === value;
+  return valid(code) ? code : fallback === '' || valid(fallback) ? fallback : 'TOOL_OPERATION_FAILED';
 }
 
 /** Project diagnostic fields without rewriting receipts, locators or inputs. */
 export function publicFailureContent<T extends Record<string, unknown>>(content: T): T {
-  const diagnosticFields = new Set(['message', 'error_message', 'errorMessage', 'detail', 'details', 'error', 'cause', 'stack']);
-  const codeFields = new Set(['code', 'error_type', 'error_code']);
+  // Field names supply the context absent from an otherwise innocuous bare
+  // value. Locator identifiers (sessionId, operationKey, etc.) are not secrets.
+  const credentialFields = new Set(['password', 'passwd', 'dbpassword', 'databasepassword', 'secret', 'secrets', 'secretkey',
+    'secretaccesskey', 'apikey', 'apitoken', 'accesskey', 'accesskeyid', 'accesskeysecret', 'authorization', 'proxyauthorization',
+    'cookie', 'setcookie', 'token', 'accesstoken', 'refreshtoken', 'sessiontoken', 'idtoken', 'bearertoken', 'authtoken', 'clientsecret',
+    'kssaccesskeyid', 'ksssecuritytoken', 'awsaccesskeyid', 'awssecretaccesskey', 'awssessiontoken', 'xapikey', 'xauthtoken',
+    'xamzsecuritytoken', 'csrftoken', 'xcsrftoken', 'credentials', 'privatekey', 'sshprivatekey', 'connectionstring']);
+  const isCredential = (key: string) => credentialFields.has(key.replace(/[-_.\s]/g, '').toLowerCase());
+  const diagnosticFields = new Set(['message', 'error_message', 'errorMessage', 'error_description', 'detail', 'details', 'error', 'cause', 'stack', 'reason', 'reason_message', 'reasonMessage', 'hint']);
+  const codeFields = new Set(['code', 'error_type', 'error_code', 'errorCode']);
   const ancestors = new Set<object>();
   let remaining = 10000;
   function project(value: unknown, diagnostic: boolean, depth: number): unknown {
@@ -47,8 +56,11 @@ export function publicFailureContent<T extends Record<string, unknown>>(content:
       const keys = new Set(Object.keys(value));
       if (value instanceof Error) for (const key of ['message', 'stack', 'cause', 'code'])
         if (Object.hasOwn(value, key)) keys.add(key);
+      const fields = value as Record<string, unknown>;
+      const namedCredential = ['name', 'key'].some(key => typeof fields[key] === 'string' && isCredential(fields[key] as string));
       return Object.fromEntries([...keys].map(key => {
         const item = (value as Record<string, unknown>)[key];
+        if (isCredential(key) || (namedCredential && key === 'value')) return [key, '[redacted]'];
         // Empty optional diagnostic codes mean "absent" in typed Skill events.
         // They carry no secret and must remain stable execution evidence.
         return [key, codeFields.has(key) && typeof item === 'string' && item !== ''

@@ -1,3 +1,4 @@
+import { publicToolExecution } from './public-tool-result.mjs';
 /**
  * Native component_status tool port.
  *
@@ -276,5 +277,5 @@ export function createNativeComponentTools({ scope, sessionId, status, assertCur
 
   function close() { closed = true; }
 
-  return { contract: NATIVE_COMPONENT_TOOLS_CONTRACT, definitions, execute, close };
+  return { contract: NATIVE_COMPONENT_TOOLS_CONTRACT, definitions, execute: publicToolExecution(execute), close };
 }

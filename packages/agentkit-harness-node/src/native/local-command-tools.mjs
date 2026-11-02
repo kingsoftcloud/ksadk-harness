@@ -1,3 +1,4 @@
+import { publicToolExecution } from './public-tool-result.mjs';
 import { lstatSync, mkdirSync, realpathSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { canonical, copy, invariant, toolInputRejection } from '@kingsoftcloud/agentkit-harness-core';
@@ -285,7 +286,7 @@ export function createLocalCommandTransport({ workspaceRoot, stateRoot, sessionI
         : errorResult(request?.signal?.aborted ? 'canceled' : error.code ?? 'local_command_error', { executed: false });
     }
   }
-  return Object.freeze({ get definitions() { return copy(definitions); }, execute, checkPlanMode,
+  return Object.freeze({ get definitions() { return copy(definitions); }, execute: publicToolExecution(execute), checkPlanMode,
     commandId: operationKey => store.commandId(operationKey), reader: createLocalBackgroundReader(store) });
 }
 

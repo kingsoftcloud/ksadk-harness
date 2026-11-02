@@ -1,3 +1,4 @@
+import { publicToolExecution } from './public-tool-result.mjs';
 // Scoped, paged read-only tools for already-accounted direct children.
 //
 // Ports the pure-read semantics of ksadk/harness/subagent_adapters/native_child_result.py
@@ -362,5 +363,5 @@ export function createNativeChildResultTools({ scope, childScopes = [scope], sto
     }
   }
 
-  return Object.freeze({ definitions, execute });
+  return Object.freeze({ definitions, execute: publicToolExecution(execute) });
 }

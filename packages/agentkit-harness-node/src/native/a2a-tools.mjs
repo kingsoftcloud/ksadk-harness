@@ -1,3 +1,4 @@
+import { publicToolExecution } from './public-tool-result.mjs';
 /**
  * Native Node A2A tools for the AgentKit Harness.
  *
@@ -513,5 +514,5 @@ function createA2aToolPort({
     sessionId,
   })).digest('hex');
 
-  return { definitions: definitions.map(item => copy(item)), execute, contract, bindingDigest };
+  return { definitions: definitions.map(item => copy(item)), execute: publicToolExecution(execute), contract, bindingDigest };
 }

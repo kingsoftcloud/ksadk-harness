@@ -1,3 +1,4 @@
+import { publicToolExecution } from './public-tool-result.mjs';
 import { publicErrorMessage, publicErrorCode, publicFailureContent } from '@kingsoftcloud/agentkit-harness-core/error-presentation';
 // Native Skills builtin tools — bounded formal definitions and ToolPort.
 //
@@ -410,7 +411,7 @@ export function createNativeSkillTools({
 
       return {
         tools: {
-          async execute(request = {}) {
+          execute: publicToolExecution(async function execute(request = {}) {
             const { call, signal, scope, runId, sessionId, turnId, buildId,
               parentRunId, taskChainId, operationKey, executionFence, definition } = request;
 
@@ -524,7 +525,7 @@ export function createNativeSkillTools({
               }
               return { status: 'error', content: { code: publicErrorCode(error, 'NATIVE_SKILL_ERROR'), executed: false, message: publicErrorMessage(error) } };
             }
-          },
+          }),
         },
       };
     },

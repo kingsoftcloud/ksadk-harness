@@ -56,4 +56,22 @@ test('private keys and malformed diagnostic codes cannot become public errors', 
   assert.equal(publicErrorCode({ code: 'REQUEST_CANCELLED' }, 'TOOL_FAILED'), 'REQUEST_CANCELLED');
   assert.equal(publicErrorMessage(null), 'Tool operation failed.');
   assert.equal(publicErrorMessage(new Error('file no longer exists')), 'file no longer exists');
+  assert.doesNotMatch(publicErrorMessage(null, 'Authorization: Bearer fixtureFallbackSecret'), /fixtureFallbackSecret/);
+  assert.equal(publicErrorCode(null, 'Bearer fixtureFallbackSecret'), 'TOOL_OPERATION_FAILED');
+  assert.equal(publicErrorCode(null, ''), '');
+});
+
+test('credential field names redact bare, nested, mixed-case and header-pair values', () => {
+  const keys = ['password', 'passwd', 'secret', 'api_key', 'apiKey', 'Authorization', 'proxy-authorization', 'Cookie',
+    'set-cookie', 'access_token', 'refreshToken', 'client_secret', 'KSSAccessKeyId', 'KSSSecurityToken', 'AWS_SECRET_ACCESS_KEY',
+    'API_TOKEN', 'X-API-Key', 'X-Amz-Security-Token', 'credentials', 'private_key', 'api.key', 'connection_string'];
+  for (const key of keys) {
+    const input = { [key]: 'fixture-bare-value', error: { deeper: [{ [key]: { nested: 'fixture-object-value' } }] },
+      details: [{ name: key, value: ['fixture-header-value'] }, { key, value: 'fixture-map-value' }],
+      receipt: { sessionId: 'session', operationKey: 'original', executed: true }, error_code: '' };
+    const output = publicFailureContent(input);
+    assert.doesNotMatch(JSON.stringify(output), /fixture-(?:bare|object|header|map)-value/, key);
+    assert.deepEqual(output.receipt, input.receipt); assert.equal(output.error_code, '');
+    assert.equal(input[key], 'fixture-bare-value');
+  }
 });

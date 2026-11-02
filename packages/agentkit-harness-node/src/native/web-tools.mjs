@@ -1,3 +1,4 @@
+import { publicToolExecution } from './public-tool-result.mjs';
 /**
  * Native Node web tools for the AgentKit Harness.
  *
@@ -520,7 +521,7 @@ export function createWebToolTransport({ fetch: fetchImpl, searchFetch = fetchIm
   const definitions = nativeWebToolDefinitions(), formal = new Map(definitions.map(item => [item.name, item]));
   return {
     contract: 'agentkit.web-tool-transport/v1', definitions: definitions.map(item => copy(item)),
-    async execute(request) {
+    execute: publicToolExecution(async function execute(request) {
       const call = request?.call, definition = formal.get(call?.name);
       if (!definition) return { status: 'error', content: { code: 'unknown_tool' } };
       if (!(request.signal instanceof AbortSignal)) return { status: 'error', content: { code: 'invalid_request' } };
@@ -554,7 +555,7 @@ export function createWebToolTransport({ fetch: fetchImpl, searchFetch = fetchIm
         if (error?.code === 'web_authority_stale') return { status: 'error', content: { code: 'web_authority_stale', executed: false } };
         return { status: 'error', content: { ok: false, error_type: 'WebToolError', error_message: 'web tool failed' } };
       }
-    },
+    }),
   };
 }
 
@@ -639,5 +640,5 @@ export function createNativeWebTools({
   // Return fresh deep copies of the definitions so callers cannot mutate the
   // formal map through the returned array (the formal map stays the trusted
   // source of truth for every execute).
-  return { definitions: definitions.map(item => copy(item)), execute, contract: NATIVE_WEB_TOOLS_CONTRACT };
+  return { definitions: definitions.map(item => copy(item)), execute: publicToolExecution(execute), contract: NATIVE_WEB_TOOLS_CONTRACT };
 }

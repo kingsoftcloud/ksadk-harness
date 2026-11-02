@@ -1,3 +1,4 @@
+import { publicToolExecution } from './public-tool-result.mjs';
 import { canonical, copy, invariant, toolInputRejection, assertNativeAuxiliaryToolExecution, assertNativeAuxiliaryReceiptObservation }
   from '@kingsoftcloud/agentkit-harness-core';
 import { memoryDigest, nativeMemoryScopeBindings, nativeMemorySensitiveLabels } from './memory-candidate.mjs';
@@ -112,5 +113,5 @@ export function createNativeMemoryExtractionTools({ run, store, provider, policy
       callId: request.call.callId, result: result.receipt && !result.conflict
         ? { status: 'ok', content: result.receipt } : null };
   }
-  return { definitions, execute, observeReceipt };
+  return { definitions, execute: publicToolExecution(execute), observeReceipt };
 }

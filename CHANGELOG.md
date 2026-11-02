@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.0.9
+
+- Apply shared diagnostic projection to public Skill disclosure, approval and uncertain tool results, including related Web, command, Memory, A2A and child boundaries; preserve successful output and execution identities.
+- Redact bare credentials by structured field/header names, including nested objects and arrays.
+- Fail publishing retries when existing npm package source or archive integrity differs from the tested release; verify all packages before publishing and retain release receipts.
+- Bind runtime and peer dependency archives to lockfile and registry integrity, verify installed hoisted/nested files, and reject missing evidence or modified dependencies.
+
 ## 0.0.8 - 2026-11-02
 
 - Preserve absent optional diagnostic codes when projecting nested failures, so

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { verifyPackageFiles } from '../packages/agentkit-harness-node/src/package-integrity.mjs';
 import { validatePackageArchive } from './native-package-archive.mjs';
+import { collectDependencyEvidence } from './native-registry-evidence.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const directory = join(root, '.artifacts/packages'); mkdirSync(directory, { recursive: true });
@@ -29,5 +30,7 @@ for (const name of ['agentkit-harness-core', 'agentkit-harness-node', 'agentkit-
   packages.push({ name: packed.name, version: packed.version, filename, sha256: digest, integrity: packed.integrity, fileHashes });
 }
 const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
-writeFileSync(join(directory, 'manifest.json'), JSON.stringify({ schemaVersion: 'agentkit.native-packages/v1', sourceCommit, packages }, null, 2) + '\n');
-console.log(JSON.stringify({ directory, packages }, null, 2));
+const dependencies = await collectDependencyEvidence({ root, packages: packages.map(item => item.name.split('/')[1]), directory });
+writeFileSync(join(directory, 'manifest.json'), JSON.stringify({ schemaVersion: 'agentkit.native-packages/v1', sourceCommit, packages, ...dependencies }, null, 2) + '\n');
+console.log(JSON.stringify({ directory, packages: packages.map(({ fileHashes, ...item }) => ({ ...item, files: Object.keys(fileHashes).length })),
+  dependencyArchives: Object.keys(dependencies.dependencyPackages).length }, null, 2));

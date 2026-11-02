@@ -48,18 +48,13 @@ jobs:
           echo "GITLEAKS_BIN=$RUNNER_TEMP/gitleaks/gitleaks" >> "$GITHUB_ENV"
       - run: make public-gate
       - name: Publish packages with provenance
-        shell: bash
-        run: |
-          set -euo pipefail
-          for package in \
-            packages/agentkit-harness-core \
-            packages/agentkit-harness-node \
-            packages/agentkit-harness-ui; do
-            name="$(node -p "require('./${package}/package.json').name")"
-            version="$(node -p "require('./${package}/package.json').version")"
-            if npm view "${name}@${version}" version >/dev/null 2>&1; then
-              echo "${name}@${version} already published; skipping."
-            else
-              npm publish --workspace "${package}" --access public --provenance
-            fi
-          done
+        run: node scripts/publish-native-release.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: npm-release-evidence
+          path: |
+            .artifacts/npm-release-receipt.json
+            .artifacts/packages/manifest.json
+            .artifacts/installed-ui-proof.json
+          if-no-files-found: error

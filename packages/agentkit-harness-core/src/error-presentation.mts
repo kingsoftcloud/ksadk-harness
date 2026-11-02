@@ -49,7 +49,9 @@ export function publicFailureContent<T extends Record<string, unknown>>(content:
         if (Object.hasOwn(value, key)) keys.add(key);
       return Object.fromEntries([...keys].map(key => {
         const item = (value as Record<string, unknown>)[key];
-        return [key, codeFields.has(key) && typeof item === 'string'
+        // Empty optional diagnostic codes mean "absent" in typed Skill events.
+        // They carry no secret and must remain stable execution evidence.
+        return [key, codeFields.has(key) && typeof item === 'string' && item !== ''
           ? publicErrorCode({ code: item }, 'TOOL_OPERATION_FAILED')
           : project(item, diagnostic || diagnosticFields.has(key), depth + 1)];
       }));

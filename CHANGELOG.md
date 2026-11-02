@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.0.8 - 2026-11-02
+
+- Preserve absent optional diagnostic codes when projecting nested failures, so
+  uncertain Skill event evidence remains unchanged. Add a portable adapter
+  regression for the consumer integration case found while validating 0.0.7.
+- Includes the Workspace diagnostic, archive validation and release guard fixes
+  from 0.0.7. Studio should consume this revision.
+
 ## 0.0.7 - 2026-11-02
 
 - Sanitize every Workspace failure result, including authorization, filesystem

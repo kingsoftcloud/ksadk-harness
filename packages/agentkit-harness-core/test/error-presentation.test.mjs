@@ -41,6 +41,12 @@ test('cyclic and excessively deep diagnostics terminate without exposing an unpr
   assert.doesNotMatch(JSON.stringify(publicFailureContent(deep)), /fixtureValue/);
 });
 
+test('absent optional diagnostic codes remain byte-stable instead of fabricating an error', () => {
+  const payload = { code: '', details: [{ error_type: '', error_code: '' }],
+    skill_events: [{ error_code: '', event_id: 'original-event', runtime_id: 'original-runtime' }] };
+  assert.deepEqual(publicFailureContent(payload), payload);
+});
+
 test('private keys and malformed diagnostic codes cannot become public errors', () => {
   const marker = '-'.repeat(5);
   const key = marker + 'BEGIN PRIVATE KEY' + marker + '\nfixture-private-key\n' + marker + 'END PRIVATE KEY' + marker;

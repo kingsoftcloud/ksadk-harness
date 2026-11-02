@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
-import { lockedDependencyClosure, validateRegistryArchive, verifyInstalledDependencyTree, assertIntegrity } from '../native-registry-evidence.mjs';
+import { lockedDependencyClosure, validateRegistryArchive, verifyInstalledDependencyTree, assertIntegrity, collectDependencyEvidence } from '../native-registry-evidence.mjs';
 
 const sri = bytes => 'sha512-' + createHash('sha512').update(bytes).digest('base64');
 test('runtime closure resolves nested versions, peers and optional absence without including dev dependencies', () => {
@@ -40,6 +40,32 @@ test('dependency evidence binds lock, registry metadata and actual archive bytes
     assert.throws(() => validateRegistryArchive(expected, { ...metadata, ...change }, bytes));
   assert.throws(() => validateRegistryArchive(expected, metadata, Buffer.from('tampered')));
   assert.throws(() => assertIntegrity(bytes, undefined));
+});
+
+test('registry evidence reads read-only archive members without extracting third-party filesystem modes', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'readonly-registry-evidence-')); t.after(() => rmSync(root, { recursive: true, force: true }));
+  const entries = [
+    { path: 'package/', directory: true, body: '' },
+    { path: 'package/package.json', body: JSON.stringify({ name: 'dependency', version: '1.0.0' }) },
+    { path: 'package/CHANGELOG.md', body: 'registry bytes' },
+  ];
+  const bytes = gzipSync(Buffer.concat([...entries.map(({ path, directory, body }) => {
+    const header = Buffer.alloc(512), data = Buffer.from(body); header.write(path);
+    header.write(directory ? '0000555\0' : '0000444\0', 100, 8);
+    header.write(data.length.toString(8).padStart(11, '0') + '\0', 124, 12);
+    header.fill(32, 148, 156); header[156] = directory ? 53 : 48; header.write('ustar\0', 257, 6);
+    header.write(header.reduce((sum, byte) => sum + byte, 0).toString(8).padStart(6, '0') + '\0 ', 148, 8);
+    return Buffer.concat([header, data, Buffer.alloc((512 - data.length % 512) % 512)]);
+  }), Buffer.alloc(1024)]));
+  const resolved = 'https://registry.npmjs.org/dependency/-/dependency-1.0.0.tgz';
+  const metadata = { name: 'dependency', version: '1.0.0', dist: { integrity: sri(bytes), tarball: resolved } };
+  writeFileSync(join(root, 'package-lock.json'), JSON.stringify({ packages: {
+    'packages/engine': { dependencies: { dependency: '1.0.0' } },
+    'node_modules/dependency': { version: '1.0.0', resolved, integrity: sri(bytes) },
+  } }));
+  const result = await collectDependencyEvidence({ root, packages: ['engine'], directory: join(root, 'artifacts'),
+    fetchImpl: async url => String(url).endsWith('.tgz') ? new Response(bytes) : Response.json(metadata) });
+  assert.equal(result.dependencyPackages['dependency@1.0.0'].files['CHANGELOG.md'], createHash('sha256').update('registry bytes').digest('hex'));
 });
 test('installed original archives require independent evidence for each hoisted and nested version', t => {
   const root = mkdtempSync(join(tmpdir(), 'installed-registry-evidence-')); t.after(() => rmSync(root, { recursive: true, force: true }));

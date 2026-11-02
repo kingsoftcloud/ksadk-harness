@@ -32,9 +32,9 @@ export async function publishRelease({ manifest, sourceCommit, readRegistry, pub
     const expected = manifest.packages[i];
     if (existing[i] === null) await publish(expected);
     let metadata = existing[i];
-    for (let attempt = 0; metadata === null && attempt < 12; attempt++) {
+    for (let attempt = 0; metadata === null && attempt < 36; attempt++) {
       metadata = await readRegistry(expected.name, expected.version);
-      if (metadata === null && attempt < 11) await wait(5000);
+      if (metadata === null && attempt < 35) await wait(5000);
     }
     const receipt = { ...verifyPublishedPackage(expected, metadata, sourceCommit), action: existing[i] === null ? 'published' : 'reused' };
     receipts.push(receipt); record(receipts);

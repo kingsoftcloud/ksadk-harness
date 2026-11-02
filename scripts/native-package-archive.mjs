@@ -3,7 +3,7 @@ import { gunzipSync } from 'node:zlib';
 /** Inspect the entire archive before extraction. npm packs regular files and
  * directories; extended headers, links and device entries are not release input.
  */
-export function validatePackageArchive(compressed, expectedFiles) {
+export function readPackageArchive(compressed) {
   const bytes = gunzipSync(compressed, { maxOutputLength: 128 * 1024 * 1024 });
   const fail = reason => { throw Error('Unsafe package archive: ' + reason); };
   const text = field => {
@@ -46,7 +46,7 @@ export function validatePackageArchive(compressed, expectedFiles) {
     const next = offset + 512 + Math.ceil(size / 512) * 512;
     if (next > bytes.length) fail('truncated member');
     members.set(path, directory);
-    if (!directory) files.push(path.slice('package/'.length));
+    if (!directory) files.push({ path: path.slice('package/'.length), data: bytes.subarray(offset + 512, offset + 512 + size) });
     offset = next;
   }
   if (!ended || !files.length) fail('missing file set or end marker');
@@ -54,7 +54,13 @@ export function validatePackageArchive(compressed, expectedFiles) {
     const parts = path.split('/');
     for (let i = 1; i < parts.length; i++) if (members.get(parts.slice(0, i).join('/')) === false) fail('file is a parent directory');
   }
-  if (expectedFiles && (files.length !== expectedFiles.length || [...files].sort().some((path, i) => path !== [...expectedFiles].sort()[i])))
-    fail('file set differs from npm pack metadata');
+  return files;
+}
+
+export function validatePackageArchive(compressed, expectedFiles) {
+  const files = readPackageArchive(compressed).map(item => item.path);
+  const sorted = [...files].sort(), expected = expectedFiles && [...expectedFiles].sort();
+  if (expected && (files.length !== expected.length || sorted.some((path, i) => path !== expected[i])))
+    throw Error('Unsafe package archive: file set differs from npm pack metadata');
   return files;
 }

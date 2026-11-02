@@ -45,6 +45,16 @@ test('post-publish source mismatch and missing eventual evidence never report su
   await assert.rejects(publishRelease({ manifest: manifest(), sourceCommit: sha, readRegistry: async () => null,
     publish: async () => {}, wait: async () => {} }), /absent/);
 });
+test('normal registry propagation beyond one minute can settle without publishing twice', async () => {
+  const calls = new Map(), published = new Set(); let waits = 0;
+  const receipts = await publishRelease({ manifest: manifest(), sourceCommit: sha,
+    readRegistry: async name => {
+      const count = (calls.get(name) ?? 0) + 1; calls.set(name, count);
+      return published.has(name) && count > 20 ? metadata(packages.find(item => item.name === name)) : null;
+    }, publish: async item => { assert.equal(published.has(item.name), false); published.add(item.name); },
+    wait: async () => { waits++; } });
+  assert.equal(published.size, 3); assert.equal(receipts.length, 3); assert.ok(waits > 12);
+});
 test('registry/network errors never become an absent version', async () => {
   for (const status of [401, 403, 429, 500, 503])
     await assert.rejects(readRegistryPackage(packages[0].name, '0.0.9', async () => new Response('{}', { status })));

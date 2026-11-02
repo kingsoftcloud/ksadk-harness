@@ -1,10 +1,8 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, posix } from 'node:path';
-import { tmpdir } from 'node:os';
-import { execFileSync } from 'node:child_process';
-import { validatePackageArchive } from './native-package-archive.mjs';
+import { validatePackageArchive, readPackageArchive } from './native-package-archive.mjs';
 import { verifyPackageFiles } from '../packages/agentkit-harness-node/src/package-integrity.mjs';
 
 export function registryURL(name, version) {
@@ -97,21 +95,21 @@ export async function collectDependencyEvidence({ root, packages, directory, fet
     const response = await fetchImpl(url, { redirect: 'error', signal: AbortSignal.timeout(60000) });
     assert.equal(response.status, 200, 'Cannot download locked dependency: ' + key);
     const bytes = Buffer.from(await response.arrayBuffer());
-    const names = validateRegistryArchive(expected, metadata, bytes);
+    validateRegistryArchive(expected, metadata, bytes);
     const digest = createHash('sha256').update(bytes).digest('hex');
     const filename = `dependency-${digest}.tgz`; writeFileSync(join(directory, filename), bytes);
-    const extracted = mkdtempSync(join(tmpdir(), 'native-dependency-evidence-'));
-    try {
-      execFileSync('tar', ['-xzf', join(directory, filename), '-C', extracted]);
-      const packageRoot = join(extracted, 'package');
-      const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json')));
-      assert.equal(manifest.name, expected.name, 'Archive package name differs from registry');
-      assert.equal(manifest.version, expected.version, 'Archive version differs from registry');
-      const files = Object.fromEntries(names.map(name => [name, createHash('sha256').update(readFileSync(join(packageRoot, name))).digest('hex')]));
-      verifyPackageFiles(packageRoot, files);
-      dependencyPackages[key] = { name: expected.name, version: expected.version, integrity: expected.integrity,
-        tarball: url.href, sha256: digest, filename, files };
-    } finally { rmSync(extracted, { recursive: true, force: true }); }
+    // Do not materialize third-party directory modes or ownership. The parser
+    // validates the entire archive before returning bytes, including archives
+    // containing read-only directories that an unprivileged process cannot rm.
+    const members = readPackageArchive(bytes);
+    const manifestFile = members.find(item => item.path === 'package.json');
+    assert.ok(manifestFile, 'Registry archive has no package manifest');
+    const manifest = JSON.parse(manifestFile.data.toString('utf8'));
+    assert.equal(manifest.name, expected.name, 'Archive package name differs from registry');
+    assert.equal(manifest.version, expected.version, 'Archive version differs from registry');
+    const files = Object.fromEntries(members.map(item => [item.path, createHash('sha256').update(item.data).digest('hex')]));
+    dependencyPackages[key] = { name: expected.name, version: expected.version, integrity: expected.integrity,
+      tarball: url.href, sha256: digest, filename, files };
   }
   return { dependencyPackages, dependencyLocations: Object.fromEntries(closure.map(item => [item.location, `${item.name}@${item.version}`])) };
 }

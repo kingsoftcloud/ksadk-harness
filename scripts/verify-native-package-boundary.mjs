@@ -70,6 +70,15 @@ for (const item of packages) {
   });
   assert.equal(packed.status, 0, packed.stderr);
   const contents = JSON.parse(packed.stdout)[0];
+  const packedPaths = new Set(contents.files.map(file => file.path));
+  const targets = value => typeof value === 'string' ? [value]
+    : value && typeof value === 'object' ? Object.values(value).flatMap(targets) : [];
+  for (const [entry, value] of Object.entries({ ...metadata.exports, ...metadata.bin })) {
+    for (const target of targets(value)) {
+      assert.ok(target.startsWith('./') && packedPaths.has(target.slice(2)),
+        `Public export ${item.name}/${entry} is absent from the archive: ${target}`);
+    }
+  }
   for (const file of contents.files) assert.ok(/^(?:dist\/|src\/|markdown\/(?:source|build|dist)\/|LICENSE$|ZCode-LICENSE$|NOTICE$|THIRD_PARTY_NOTICES\.md$|README\.md$|package\.json$)/.test(file.path)
     && !/(?:^|\/)(?:\.env|config\.ya?ml|credentials|node_modules|test|tests|\.artifacts)(?:$|\/|\.)/.test(file.path),
   `Unexpected packed content ${file.path}`);

@@ -4,6 +4,8 @@ KSADK Native Harness 是 **KSADK 体系中的自研 Agent 运行框架**，统�
 
 本仓库独立维护运行内核、Node 适配层和前端 UI，并通过 npm 包供其他代码库接入。**Studio** 是面向用户的 Agent 开发与运行产品，接入这些包来执行任务和展示过程，负责模型配置、会话、认证及业务服务；**KSADK（包括 ksadk-python）** 可复用同一套运行能力，通过代码配置模型、工具和角色来构建 Agent。Python 接入通过 Node 运行时的进程接口完成，具体边界见下文。
 
+本仓库是 Core、Node、UI 的唯一源码与发布源。修复在这里完成并发布固定 npm 版本，Studio 等宿主通过升级依赖接入；不再从 Studio 回拷源码。
+
 ## 三个独立 npm 包
 
 | 包 | 主要职责 | 接入边界 |

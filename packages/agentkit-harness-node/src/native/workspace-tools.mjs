@@ -1,3 +1,4 @@
+import { publicErrorMessage, publicErrorCode, publicFailureContent } from '@kingsoftcloud/agentkit-harness-core/error-presentation';
 /**
  * Native Node workspace tools for the AgentKit Harness.
  *
@@ -475,7 +476,7 @@ export function createNativeWorkspaceTools({
       if (e.code === 'EEXIST') {
         return { ok: false, path: rel, error_type: 'file_exists', error_message: 'workspace file was created before publication', suggested_action: 'Read the new file before proposing an overwrite.' };
       }
-      return { ok: false, path: rel, error_type: e.code?.startsWith('checkpoint_') ? e.code : 'publish_failed', error_message: e.message };
+      return { ok: false, path: rel, error_type: typeof e.code === 'string' && e.code.startsWith('checkpoint_') ? publicErrorCode(e, 'publish_failed') : 'publish_failed', error_message: publicErrorMessage(e) };
     }
     const stat = statSync(t, { bigint: true });
     refreshReadState(rel, stat, content, t);
@@ -527,8 +528,8 @@ export function createNativeWorkspaceTools({
       if (!absent(target)) return stalePreparedEdit(rel);
       const createdText = preparedEdit.createdText;
       try { publish(target, Buffer.from(createdText, 'utf-8'), { createOnly: true }); }
-      catch (error) { return { ok: false, path: rel, error_type: error.code === 'EEXIST' ? 'file_modified_since_read' : error.code || 'publish_failed',
-        error_message: error.message, suggested_action: 'Read the current file and retry.' }; }
+      catch (error) { return { ok: false, path: rel, error_type: error.code === 'EEXIST' ? 'file_modified_since_read' : publicErrorCode(error, 'publish_failed'),
+        error_message: publicErrorMessage(error), suggested_action: 'Read the current file and retry.' }; }
       const stat = statSync(target, { bigint: true }); refreshReadState(rel, stat, createdText, target);
       const diff = buildDiff(rel, '', createdText);
       return { ok: true, path: rel, absolute_path: target, replacements: 1, used_quote_normalization: false,
@@ -694,7 +695,7 @@ export function createNativeWorkspaceTools({
     if (typeof patch !== 'string' || patch.length > 262144) return { error: patchFailure('apply_patch_invalid_patch', 'patch_text must be a string of at most 262144 characters') };
     let sections;
     try { sections = parseStructuredPatch(patch); }
-    catch (error) { return { error: patchFailure('apply_patch_invalid_patch', error.message) }; }
+    catch (error) { return { error: patchFailure('apply_patch_invalid_patch', publicErrorMessage(error)) }; }
     if (!sections.length) return { error: patchFailure('apply_patch_empty_patch', 'Patch has no file changes') };
     if (sections.length > 64) return { error: patchFailure('patch_budget_exceeded', 'At most 64 file sections are allowed') };
     const changes = [], paths = new Set(); let bytes = 0;
@@ -789,7 +790,7 @@ export function createNativeWorkspaceTools({
     try {
       publish(target, Buffer.from(updated, 'utf-8'));
     } catch (e) {
-      return { stat: null, error: { ok: false, path: rel, error_type: e.code?.startsWith('checkpoint_') ? e.code : 'publish_failed', error_message: e.message } };
+      return { stat: null, error: { ok: false, path: rel, error_type: typeof e.code === 'string' && e.code.startsWith('checkpoint_') ? publicErrorCode(e, 'publish_failed') : 'publish_failed', error_message: publicErrorMessage(e) } };
     }
     const stat = statSync(target, { bigint: true });
     refreshReadState(rel, stat, updated, target);
@@ -831,7 +832,7 @@ export function createNativeWorkspaceTools({
       try {
         JSON.parse(text ?? '');
       } catch (e) {
-        issues.push({ severity: 'error', ...jsonErrorPosition(e.message, text), message: e.message });
+        issues.push({ severity: 'error', ...jsonErrorPosition(e.message, text), message: publicErrorMessage(e) });
       }
     } else {
       genericTextChecks(text, issues);
@@ -922,7 +923,7 @@ export function createNativeWorkspaceTools({
     try {
       pattern = new RegExp(isRegex ? needle : escapeRegex(needle), caseSensitive ? '' : 'i');
     } catch (e) {
-      return { ok: false, error_code: 'invalid_search_pattern', error_message: e.message };
+      return { ok: false, error_code: 'invalid_search_pattern', error_message: publicErrorMessage(e) };
     }
     const limit = Math.max(1, Math.min(maxResults || 100, 5000));
     const contextLimit = Math.max(0, Math.min(contextLines || 0, 20));
@@ -982,7 +983,7 @@ export function createNativeWorkspaceTools({
       }
       activeMutations?.add(relativeOf(target));
     } catch (e) {
-      return { ok: false, error_message: `workspace delete failed: ${e.message}` };
+      return { ok: false, error_message: `workspace delete failed: ${publicErrorMessage(e)}` };
     }
     return { ok: true, deleted: relativeOf(target) };
   }
@@ -1046,7 +1047,18 @@ export function createNativeWorkspaceTools({
 
   // ---- execute --------------------------------------------------------------
 
-  async function execute(request, { assertCurrent, checkpointCommitted } = {}) {
+  // One public failure boundary also covers helper results and parser diagnostics.
+  // Successful file/media data and Host effect evidence must not be rewritten.
+  async function execute(request, options) {
+    try {
+      const result = await executeWorkspace(request, options);
+      return result.status === 'ok' ? result : { ...result, content: publicFailureContent(result.content) };
+    } catch (error) {
+      throw Object.assign(new Error(publicErrorMessage(error)), { code: publicErrorCode(error, 'internal_error') });
+    }
+  }
+
+  async function executeWorkspace(request, { assertCurrent, checkpointCommitted } = {}) {
     if (!request || typeof request !== 'object') {
       return { status: 'error', content: { code: 'invalid_request', message: 'request object required' } };
     }
@@ -1062,7 +1074,7 @@ export function createNativeWorkspaceTools({
     const mutating = MUTATING.has(name);
     let guard;
     try { guard = workspaceMutationGuard(request, mutating ? assertCurrent : undefined, checkRootBoundary); }
-    catch (error) { return { status: 'error', content: { code: error.code || 'invalid_request' } }; }
+    catch (error) { return { status: 'error', content: { code: publicErrorCode(error, 'invalid_request') } }; }
 
     // The root boundary is pinned at factory creation. Re-check it on every
     // execute: a symlink swap (or parent rewrite) that changes the live
@@ -1071,7 +1083,7 @@ export function createNativeWorkspaceTools({
     try { checkRootBoundary(); }
     catch (e) {
       if (e instanceof RootBoundaryError) {
-        return { status: 'error', content: { code: e.code, message: e.message } };
+        return { status: 'error', content: { code: publicErrorCode(e, 'workspace_root_changed'), message: publicErrorMessage(e) } };
       }
       throw e;
     }
@@ -1084,14 +1096,14 @@ export function createNativeWorkspaceTools({
       } else {
         let decision;
         try { decision = await authorizeFn(request); } catch (e) {
-          return { status: 'error', content: { code: 'authorize_failed', message: e.message } };
+          return { status: 'error', content: { code: 'authorize_failed', message: publicErrorMessage(e) } };
         }
         // Re-check the boundary after the authorization await: the root could
         // have been swapped while the caller was deciding approval.
         try { checkRootBoundary(); }
         catch (e) {
           if (e instanceof RootBoundaryError) {
-            return { status: 'error', content: { code: e.code, message: e.message } };
+            return { status: 'error', content: { code: publicErrorCode(e, 'workspace_root_changed'), message: publicErrorMessage(e) } };
           }
           throw e;
         }
@@ -1128,7 +1140,7 @@ export function createNativeWorkspaceTools({
         if (preparedPatch.error) return { status: 'error', content: preparedPatch.error };
       } catch (error) {
         if (signal?.aborted) return canceled();
-        return { status: 'error', content: { ok: false, error_type: error.code || 'apply_patch_verification_failed', error_message: error.message, executed: false } };
+        return { status: 'error', content: { ok: false, error_type: publicErrorCode(error, 'apply_patch_verification_failed'), error_message: publicErrorMessage(error), executed: false } };
       }
     }
     // Matching runs before the publication lock, with strings only. The locked
@@ -1141,8 +1153,8 @@ export function createNativeWorkspaceTools({
         if (preparedEdit.error) return { status: 'error', content: preparedEdit.error };
       } catch (error) {
         if (signal?.aborted) return canceled();
-        return { status: 'error', content: { ok: false, error_type: error instanceof WorkspacePathError ? 'path_escape' : error.code || 'edit_match_failed',
-          error_message: error.message, executed: false } };
+        return { status: 'error', content: { ok: false, error_type: error instanceof WorkspacePathError ? 'path_escape' : publicErrorCode(error, 'edit_match_failed'),
+          error_message: publicErrorMessage(error), executed: false } };
       }
     }
     const mutations = new Set(), publications = new Map(), reads = new Map(), displayChanges = new Map(), previousDisplayChanges = activeDisplayChanges,
@@ -1177,19 +1189,19 @@ export function createNativeWorkspaceTools({
         try {
           compensateRewind(preparedRewind, publications, checkpoint, guard);
           return { status: 'error', workspaceChangedPaths: [...mutations], content: { ok: false,
-            error_type: 'checkpoint_rewind_compensated', cause: e.code || 'rewind_failed', compensated: true, executed: true, paths: [...mutations] } };
+            error_type: 'checkpoint_rewind_compensated', cause: publicErrorCode(e, 'rewind_failed'), compensated: true, executed: true, paths: [...mutations] } };
         } catch (error) { compensationError = error; }
       }
       if (checkpoint && !mutations.size) { try { checkpoint.fail(); } catch {} }
       if (signal?.aborted && !mutations.size) return canceled();
       if (e instanceof WorkspacePathError && !mutations.size) {
-        return { status: 'error', content: { ok: false, error_type: 'path_escape', error_message: e.message } };
+        return { status: 'error', content: { ok: false, error_type: 'path_escape', error_message: publicErrorMessage(e) } };
       }
       if (mutations.size) return { status: 'uncertain', workspaceChangedPaths: [...mutations],
         content: { ok: false, error_type: compensationError ? 'checkpoint_compensation_incomplete'
           : name === 'apply_workspace_patch' ? 'patch_publication_incomplete' : 'state_persist_failed',
-        ...(compensationError ? { compensation_reason: compensationError.code || 'compensation_failed' } : {}), executed: true, paths: [...mutations] } };
-      return { status: 'error', content: { ok: false, error_type: e.code || 'internal_error', error_message: e.message } };
+        ...(compensationError ? { compensation_reason: publicErrorCode(compensationError, 'compensation_failed') } : {}), executed: true, paths: [...mutations] } };
+      return { status: 'error', content: { ok: false, error_type: publicErrorCode(e, 'internal_error'), error_message: publicErrorMessage(e) } };
     } finally { activeMutations = previousMutations; activeGuard = previousGuard; activeCheckpoint = previousCheckpoint; activeDisplayChanges = previousDisplayChanges;
       activePublications = previousPublications; activeReads = previousReads; release?.(); }
     // The only asynchronous implementation parses captured read-only bytes.
@@ -1199,8 +1211,8 @@ export function createNativeWorkspaceTools({
       try { result = await result; }
       catch (error) {
         if (signal?.aborted) return canceled();
-        return { status: 'error', content: { ok: false, error_type: error.code || 'python_syntax_unavailable',
-          error_message: error.message } };
+        return { status: 'error', content: { ok: false, error_type: publicErrorCode(error, 'python_syntax_unavailable'),
+          error_message: publicErrorMessage(error) } };
       }
     }
     if (signal?.aborted && !(result && result.ok)) return canceled();

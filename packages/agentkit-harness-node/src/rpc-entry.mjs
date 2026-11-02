@@ -37,6 +37,7 @@ import { SqliteRunStore, createNativeModelPort, nativeModelRecoveryPolicy }
   from './index.mjs';
 import { RpcRequestLedger, digestRequest } from './rpc-ledger.mjs';
 import { WORKSPACE_TOOLS, createWorkspaceToolExecutor } from './rpc-tools.mjs';
+import { publicErrorMessage, publicFailureContent } from '@kingsoftcloud/agentkit-harness-core/error-presentation';
 
 export const RPC_PROTOCOL_VERSION = 'agentkit.native-rpc/v1';
 
@@ -54,7 +55,7 @@ const ERR = {
 };
 
 const success = (id, result) => ({ jsonrpc: '2.0', id, result });
-const errorResponse = (id, e, data) => ({ jsonrpc: '2.0', id, error: { code: e.code, message: e.message, ...(data ? { data } : {}) } });
+const errorResponse = (id, e, data) => ({ jsonrpc: '2.0', id, error: publicFailureContent({ code: e.code, message: e.message, ...(data ? { data } : {}) }) });
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const digest = value => createHash('sha256').update(canonical(value)).digest('hex');
 
@@ -206,10 +207,10 @@ export function createNativeRpcServer({ startup, store, ledger, owner = startup.
         const snap = await kernel.runUntilIdle(scope, runId, { signal: controller.signal });
         if (terminal(snap.phase)) {
           try { const row = ledger.lookupByRunKey(key); if (row) ledger.complete(row.requestId, compactResponse(snap), key); }
-          catch (e) { process.stderr.write(`complete failed for ${runId}: ${e.message}\n`); }
+          catch (e) { process.stderr.write(`complete failed for ${runId}: ${publicErrorMessage(e)}\n`); }
         }
       } catch (e) {
-        process.stderr.write(`drive failed for ${runId}: ${e.message}\n`);
+        process.stderr.write(`drive failed for ${runId}: ${publicErrorMessage(e)}\n`);
       } finally { resolveDone(); drivers.delete(key); }
     })();
     return true;
@@ -249,7 +250,7 @@ export function createNativeRpcServer({ startup, store, ledger, owner = startup.
         // in separate durable writes. A retry can observe that small window;
         // close it here from the already-terminal run instead of returning a
         // misleading pending response.
-        if (terminal(existing.snapshot)) {
+        if (terminal(existing.snapshot.phase)) {
           const response = compactResponse(existing.snapshot);
           try { ledger.complete(ledgerId(requestId), response, key); } catch { /* another driver may have completed it */ }
           return success(id, { runId, status: 'completed', result: response });
@@ -349,7 +350,7 @@ export function createNativeRpcServer({ startup, store, ledger, owner = startup.
       return Object.hasOwn(req, 'id') ? errorResponse(req.id, ERR.invalid_params) : null;
     // JSON-RPC notification: no `id` member. Process but do not respond.
     if (!Object.hasOwn(req, 'id')) {
-      try { await dispatch(req); } catch (e) { process.stderr.write(`notification error: ${e?.stack || e}\n`); }
+      try { await dispatch(req); } catch (e) { process.stderr.write(`notification error: ${publicErrorMessage(e)}\n`); }
       return null;
     }
     return dispatch(req);
@@ -406,7 +407,7 @@ export async function main(argv = process.argv.slice(2)) {
   }
   let startup;
   try { startup = buildStartup(args); }
-  catch (e) { process.stderr.write(`startup error: ${e.message}\n`); return process.exit(2); }
+  catch (e) { process.stderr.write(`startup error: ${publicErrorMessage(e)}\n`); return process.exit(2); }
   const store = new SqliteRunStore(resolvePath(args.db));
   const ledger = new RpcRequestLedger(resolvePath(args.ledger));
   const server = createNativeRpcServer({ startup, store, ledger, owner: startup.owner });
@@ -415,7 +416,7 @@ export async function main(argv = process.argv.slice(2)) {
   async function shutdown() {
     if (shuttingDown) return;
     shuttingDown = true;
-    try { await server.dispose(); } catch (e) { process.stderr.write(`dispose error: ${e.message}\n`); }
+    try { await server.dispose(); } catch (e) { process.stderr.write(`dispose error: ${publicErrorMessage(e)}\n`); }
     await Promise.allSettled(handlers);
     await writeChain;
     process.exit(0);
@@ -443,7 +444,7 @@ export async function main(argv = process.argv.slice(2)) {
     if (handlers.size >= 64) { writeLine(errorResponse(req?.id ?? null, ERR.not_dispatchable)); continue; }
     const handled = server.handle(req).then(res => { if (res) writeLine(res); },
       e => {
-        process.stderr.write(`handler error: ${e?.stack || e}\n`);
+        process.stderr.write(`handler error: ${publicErrorMessage(e)}\n`);
         writeLine(errorResponse(req?.id ?? null, ERR.internalError));
       });
     handlers.add(handled);

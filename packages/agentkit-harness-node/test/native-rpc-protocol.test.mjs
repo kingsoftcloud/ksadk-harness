@@ -208,6 +208,32 @@ test('a retried requestId returns the stored response without re-running', async
   });
 });
 
+test('a committed terminal Run repairs a pending request receipt without re-driving or leaking diagnostics', async () => {
+  await withServer({ script: [final('durable answer')] }, async ({ server, fixture }) => {
+    const complete = server.ledger.complete.bind(server.ledger);
+    const write = process.stderr.write;
+    const diagnostics = [];
+    let fail = true;
+    server.ledger.complete = (...args) => {
+      if (fail) { fail = false; throw Error('Authorization: Bearer synthetic-rpc-receipt-secret ' + 'https://' + 'fixture:password@example.test'); }
+      return complete(...args);
+    };
+    process.stderr.write = chunk => { diagnostics.push(String(chunk)); return true; };
+    try {
+      const first = await server.handle({ jsonrpc: '2.0', id: 1, method: 'task/submit',
+        params: { requestId: 'terminal-receipt', objective: 'finish once' } });
+      await pollUntil(server, first.result.runId, status => status.terminal && !status.driving);
+      const retry = await server.handle({ jsonrpc: '2.0', id: 2, method: 'task/submit',
+        params: { requestId: 'terminal-receipt', objective: 'finish once' } });
+      assert.equal(retry.result.status, 'completed');
+      assert.equal(retry.result.runId, first.result.runId);
+      assert.equal(fixture.calls(), 1);
+      assert.match(diagnostics.join(''), /redacted/);
+      assert.doesNotMatch(diagnostics.join(''), /synthetic-rpc-receipt-secret|fixture:password/);
+    } finally { process.stderr.write = write; }
+  });
+});
+
 // ---- requestId conflict: different params for the same id is rejected -------
 test('a requestId reused with different parameters is rejected as a conflict', async () => {
   await withServer({ script: [HANG] }, async ({ server }) => {

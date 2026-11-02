@@ -1,3 +1,5 @@
+import { publicToolExecution } from './public-tool-result.mjs';
+import { publicErrorMessage, publicErrorCode, publicFailureContent } from '@kingsoftcloud/agentkit-harness-core/error-presentation';
 // Native Skills builtin tools — bounded formal definitions and ToolPort.
 //
 // Security contract: the internal definition map is deep-cloned from the
@@ -18,7 +20,7 @@ import { join, relative, sep } from 'node:path';
 export const SKILL_TOOL_CONTRACT = 'agentkit.native-skill-tools/v3';
 
 function uncertainOutcome(content) {
-  const result = { ...content, uncertain: true };
+  const result = { ...publicFailureContent(content), uncertain: true };
   delete result.executed;
   return { status: 'uncertain', content: result };
 }
@@ -330,9 +332,9 @@ export function createNativeSkillTools({
       if (effectStarted) {
         return { ...runtimeLocator, ok: false, status: 'uncertain', uncertain: true,
           error_type: error.code === 'approval_required' || error.approvalRequired ? 'invalid_skill_approval' : 'skill_runtime_uncertain',
-          error_message: error.message || 'Skill runtime outcome is unknown; the workflow may have side effects.' };
+          error_message: publicErrorMessage(error, 'Skill runtime outcome is unknown; the workflow may have side effects.') };
       }
-      return { ok: false, error_type: error.code || error.name || 'Error', error_message: error.message || String(error) };
+      return { ok: false, error_type: publicErrorCode(error, 'TOOL_OPERATION_FAILED'), error_message: publicErrorMessage(error) };
     }
 
     // Post-workflow guard: if the request drifted after the workflow completed,
@@ -409,7 +411,7 @@ export function createNativeSkillTools({
 
       return {
         tools: {
-          async execute(request = {}) {
+          execute: publicToolExecution(async function execute(request = {}) {
             const { call, signal, scope, runId, sessionId, turnId, buildId,
               parentRunId, taskChainId, operationKey, executionFence, definition } = request;
 
@@ -460,15 +462,15 @@ export function createNativeSkillTools({
               decision = await raceAbort(guard.signal, () => authorize(call.name, { call, signal: guard.signal, scope, runId, sessionId, turnId, buildId, parentRunId, taskChainId, operationKey, executionFence, definition: internalDef }));
             } catch (error) {
               if (guard.signal.aborted) return { status: 'error', content: { code: 'REQUEST_CANCELLED', executed: false, message: 'Cancelled during authorization' } };
-              return { status: 'error', content: { code: error.code || 'NATIVE_SKILL_ERROR', executed: false, message: error.message || String(error) } };
+              return { status: 'error', content: { code: publicErrorCode(error, 'NATIVE_SKILL_ERROR'), executed: false, message: publicErrorMessage(error) } };
             }
             const g = guard.check();
             if (g) return { status: 'error', content: { code: g.code, executed: false, message: g.message } };
             if (decision !== 'allow') {
               if (decision?.status === 'approval_required' && typeof decision.interactionId === 'string' && decision.interactionId.trim())
                 return { status: 'approval_required', interactionId: decision.interactionId, content: { executed: false } };
-              const code = decision?.code || 'STUDIO_NATIVE_SKILL_PERMISSION_DENIED';
-              const message = decision?.message || 'Skill tool not authorized';
+              const code = publicErrorCode(decision, 'STUDIO_NATIVE_SKILL_PERMISSION_DENIED');
+              const message = publicErrorMessage(decision, 'Skill tool not authorized');
               return { status: 'error', content: { code, executed: false, message } };
             }
 
@@ -507,12 +509,12 @@ export function createNativeSkillTools({
               }
               // content.ok === false → status 'error'.
               if (result && typeof result === 'object' && result.ok === false) {
-                return { status: 'error', content: { ...result, executed: result.executed ?? ctx.effectStarted } };
+                return { status: 'error', content: { ...publicFailureContent(result), executed: result.executed ?? ctx.effectStarted } };
               }
               return { status: 'ok', content: result };
             } catch (error) {
               if (ctx.effectStarted) return { status: 'uncertain', content: { ...locator,
-                uncertain: true, error_type: 'skill_runtime_uncertain', error_message: error.message || String(error) } };
+                uncertain: true, error_type: 'skill_runtime_uncertain', error_message: publicErrorMessage(error) } };
               if (guard.signal.aborted) {
                 // Fix #4: if effectStarted was set by executeSkills, the abort
                 // after side effects is uncertain. For read-only tools, it's
@@ -521,9 +523,9 @@ export function createNativeSkillTools({
                 // read-only tool after abort is a clean cancel.
                 return { status: 'error', content: { code: 'REQUEST_CANCELLED', executed: false, message: 'Cancelled during execution' } };
               }
-              return { status: 'error', content: { code: error.code || 'NATIVE_SKILL_ERROR', executed: false, message: error.message || String(error) } };
+              return { status: 'error', content: { code: publicErrorCode(error, 'NATIVE_SKILL_ERROR'), executed: false, message: publicErrorMessage(error) } };
             }
-          },
+          }),
         },
       };
     },
@@ -668,7 +670,7 @@ export function createSkillReadTransport({ serviceClient, loadSkillFn, skillSpac
       }
       return { ok: true, skills, truncated: pairs.length > skills.length, skill_space_ids: spaceIds, space_id: spaceId ?? null };
     } catch (error) {
-      return { ok: false, error_type: error.code || error.name || 'Error', error_message: error.message || String(error), skill_space_ids: spaceIds, space_id: spaceId ?? null };
+      return { ok: false, error_type: publicErrorCode(error, 'TOOL_OPERATION_FAILED'), error_message: publicErrorMessage(error), skill_space_ids: spaceIds, space_id: spaceId ?? null };
     }
   }
 
@@ -724,7 +726,7 @@ export function createSkillReadTransport({ serviceClient, loadSkillFn, skillSpac
         cache_hit: !!loaded.cacheHit, root_dir: rootDir, has_scripts_dir: hasScripts, script_files: files,
         instructions: loaded.content, usage: "Read these instructions and complete the user's task in the outer agent unless the skill explicitly requires isolated execution." };
     } catch (error) {
-      return { ok: false, error_type: error.code || error.name || 'Error', error_message: error.message || String(error) };
+      return { ok: false, error_type: publicErrorCode(error, 'TOOL_OPERATION_FAILED'), error_message: publicErrorMessage(error) };
     }
   }
 
@@ -743,7 +745,7 @@ export function createSkillReadTransport({ serviceClient, loadSkillFn, skillSpac
         cache_hit: false, has_scripts_dir: false, script_files: [], instructions: skill.description || '',
         usage: 'Manifest-level preview. For full SKILL.md instructions, use load_skill.' };
     } catch (error) {
-      return { ok: false, error_type: error.code || error.name || 'Error', error_message: error.message || String(error) };
+      return { ok: false, error_type: publicErrorCode(error, 'TOOL_OPERATION_FAILED'), error_message: publicErrorMessage(error) };
     }
   }
 
@@ -771,7 +773,7 @@ export function createSkillReadTransport({ serviceClient, loadSkillFn, skillSpac
       }));
       return { ok: true, query: queryText, space_id: spaceId ?? null, results };
     } catch (error) {
-      return { ok: false, error_type: error.code || error.name || 'Error', error_message: error.message || String(error) };
+      return { ok: false, error_type: publicErrorCode(error, 'TOOL_OPERATION_FAILED'), error_message: publicErrorMessage(error) };
     }
   }
 
@@ -797,7 +799,7 @@ export function createSkillReadTransport({ serviceClient, loadSkillFn, skillSpac
         stable(); const verdict = assertCurrent();
         if (verdict && typeof verdict.then === 'function') Promise.resolve(verdict).catch(() => {});
         invariant(verdict === true, 'skill_read_authority_expired'); stable(); return null;
-      } catch (error) { return { code: signal.aborted ? 'REQUEST_CANCELLED' : error.code || 'skill_read_authority_expired',
+      } catch (error) { return { code: signal.aborted ? 'REQUEST_CANCELLED' : publicErrorCode(error, 'skill_read_authority_expired'),
         message: signal.aborted ? 'Skill read cancelled' : 'Skill read authority or identity changed' }; }
     }, assertCurrent() {
       const failure = this.check(); if (failure) throw new SkillToolError(failure.code, failure.message); return true;
@@ -805,8 +807,8 @@ export function createSkillReadTransport({ serviceClient, loadSkillFn, skillSpac
     try {
       guard.assertCurrent();
       const result = await raceAbort(signal, () => handlers[request.call.name](copy(request.call.arguments ?? {}), { guard }));
-      guard.assertCurrent(); return result;
-    } catch (error) { return { ok: false, error_type: signal.aborted ? 'REQUEST_CANCELLED' : error.code || 'SKILL_READ_FAILED', executed: false }; }
+      guard.assertCurrent(); return result?.ok === false ? publicFailureContent(result) : result;
+    } catch (error) { return { ok: false, error_type: signal.aborted ? 'REQUEST_CANCELLED' : publicErrorCode(error, 'SKILL_READ_FAILED'), executed: false }; }
   } };
 }
 

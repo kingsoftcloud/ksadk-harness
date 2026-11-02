@@ -1,3 +1,4 @@
+import { publicToolExecution } from './public-tool-result.mjs';
 // Native Skills progressive disclosure port.
 //
 // Ports ksadk/harness/skill_adapters/native_disclosure.py and
@@ -348,7 +349,7 @@ export function createNativeSkillDisclosurePort({ scope, sessionId, store, sourc
     definitions: publicDefinitions,
     contract: SKILL_DISCLOSURE_CONTRACT,
     close() { closed = true; },
-    execute(request = {}) {
+    execute: publicToolExecution(function execute(request = {}) {
       const { call } = request;
       if (!call?.name) return { status: 'error', content: { code: 'NATIVE_SKILL_CALL_MISSING', executed: false, message: safeMessage('NATIVE_SKILL_CALL_MISSING') } };
       const internalDef = internalDefinitionMap.get(call.name);
@@ -377,10 +378,13 @@ export function createNativeSkillDisclosurePort({ scope, sessionId, store, sourc
         const gAuth = guard.check();
         if (gAuth) return { status: 'error', content: { code: gAuth.code, executed: false, message: safeMessage(gAuth.code) } };
         if (decision !== 'allow') {
-          if (typeof decision === 'object' && (decision.status === 'approval_required' || decision.approval_required))
-            return { status: 'approval_required', interactionId: decision.interactionId || '', content: decision };
-          const code = typeof decision === 'object' ? decision.code : 'STUDIO_NATIVE_SKILL_PERMISSION_DENIED';
-          const message = typeof decision === 'object' ? decision.message : 'not authorized';
+          if (decision && typeof decision === 'object' && (decision.status === 'approval_required' || decision.approval_required)) {
+            if (typeof decision.interactionId !== 'string' || !decision.interactionId.trim())
+              return { status: 'error', content: { code: 'NATIVE_SKILL_APPROVAL_INVALID', executed: false, message: 'Approval interaction is required' } };
+            return { status: 'approval_required', interactionId: decision.interactionId, content: decision };
+          }
+          const code = decision && typeof decision === 'object' ? decision.code : 'STUDIO_NATIVE_SKILL_PERMISSION_DENIED';
+          const message = decision && typeof decision === 'object' ? decision.message : 'not authorized';
           return { status: 'error', content: { code, executed: false, message } };
         }
         const g1 = guard.check(); if (g1) return { status: 'error', content: { code: g1.code, executed: false, message: safeMessage(g1.code) } };
@@ -399,6 +403,6 @@ export function createNativeSkillDisclosurePort({ scope, sessionId, store, sourc
           return { status: 'error', content: { code: error.code || 'NATIVE_SKILL_ERROR', executed: false, message: 'execution error' } };
         }
       })();
-    },
+    }),
   };
 }

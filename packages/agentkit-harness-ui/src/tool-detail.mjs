@@ -1,3 +1,4 @@
+import { redactDiagnosticText } from '@kingsoftcloud/agentkit-harness-core/error-presentation';
 // @kingsoftcloud/agentkit-harness-ui — tool call detail blocks
 //
 // One stable bounded detail block per call identity. Presentation consumes
@@ -201,7 +202,7 @@ export function redactError(error, opts = {}) {
   const value = String(error || "");
   // The error color/placement already expresses the type; keep the message
   // itself, bounded. Strip common secret patterns defensively.
-  const cleaned = value.replace(/(token|secret|password|api[_-]?key|authorization)\s*[=:]\s*\S+/gi, "$1=[redacted]");
+  const cleaned = redactDiagnosticText(value, 8192);
   return truncateText(cleaned, { maxLines: 3, maxChars });
 }
 

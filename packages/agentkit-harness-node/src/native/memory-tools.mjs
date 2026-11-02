@@ -1,3 +1,4 @@
+import { publicToolExecution } from './public-tool-result.mjs';
 import { canonical, copy, invariant, toolInputRejection } from '@kingsoftcloud/agentkit-harness-core';
 import { memoryDigest, nativeMemoryScopeBindings, nativeMemorySensitiveLabels,
   deriveMemoryProfileSlotKey } from './memory-candidate.mjs';
@@ -325,5 +326,5 @@ export function buildNativeMemoryTools({ policy, principal, lockedDigest, provid
   }
 
   return Object.freeze({ contract: NATIVE_MEMORY_TOOLS_CONTRACT, definitions: copy(definitions),
-    execute, reconcile });
+    execute: publicToolExecution(execute), reconcile: publicToolExecution(reconcile) });
 }

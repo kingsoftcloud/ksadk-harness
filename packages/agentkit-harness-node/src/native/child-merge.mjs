@@ -1,6 +1,7 @@
 import { canonical, copy, invariant, toolInputRejection, matchesToolExecutionContract } from '@kingsoftcloud/agentkit-harness-core';
 import { loadSessionChild, accountedChildDelivery } from '@kingsoftcloud/agentkit-harness-node/native/owned-child';
 import { createNativeToolAuthority } from './tool-authority.mjs';
+import { publicToolExecution } from './public-tool-result.mjs';
 
 export const STUDIO_NATIVE_CHILD_MERGE = 'native.child-file-merge/v2';
 export function nativeChildMergeDefinition() {
@@ -25,7 +26,7 @@ export function createStudioNativeChildMerge({ scope, sessionId, store, roles, f
   const authority = createNativeToolAuthority({ scope: boundScope, sessionId, store, isClosed });
   const error = code => ({ status: 'error', content: { error_code: code, executed: false } });
   return { definition: copy(definition), contract: STUDIO_NATIVE_CHILD_MERGE,
-    async execute(request) {
+    execute: publicToolExecution(async function execute(request) {
       const signal = request?.signal;
       const body = () => { const value = { ...request }; delete value.signal; return value; };
       let snapshot;
@@ -93,6 +94,6 @@ export function createStudioNativeChildMerge({ scope, sessionId, store, roles, f
           return uncertain(failure?.code || 'child_merge_publication_unknown', failure?.applied);
         return error(failure?.code || 'child_workspace_merge_unavailable');
       }
-    },
+    }),
   };
 }

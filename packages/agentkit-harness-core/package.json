@@ -1,6 +1,6 @@
 {
   "name": "@kingsoftcloud/agentkit-harness-core",
-  "version": "0.0.2",
+  "version": "0.0.9",
   "private": false,
   "type": "module",
   "description": "Host-independent Native Harness contracts, transitions and durable execution.",
@@ -68,6 +68,10 @@
     "./capability-profile": {
       "types": "./dist/capability-profile.d.mts",
       "default": "./dist/capability-profile.mjs"
+    },
+    "./error-presentation": {
+      "types": "./dist/error-presentation.d.mts",
+      "default": "./dist/error-presentation.mjs"
     }
   },
   "files": [

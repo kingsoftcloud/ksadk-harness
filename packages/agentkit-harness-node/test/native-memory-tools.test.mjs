@@ -19,6 +19,18 @@ const source = { sourceSessionId: 'session', sourceEventId: 'event-1',
 const planner = { countMessage: message => Math.ceil(JSON.stringify(message).length / 4) };
 const userBinding = nativeMemoryScopeBindings(principal, ['user'])[0];
 
+for (const stage of ['authorize', 'consent']) test(`Memory ${stage} approvals redact diagnostics without changing interaction or writing data`, async () => {
+  const approve = async () => ({ status: 'approval_required', interactionId: 'memory-interaction',
+    message: 'Authorization: Bearer fixtureMemorySecret', details: { password: 'fixtureBarePassword' } });
+  const fixture = build({ [stage]: approve });
+  try {
+    const result = await fixture.tools.execute(fixture.req('manage_memory', { action: 'remember', scope: 'user', content: 'Never write' }));
+    assert.equal(result.status, 'approval_required'); assert.equal(result.interactionId, 'memory-interaction');
+    assert.doesNotMatch(JSON.stringify(result), /fixtureMemorySecret|fixtureBarePassword/);
+    assert.equal(fixture.store.list().length, 0);
+  } finally { fixture.store.close(); }
+});
+
 function policy(overrides = {}) {
   return { enabled: true, providerRef: 'local-default', scopes: ['user'],
     recall: { enabled: true, maxTokens: 1600, topK: 8, minScore: .45 },

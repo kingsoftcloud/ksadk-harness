@@ -1,3 +1,4 @@
+import { publicToolExecution } from './public-tool-result.mjs';
 // E2B remote background command ToolPort — Node Native tool definitions + factory.
 //
 // Key contracts:
@@ -479,8 +480,8 @@ function createCommandTools({ sessionId, owner, storeFactory,
     }
   }
 
-  return Object.freeze({ definitions: copy(definitions), async execute(request) {
+  return Object.freeze({ definitions: copy(definitions), execute: publicToolExecution(async function executePublic(request) {
     const result = await execute(request);
     return result.content === undefined || request.resultGovernance === 'runtime-artifacts/v1' ? result : boundResult(result);
-  }, contract: ownership.contract });
+  }), contract: ownership.contract });
 }

@@ -100,6 +100,15 @@ test('sandbox_status returns the bound E2B backend with allowInternetAccess bool
   assert.equal(r.content.sandbox_id, 'sb-status');
 });
 
+test('E2B approval diagnostics are projected before returning without launching a sandbox', async t => {
+  const fixture = setup(t, { authorize: async () => ({ status: 'approval_required', interactionId: 'interaction',
+    message: 'Authorization: Bearer fixtureApprovalSecret', error: { api_key: 'fixtureBareKey' } }) });
+  const result = await fixture.tools.execute(makeRequest(fixture.tools, 'run_command', { command: 'echo never-executed' }));
+  assert.equal(result.status, 'approval_required'); assert.equal(result.interactionId, 'interaction');
+  assert.doesNotMatch(JSON.stringify(result), /fixtureApprovalSecret|fixtureBareKey/);
+  assert.equal(fixture.owner.ensureCount(), 0); assert.equal(fixture.getStore(), null);
+});
+
 test('background run_command: launches, returns task_id and backgroundCommandRef {taskId,sourceRunId,operationKey}', async t => {
   const { tools, owner, getStore } = setup(t);
   const req = makeRequest(tools, 'run_command', { command: 'echo bg-test', background: true, background_timeout: 10 });

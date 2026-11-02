@@ -1,6 +1,6 @@
 {
   "name": "@kingsoftcloud/agentkit-harness-core",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "private": false,
   "type": "module",
   "description": "Host-independent Native Harness contracts, transitions and durable execution.",

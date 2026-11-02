@@ -14,8 +14,12 @@ permissions:
 jobs:
   publish:
     name: publish
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.ref_type == 'tag')
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    concurrency:
+      group: npm-release-${{ github.ref }}
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
@@ -27,6 +31,10 @@ jobs:
         with:
           node-version: 22.23.4
           cache: npm
+      - name: Verify immutable published release and package versions
+        run: node scripts/verify-release-context.mjs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
       - name: Upgrade npm for trusted publishing
         run: npm install -g npm@^11.5.1
       - name: Assert GitHub OIDC publishing context

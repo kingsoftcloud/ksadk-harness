@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { verifyPackageFiles } from '../packages/agentkit-harness-node/src/package-integrity.mjs';
+import { validatePackageArchive } from './native-package-archive.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const directory = join(root, '.artifacts/packages'); mkdirSync(directory, { recursive: true });
@@ -17,8 +18,7 @@ for (const name of ['agentkit-harness-core', 'agentkit-harness-node', 'agentkit-
   const extracted = mkdtempSync(join(tmpdir(), 'native-release-files-'));
   let fileHashes;
   try {
-    const paths = execFileSync('tar', ['-tzf', path], { encoding: 'utf8' }).trim().split('\n');
-    if (paths.some(value => !value.startsWith('package/') || value.split('/').includes('..'))) throw Error('Unsafe package archive path');
+    validatePackageArchive(readFileSync(path), packed.files.map(file => file.path));
     execFileSync('tar', ['-xzf', path, '-C', extracted]);
     fileHashes = Object.fromEntries(packed.files.map(file => [file.path,
       createHash('sha256').update(readFileSync(join(extracted, 'package', file.path))).digest('hex')]));

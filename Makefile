@@ -12,6 +12,7 @@ check:
 
 test:
 	$(NPM) test
+	$(NPM) run test:release
 
 build:
 	$(NPM) run build

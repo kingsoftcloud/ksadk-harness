@@ -31,12 +31,29 @@ export function publicErrorCode(error: unknown, fallback: string): string {
 
 /** Project diagnostic fields without rewriting receipts, locators or inputs. */
 export function publicFailureContent<T extends Record<string, unknown>>(content: T): T {
-  const result = { ...content };
-  for (const key of ['message', 'error_message', 'errorMessage', 'detail'] as const) {
-    if (typeof result[key] === 'string') (result as Record<string, unknown>)[key] = redactDiagnosticText(result[key], 1024);
+  const diagnosticFields = new Set(['message', 'error_message', 'errorMessage', 'detail', 'details', 'error', 'cause', 'stack']);
+  const codeFields = new Set(['code', 'error_type', 'error_code']);
+  const ancestors = new Set<object>();
+  let remaining = 10000;
+  function project(value: unknown, diagnostic: boolean, depth: number): unknown {
+    if (--remaining < 0 || depth > 32) return '[Diagnostic projection limit]';
+    if (typeof value === 'string') return diagnostic ? redactDiagnosticText(value, 1024) : value;
+    if (value === null || typeof value !== 'object') return value;
+    if (ancestors.has(value)) return '[Circular diagnostic]';
+    ancestors.add(value);
+    try {
+      if (Array.isArray(value)) return value.map(item => project(item, diagnostic, depth + 1));
+      // Error.message/stack/cause are non-enumerable, unlike ordinary payloads.
+      const keys = new Set(Object.keys(value));
+      if (value instanceof Error) for (const key of ['message', 'stack', 'cause', 'code'])
+        if (Object.hasOwn(value, key)) keys.add(key);
+      return Object.fromEntries([...keys].map(key => {
+        const item = (value as Record<string, unknown>)[key];
+        return [key, codeFields.has(key) && typeof item === 'string'
+          ? publicErrorCode({ code: item }, 'TOOL_OPERATION_FAILED')
+          : project(item, diagnostic || diagnosticFields.has(key), depth + 1)];
+      }));
+    } finally { ancestors.delete(value); }
   }
-  for (const key of ['code', 'error_type'] as const) {
-    if (typeof result[key] === 'string') (result as Record<string, unknown>)[key] = publicErrorCode({ code: result[key] }, 'TOOL_OPERATION_FAILED');
-  }
-  return result;
+  return project(content, false, 0) as T;
 }

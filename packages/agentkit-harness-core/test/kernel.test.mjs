@@ -153,6 +153,51 @@ test('request timeout consumes the bounded provider retry policy', async t => {
     maxProviderRetries: 1, retryInitialDelayMs: 0, retryMaxDelayMs: 0 } }, model: async () => { models++; return new Promise(() => {}); } });
   const result = await kernel.runUntilIdle(scope, 'run'); assert.equal(models, 2); assert.equal(result.reason, 'provider_retryable_error_retry_exhausted');
 });
+// Provider failures interleaved with successful tool rounds, as seen in long runs against a flaky endpoint.
+const flakyProvider = () => {
+  let models = 0;
+  const script = ['provider_retryable_error', 'tool_calls', 'provider_retryable_error', 'tool_calls', 'provider_retryable_error', 'final_candidate'];
+  return { calls: () => models, model: async () => {
+    const kind = script[models++];
+    return kind === 'tool_calls' ? response(kind, { toolCalls: [call(`call-${models}`)] }) : response(kind);
+  } };
+};
+const retryProfile = { ...fixture().config.profile, maxProviderRetries: 2, retryInitialDelayMs: 0, retryMaxDelayMs: 0 };
+test('without a provider recovery policy, provider failures accumulate across successful rounds', async t => {
+  const flaky = flakyProvider();
+  const { kernel } = setup(t, { configuration: { tools: [tool()], profile: retryProfile }, model: flaky.model });
+  const result = await kernel.runUntilIdle(scope, 'run');
+  assert.equal(result.outcome, 'failed'); assert.equal(result.reason, 'provider_retryable_error_retry_exhausted');
+  assert.equal(result.providerErrors, 3); assert.equal(flaky.calls(), 5);
+});
+for (const backend of ['memory', 'sqlite']) {
+  test(`${backend}: provider-recovery/v2 resets the provider budget after any provider response`, async t => {
+    const flaky = flakyProvider();
+    const { kernel } = setup(t, { backend, configuration: { tools: [tool()], profile: retryProfile,
+      providerRecoveryPolicy: 'provider-recovery/v2' }, model: flaky.model });
+    const result = await kernel.runUntilIdle(scope, 'run');
+    assert.equal(result.phase, 'completed'); assert.equal(result.finalText, 'Done');
+    assert.equal(result.providerErrors, 0); assert.equal(flaky.calls(), 6); assert.equal(result.usage.toolCalls, 2);
+  });
+  test(`${backend}: provider-recovery/v2 pauses instead of failing and resumes with a fresh budget`, async t => {
+    let models = 0, available = false;
+    const { kernel } = setup(t, { backend, configuration: { profile: retryProfile, providerRecoveryPolicy: 'provider-recovery/v2' },
+      model: async () => { models++; return available ? response() : response('provider_retryable_error'); } });
+    const paused = await kernel.runUntilIdle(scope, 'run');
+    assert.equal(paused.phase, 'paused'); assert.equal(paused.resumePhase, 'preparing_context');
+    assert.equal(paused.outcome, null); assert.equal(paused.reason, 'provider_unavailable');
+    assert.equal(paused.providerErrors, 0); assert.equal(models, 3);
+    assert.deepEqual(await kernel.runUntilIdle(scope, 'run'), paused);
+    available = true;
+    kernel.submit(scope, 'run', { commandId: 'resume-provider', kind: 'resume', payload: {} });
+    const result = await kernel.runUntilIdle(scope, 'run');
+    assert.equal(result.phase, 'completed'); assert.equal(result.finalText, 'Done'); assert.equal(models, 4);
+    assert.notEqual(result.reason, 'provider_unavailable');
+  });
+}
+test('provider recovery policy rejects unknown versions', () => {
+  assert.throws(() => fixture({ providerRecoveryPolicy: 'provider-recovery/v9' }), /invalid_provider_recovery_policy/);
+});
 test('truncated tool calls never execute', async t => {
   let models = 0, tools = 0;
   const { kernel } = setup(t, { configuration: { tools: [tool()] },

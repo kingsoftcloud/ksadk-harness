@@ -143,7 +143,8 @@ export function reduceCommand(snapshot: RunSnapshot, command: RunCommand, pendin
       break;
     case 'resume':
       if (snapshot.phase !== 'paused') reason = 'not_paused';
-      else changes = { phase: snapshot.resumePhase ?? 'preparing_context', resumePhase: null };
+      else changes = { phase: snapshot.resumePhase ?? 'preparing_context', resumePhase: null,
+        ...(snapshot.reason === 'provider_unavailable' ? { reason: null } : {}) };
       break;
     case 'submit_interaction': {
       const pending = snapshot.pendingInteraction;

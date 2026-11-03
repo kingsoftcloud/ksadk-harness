@@ -1,3 +1,4 @@
+import { NATIVE_LOCAL_RESOURCE_PROFILES } from '@kingsoftcloud/agentkit-harness-core';
 import { localControlSettings } from './local-process.mjs';
 
 export const LOCAL_RESOURCE_PROFILE = 'agentkit.local-resource-profile/v1';
@@ -12,7 +13,7 @@ const profiles = Object.freeze({
   'local-development/v2': Object.freeze({ cpuSeconds: 900, maxFileBytes: 1024 ** 3 }),
 });
 export function validLocalResourceProfile(profile) {
-  return typeof profile === 'string' && Object.hasOwn(profiles, profile);
+  return typeof profile === 'string' && NATIVE_LOCAL_RESOURCE_PROFILES.includes(profile) && Object.hasOwn(profiles, profile);
 }
 
 /** Host admission selects this policy, never a model/tool argument. */

@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { createOpenAIStreamTurn } from '../src/native/model-openai-chat.mjs';
 import { admitProviderCompatibilityPolicy, applyProviderChatCompatibility, explicitLiteralTypes } from '../src/native/model-provider-compat.mjs';
 import { bindNativeContext } from '../src/native/context-profile.mjs';
-import { localResourceSettings } from '../src/native/local-resource-profile.mjs';
+import { NATIVE_LOCAL_RESOURCE_PROFILES, validateModelSurface } from '@kingsoftcloud/agentkit-harness-core';
+import { localResourceSettings, localResourceFacts, validLocalResourceProfile } from '../src/native/local-resource-profile.mjs';
 
 const profile = contract => ({ providerReplayMode: 'none', providerCompatibilityPolicy: { contract, rule: 'kspmas-gateway' } });
 const usage = { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 };
@@ -80,4 +81,14 @@ test('request output budgets and explicit summary caps remain separate from mode
   assert.equal(bindNativeContext({ description, maxTokens: 16384 }).profile.maxOutputTokens, 16384);
   const explicit = bindNativeContext({ description, context: { compaction: { summaryMaxTokens: 1000 } }, adaptiveSummaryDefaults: true });
   assert.equal(explicit.policy.summaryOutputCeiling, 1000);
+});
+
+test('resource profile vocabulary is shared by execution and Core model-surface validation', () => {
+  for (const profile of NATIVE_LOCAL_RESOURCE_PROFILES) {
+    assert.equal(validLocalResourceProfile(profile), true);
+    assert.doesNotThrow(() => validateModelSurface({ contract: 'bound-model-surface/v1', environment: { workspaceRoot: '/tmp', cwd: '/tmp',
+      platform: process.platform, date: '2026-11-03', commandBackend: 'local_process', supportsImages: false,
+      commandResources: localResourceFacts(profile, localResourceSettings({ profile })) } }));
+  }
+  assert.equal(validLocalResourceProfile('local-development/v999'), false);
 });

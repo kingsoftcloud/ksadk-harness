@@ -34,7 +34,12 @@ test('v3 assembles empty identity deltas but never executes conflicting or unfin
 test('known MiniMax clean EOF requires finish and usage; errors and unknown providers stay incomplete', () => {
   const options = { model: 'minimax-m3', done: false, tailId: 'call-1' };
   assert.equal(turn(options).finalize().kind, 'tool_calls');
-  for (const override of [{ finish: null }, { model: 'unknown' }, { contract: 'provider-compat/v2' }]) {
+  assert.equal(turn({ ...options, model: 'minimax-m2.5' }).finalize().kind, 'tool_calls');
+  // A strict profile deliberately keeps the original protocol boundary.
+  const strictState = createOpenAIStreamTurn({ providerReplayMode: 'none', providerCompatibilityPolicy: { contract: 'provider-compat/v3', rule: 'strict-openai' } }, { model: 'minimax-m3' });
+  strictState.consume({ data: JSON.stringify({ choices: [{ index: 0, delta: { content: 'answer' }, finish_reason: 'stop' }], usage }) }, () => {});
+  assert.equal(strictState.finalize().kind, 'provider_retryable_error');
+  for (const override of [{ finish: null }, { model: 'unknown' }, { model: 'minimax-m2.7' }, { contract: 'provider-compat/v2' }]) {
     const result = turn({ ...options, ...override }).finalize();
     assert.equal(result.kind, 'provider_retryable_error'); assert.deepEqual(result.toolCalls, []);
   }

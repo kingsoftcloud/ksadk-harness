@@ -60,6 +60,9 @@ export function resolveProviderCompatibility(policy, binding) {
     supportsToolArgumentStreaming: ['provider-compat/v2', 'provider-compat/v3'].includes(policy.contract)
       && ['zai', 'kspmas-gateway'].includes(rule) && incrementalToolModels.has(normalized(binding.model)),
     reasoningRequired, modern: policy.contract === 'provider-compat/v3',
+    // Only the observed provider/model dialects may seal without [DONE].
+    finishOnEof: policy.contract === 'provider-compat/v3' && ['permissive', 'kspmas-gateway'].includes(rule)
+      && ['minimax-m3', 'minimax-m2.5'].includes(name),
     supportsEffort: !kimi, toolThinkingOff: ['zai', 'kspmas-gateway'].includes(rule) && !kimi,
     thinkingBudget: rule === 'zai' && !kimi && !disabledEfforts ? 32000 : null,
     disabledEfforts, requiredAuto: kimi || requiredAuto.has(name),

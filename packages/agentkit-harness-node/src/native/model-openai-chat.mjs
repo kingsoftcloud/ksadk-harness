@@ -14,7 +14,7 @@ import {
 import { sealModelReplay, openAIReplayFields } from './model-replay.mjs';
 import { validateMediaBlock, projectMediaOpenAI, MediaError } from './model-media.mjs';
 import { inlineReasoningMarker, projectInlineReasoning, createInlineReasoningProjector } from './model-inline-reasoning.mjs';
-import { applyProviderChatCompatibility } from './model-provider-compat.mjs';
+import { applyProviderChatCompatibility, resolveProviderCompatibility } from './model-provider-compat.mjs';
 import { mergeChatUsage } from './model-chat-usage.mjs';
 // parseModelJson is the kernel's strict finite JSON parser: it rejects
 // duplicate object keys and non-finite numbers (e.g. 1e400). Using it here keeps
@@ -339,8 +339,9 @@ function chatReasoning(message) {
 // ksadk._StreamTurn. Frame errors throw ProtocolError; finalize preserves the
 // accumulated text/usage and classifies the attempt.
 export function createOpenAIStreamTurn(profile, binding) {
-  const modern = profile.providerCompatibilityPolicy?.contract === 'provider-compat/v3';
-  const finishOnEof = modern && /^minimax-/i.test(binding.model ?? '');
+  const compatibility = resolveProviderCompatibility(profile.providerCompatibilityPolicy, binding);
+  const modern = compatibility?.modern === true;
+  const finishOnEof = compatibility?.finishOnEof === true;
   const captureReplay = profile.providerReplayMode !== 'none';
   const emitThinking = profile.providerThinkingDisplay ?? profile.providerReplayMode !== 'none';
   const marker = inlineReasoningMarker(profile.inlineReasoningPolicy, binding);

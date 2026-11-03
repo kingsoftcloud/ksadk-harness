@@ -483,3 +483,33 @@ test('pre-model budget compacts older history while retaining the entire fresh p
   assert.equal(plan.state.compaction.retainedRefs.length, run.snapshot.messages.length + latest.length);
   assert.deepEqual(snapshot.messages.slice(-3), latest);
 });
+
+for (const sqlite of [false, true]) for (const ceiling of [undefined, 80]) test(`${sqlite ? 'sqlite' : 'memory'}: adaptive summaries preserve the Run (ceiling=${ceiling ?? 'profile'})`, async t => {
+  const run = setup(t, { sqlite, contextPolicy: { summaryRecoveryPolicy: 'adaptive-budget/v1', maxSummaryRetries: 2, ...(ceiling ? { summaryOutputCeiling: ceiling } : {}) } });
+  let tasks = 0; const budgets = [], quotes = [];
+  run.ports.model.generate = async request => {
+    if (request.messages[0]?.kind === 'compaction_instructions') {
+      budgets.push(request.profile.maxOutputTokens);
+      quotes.push(JSON.parse(request.messages[1].content).source);
+      return { ...final(budgets.length === 2 ? 'Plausible but truncated notes.' : ''), kind: 'output_limit', textCommitVersion: 'provider-finished-text/v1' };
+    }
+    return ++tasks === 1 ? toolResponse() : final();
+  };
+  const paused = await run.worker().runUntilIdle(scope, 'run');
+  assert.equal(paused.phase, 'paused'); assert.equal(paused.outcome, null);
+  assert.equal(paused.reason, 'context_summary_unavailable'); assert.equal(paused.resumePhase, 'compacting');
+  assert.deepEqual(budgets, ceiling ? [80, 80, 80] : [80, 128, 128]);
+  assert.ok(quotes[2].stop - quotes[2].start < quotes[1].stop - quotes[1].start);
+  assert.equal(paused.contextState.history, null); assert.equal(paused.contextState.compaction.offset, 0);
+  assert.deepEqual(paused.contextState.compaction.coverage, []);
+  assert.ok(paused.messages.some(message => message.role === 'tool'));
+  if (sqlite) run.reopen();
+  assert.equal(run.store.load(scope, 'run').snapshot.reason, 'context_summary_unavailable');
+  run.ports.model.generate = async request => final(request.messages[0]?.kind === 'compaction_instructions' ? 'Bounded source notes.' : 'Recovered answer');
+  const worker = run.worker();
+  worker.submit(scope, 'run', { commandId: 'resume-summary', kind: 'resume', payload: {} });
+  const resumed = await worker.runUntilIdle(scope, 'run');
+  assert.equal(resumed.phase, 'completed'); assert.equal(resumed.finalText, 'Recovered answer');
+  assert.notEqual(resumed.reason, 'context_summary_unavailable');
+  assert.equal(resumed.usage.toolCalls, 1);
+});

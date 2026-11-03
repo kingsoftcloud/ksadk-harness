@@ -1,6 +1,6 @@
 {
   "name": "@kingsoftcloud/agentkit-harness-ui",
-  "version": "0.0.9",
+  "version": "0.0.10",
   "private": false,
   "type": "module",
   "description": "Reusable React task-process UI for AgentKit Native: an explicitly versioned event protocol, a pure state reducer, and an accessible timeline. No Studio/DSH/Python imports; React is a peer dependency.",
@@ -96,6 +96,6 @@
     "registry": "https://registry.npmjs.org"
   },
   "dependencies": {
-    "@kingsoftcloud/agentkit-harness-core": "0.0.9"
+    "@kingsoftcloud/agentkit-harness-core": "0.0.10"
   }
 }

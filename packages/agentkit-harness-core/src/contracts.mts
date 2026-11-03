@@ -302,6 +302,8 @@ export interface RunConfiguration {
   modelRecoveryPolicy: 'manual' | 'pure-inference/v1';
   guidancePolicy?: 'boundary-guide/v1' | null;
   outputRecoveryPolicy?: 'task-or-delivery/v1' | 'response-boundary/v2' | null;
+  /** v2 counts consecutive provider failures and pauses (resumable) instead of failing when they run out. */
+  providerRecoveryPolicy?: 'provider-recovery/v2' | null;
   toolErrorRecoveryPolicy?: 'diagnose-before-repeat/v1' | null;
   toolErrorRecoveryModelCalls?: number | null;
   deliveryReviewPolicy?: DeliveryReviewPolicy | null;

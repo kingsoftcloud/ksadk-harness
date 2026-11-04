@@ -27,6 +27,18 @@ export function nativeToolOutcomeFact(identity, callId, status, presentationTurn
     callId: nativeDeliveryId(identity.scope, identity.runId, `call:${callId}`), status };
 }
 const hash = value => createHash('sha256').update(canonical(value)).digest('hex');
+/** Delivery atoms are idempotent: a repeated key must carry identical content.
+ * A mismatch means either the journal was written by an older delivery contract
+ * or a retried delivery changed its payload. Failing the whole projection makes
+ * the session history unreadable, so keep the first delivered atom and skip the
+ * conflicting duplicate (the host then renders the first delivery). */
+const reportedDeliveryConflicts = new Set();
+function reportDeliveryConflict(key) {
+  if (reportedDeliveryConflicts.has(key)) return;
+  reportedDeliveryConflicts.add(key);
+  console.warn('[agentkit-harness] native delivery atom conflict; keeping the first atom', { key });
+}
+
 const ownObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 
 /** Public display deltas only. Opaque replay/signatures and tool previews are never content. */
@@ -113,7 +125,10 @@ export function nativeDeliveryProjection() {
       const key = atomKey(event);
       if (key === null) return state;
       const fingerprint = atomDigest(event);
-      invariant(!Object.hasOwn(state.atoms, key) || state.atoms[key] === fingerprint, 'native_delivery_atom_conflict');
+      if (Object.hasOwn(state.atoms, key) && state.atoms[key] !== fingerprint) {
+        reportDeliveryConflict(key);
+        return state;
+      }
       const head = event.type === 'system/message' && event.surfaceOp
         ? { id: event.data.message.id, seq: event.seq, content: event.data.message.content } : state.head;
       return { ...state, atoms: { ...state.atoms, [key]: fingerprint }, seqs: { ...state.seqs, [key]: event.seq }, head,
@@ -171,7 +186,10 @@ export function createNativeSessionDelivery({ store, scope, runId, session, turn
     const event = { type, data, ...options }, key = atomKey(event);
     invariant(key !== null, 'native_delivery_event_invalid');
     const fingerprint = atomDigest(event), previous = state().atoms[key];
-    if (previous !== undefined) { invariant(previous === fingerprint, 'native_delivery_atom_conflict'); return state().seqs[key]; }
+    if (previous !== undefined) {
+      if (previous !== fingerprint) reportDeliveryConflict(key);
+      return state().seqs[key];
+    }
     session.append(type, data, options);
     invariant(state().atoms[key] === fingerprint, 'native_delivery_projection_not_advanced');
     return state().seqs[key];

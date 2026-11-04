@@ -438,6 +438,7 @@ export const statusPanelStyles = `
 .harness-status-panel__fold-trigger .harness-status-panel__fold-chevron{ width:0.875em; height:0.875em; }
 .harness-status-panel__fold-preview{
   display:none; position:absolute; left:0; bottom:100%; z-index:20;
+  box-sizing:border-box;
   width:20rem; max-width:min(20rem, calc(100cqw - 2rem));
   border:1px solid var(--sp-border); border-radius:0.75rem; background:var(--sp-bg);
   box-shadow:0 4px 12px rgba(0,0,0,.12); padding:0.75rem;
@@ -782,9 +783,10 @@ export function createStatusPanelComponents(React, ReactDOM = {}) {
     const template = group === "preceding" ? allCompleted ? labels.todoCompletedFold : labels.todoEarlierFold
       : allPending ? labels.todoWaitingFold : labels.todoLaterFold;
     const text = String(template).replace("{count}", String(items.length));
-    const ref = useRef(null), previewRef = useRef(null), closeTimer = useRef(null);
+    const ref = useRef(null), previewRef = useRef(null), closeTimer = useRef(null), clickedOpen = useRef(false);
     const [position, setPosition] = useState(null);
-    const close = () => { clearTimeout(closeTimer.current); closeTimer.current = setTimeout(() => setPosition(null), 120); };
+    const hide = () => { clickedOpen.current = false; setPosition(null); };
+    const close = () => { clearTimeout(closeTimer.current); closeTimer.current = setTimeout(hide, 120); };
     const show = () => {
       clearTimeout(closeTimer.current);
       const node = ref.current;
@@ -798,7 +800,7 @@ export function createStatusPanelComponents(React, ReactDOM = {}) {
     useEffect(() => () => clearTimeout(closeTimer.current), []);
     const preview = h("div", { ref: previewRef, role: "tooltip", className: "harness-status-panel__fold-preview",
       "data-fold-preview": group,
-      style: position && ReactDOM.createPortal ? { ...position, position: "fixed", display: "block", overflowY: "auto", pointerEvents: "auto" } : undefined,
+      style: position && ReactDOM.createPortal ? { ...position, bottom: "auto", right: "auto", position: "fixed", display: "block", overflowY: "auto", pointerEvents: "auto" } : undefined,
       onMouseEnter: () => clearTimeout(closeTimer.current), onMouseLeave: close },
       h("div", { className: "harness-status-panel__fold-preview-header" }, text),
       h("ul", { className: "harness-status-panel__plan-list" }, items.map(i => h(PlanRow, { key: i.id, item: i }))));
@@ -806,9 +808,15 @@ export function createStatusPanelComponents(React, ReactDOM = {}) {
     return h("div", { ref, className: "harness-status-panel__fold", "data-fold-group": group,
       onMouseEnter: show, onMouseLeave: close, onFocus: show,
       onBlur: event => { if (!ref.current?.contains(event.relatedTarget) && !previewRef.current?.contains(event.relatedTarget)) close(); },
-      onKeyDown: event => { if (event.key === "Escape") { clearTimeout(closeTimer.current); setPosition(null); } } },
+      onKeyDown: event => { if (event.key === "Escape") { clearTimeout(closeTimer.current); hide(); } } },
       h("button", { type: "button", className: "harness-status-panel__fold-trigger", "aria-expanded": !!position,
-        "data-fold-trigger": group, onClick: () => position ? setPosition(null) : show() },
+        // Hover/focus may have opened the preview before the click. Track
+        // clicks separately so the first click cannot immediately close it.
+        "data-fold-trigger": group, onClick: () => {
+          clearTimeout(closeTimer.current);
+          if (clickedOpen.current) hide();
+          else { clickedOpen.current = true; show(); }
+        } },
         Icon("chevronLeft", { className: "harness-status-panel__fold-chevron" }), h("span", null, text)),
       root && ReactDOM.createPortal ? position && ReactDOM.createPortal(preview, root) : preview);
   }

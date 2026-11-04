@@ -220,8 +220,8 @@ function activityGroupBlock(group, opts) {
       h('span', { className: group.active ? 'harness-tool-title-streaming' : undefined }, title),
       h('span', { 'aria-hidden': true }, '·'),
       h('span', { 'data-testid': 'activity-counts' }, detail), chevronIcon('harness-tool-chevron')),
-    h('div', { className: 'harness-activity-children' }, group.family === 'browser'
-      ? renderTimelineItems(group.events, opts, false, false) : group.children.map(item => toolBlock(item, opts)))));
+    open || group.family !== 'changes' ? h('div', { className: 'harness-activity-children' }, group.family === 'browser'
+      ? renderTimelineItems(group.events, opts, false, false) : group.children.map(item => toolBlock(item, opts))) : null));
 }
 
 function contextMarker(item, opts) {

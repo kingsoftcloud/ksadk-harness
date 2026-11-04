@@ -126,10 +126,23 @@ test('unclassified live Shell inputs are transparent until the command supplies 
   assert.equal(activityGroups([failed])[0],failed,'a failed malformed call must remain inspectable');
 });
 
-test('file changes remain individual rows by default, matching the pinned desktop setting', () => {
-  const calls=[tool('a','write_workspace_file'),tool('b','edit_workspace_file')];
-  assert.deepEqual(activityGroups(calls),calls);
-  assert.equal(activityGroups(calls,{enableChangesGrouping:true})[0].family,'changes');
+test('contiguous file changes group by distinct paths, preserving every attempt and honest unknown paths', () => {
+  const calls=[{...tool('a','write_workspace_file'),input:{path:'src/main.js'}},
+    {...tool('b','edit_workspace_file'),input:{path:'src/main.js'}},
+    {...tool('c','edit_workspace_file','failed'),input:{path:'src/ui.js'}},
+    {...tool('d','write_workspace_files'),input:{files:[{path:'src/ui.js'},{path:'tools/test.js'}]}},
+    {...tool('e','apply_workspace_patch'),input:{}}];
+  const before=structuredClone(calls),group=activityGroups(calls)[0];
+  assert.equal(group.family,'changes');assert.equal(group.fileCount,3);assert.equal(group.unknownFileOperations,1);
+  assert.equal(activityGroupSummary(group,'zh-CN').detail,'3 个文件, 5 次操作, 1 次路径待确认, 1 失败');
+  assert.deepEqual(group.children,calls);assert.deepEqual(calls,before);
+  assert.deepEqual(activityGroups(calls,{enableChangesGrouping:false}),calls);
+  const split=activityGroups([calls[0],{kind:'text',text:'Run verification'},calls[1]]);
+  assert.equal(split.length,3,'narrative boundaries are never swallowed');
+  const tree=buildViewModel({...initialState(),items:calls},{locale:'zh-CN'});
+  assert.equal(findAllByTestId(tree,'tool-block').length,0,'collapsed group does not mount individual diff rows');
+  const open=buildViewModel({...initialState(),items:calls},{locale:'zh-CN',toolOpen:new Map([[group.id,true]])});
+  assert.equal(findAllByTestId(open,'tool-block').length,5,'every original call remains inspectable');
 });
 
 test('recognized argument streams join the same work stage without acquiring call authority or a result', () => {

@@ -11,6 +11,11 @@
   events. Reuse completed tool rows and mount file diff bodies only when open.
 - Hide whitespace-only model rows, retain write identity while arguments stream,
   and use readable task-panel line spacing.
+- Fold contiguous file edits into a distinct-file summary, retaining every
+  operation and failure in the expandable details. Collapsed edit groups do
+  not mount their child rows or diff trees.
+- Keep task-list previews within the viewport with usable scroll height and
+  make the first click open the preview reliably.
 
 ## 0.0.12 - 2026-11-04
 

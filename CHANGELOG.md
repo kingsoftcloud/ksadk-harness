@@ -16,6 +16,10 @@
   not mount their child rows or diff trees.
 - Keep task-list previews within the viewport with usable scroll height and
   make the first click open the preview reliably.
+- Commit ownership for persisted foreground command output so its advertised
+  task ID can be paged through the normal authorized reader, including after
+  a cold restore. Settled foreground commands do not emit a second completion
+  notification, and cursor reads never relaunch the process.
 
 ## 0.0.12 - 2026-11-04
 

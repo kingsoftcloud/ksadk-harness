@@ -250,7 +250,12 @@ export function createLocalCommandTransport({ workspaceRoot, stateRoot, sessionI
           task_id: handle.commandId, ...output(observed), process_timeout_seconds: readRecord(handle.directory, store.owner, handle.commandId).timeoutMs / 1000,
           ...(!args.background ? { command, controls: readRecord(handle.directory, store.owner, handle.commandId).controls ?? null } : {}),
           instruction: 'Use read_command_output with task_id; stop_command cancels this task only. Do not relaunch unknown outcomes.' },
-        ...(args.background ? { launchedCommand: { taskId: handle.commandId, operationKey } } : {}) };
+        // Persisted foreground output advertises the same cursor capability as
+        // a background launch. Commit its owner too: a task_id in model-facing
+        // content alone cannot authorize read_command_output after this step.
+        ...(args.background || outPolicy ? { launchedCommand: { taskId: handle.commandId, operationKey } } : {}),
+        ...(!args.background && outPolicy && !uncertain && TERMINAL.has(observed.status)
+          ? { backgroundCommandFinished: true } : {}) };
       } else {
         dispatched = true;
         const result = await runBoundedProcess({ argv: shellCommandArgv(command, LOCAL_COMMAND_SHELL), cwd, env, settings: policy, signal: request.signal,

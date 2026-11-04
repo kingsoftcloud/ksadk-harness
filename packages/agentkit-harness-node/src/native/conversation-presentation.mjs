@@ -5,11 +5,15 @@ const LANGUAGES = { 'zh-CN': '简体中文', en: 'English', ja: 'Japanese', ko: 
 /** A presentation preference inferred from user prose, never an authority or a
  * translation of model reasoning. Freeze it once and pass it to child owners. */
 export function admitConversationPresentation({ objective = '', locale } = {}) {
+  // An unknown language is not an English preference. Preserve the model's
+  // existing user-language behavior when this small script detector cannot
+  // establish a preference, including unsupported explicit locales.
+  if (locale !== undefined && !Object.hasOwn(LANGUAGES, locale)) return undefined;
   const prose = String(objective).replace(/```[^]*?```/g, '').replace(/`[^`]*`/g, '').slice(0, 8000);
   const selected = locale && Object.hasOwn(LANGUAGES, locale) ? locale
     : /[\u3040-\u30ff]/u.test(prose) ? 'ja' : /[\uac00-\ud7af]/u.test(prose) ? 'ko'
-      : /\p{Script=Han}/u.test(prose) ? 'zh-CN' : 'en';
-  return { contract: 'agentkit.conversation-presentation/v1', language: selected };
+      : /\p{Script=Han}/u.test(prose) ? 'zh-CN' : undefined;
+  return selected ? { contract: 'agentkit.conversation-presentation/v1', language: selected } : undefined;
 }
 
 export function validateConversationPresentation(value) {

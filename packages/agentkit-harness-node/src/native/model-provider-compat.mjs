@@ -44,20 +44,25 @@ export function applyAnthropicThinking(payload, profile, binding) {
 }
 
 export function admitProviderCompatibilityPolicy(override) {
-  return { contract: 'provider-compat/v2', rule: admitInlineReasoningPolicy(override).rule };
+  return { contract: 'provider-compat/v3', rule: admitInlineReasoningPolicy(override).rule };
 }
 
 export function resolveProviderCompatibility(policy, binding) {
   if (!policy) return null;
-  if (!['provider-compat/v1', 'provider-compat/v2'].includes(policy.contract)) throw new ProtocolError('invalid_provider_compatibility_policy');
+  if (!['provider-compat/v1', 'provider-compat/v2', 'provider-compat/v3'].includes(policy.contract)) throw new ProtocolError('invalid_provider_compatibility_policy');
   const rule = resolveCompatibilityRule(policy.rule, binding);
   const name = String(binding.model ?? '').trim().toLowerCase();
   const kimi = ['kspmas-gateway', 'moonshot'].includes(rule)
     && ['kimi-k2.7-code', 'kimi-k2.7-code-highspeed'].includes(name);
-  const disabledEfforts = mandatory.has(name) ? [] : name === 'claude-haiku-5-5' ? ['low', 'medium', 'high'] : null;
+  const reasoningRequired = policy.contract === 'provider-compat/v3' && rule === 'kspmas-gateway' && name === 'glm-5.3-flash';
+  const disabledEfforts = mandatory.has(name) || reasoningRequired ? [] : name === 'claude-haiku-5-5' ? ['low', 'medium', 'high'] : null;
   return { rule, supportsUsage: !strict.has(rule), supportsThinking: !strict.has(rule) && !kimi,
-    supportsToolArgumentStreaming: policy.contract === 'provider-compat/v2'
+    supportsToolArgumentStreaming: ['provider-compat/v2', 'provider-compat/v3'].includes(policy.contract)
       && ['zai', 'kspmas-gateway'].includes(rule) && incrementalToolModels.has(normalized(binding.model)),
+    reasoningRequired, modern: policy.contract === 'provider-compat/v3',
+    // Only the observed provider/model dialects may seal without [DONE].
+    finishOnEof: policy.contract === 'provider-compat/v3' && ['permissive', 'kspmas-gateway'].includes(rule)
+      && ['minimax-m3', 'minimax-m2.5'].includes(name),
     supportsEffort: !kimi, toolThinkingOff: ['zai', 'kspmas-gateway'].includes(rule) && !kimi,
     thinkingBudget: rule === 'zai' && !kimi && !disabledEfforts ? 32000 : null,
     disabledEfforts, requiredAuto: kimi || requiredAuto.has(name),
@@ -99,6 +104,7 @@ export function applyProviderChatCompatibility(payload, request, binding) {
     && result.tools?.some(tool => tool.type === 'function' && tool.function?.name === 'delegate_task')) effort = 'low';
   if (requested === null && request.purpose === 'compaction' && compat.rule === 'kspmas-gateway'
     && ['glm-5.2', 'deepseek-v4-flash'].includes(name)) effort = 'none';
+  if (requested === null && request.purpose === 'compaction' && compat.reasoningRequired) effort = 'low';
   effort = compat.supportsEffort ? clampReasoningEffort(model, effort) : null;
   if (effort !== null) result.reasoning_effort = effort;
   if (result.stream) result.stream_options = { ...(object(result.stream_options) ? result.stream_options : {}), include_usage: true };
@@ -107,6 +113,7 @@ export function applyProviderChatCompatibility(payload, request, binding) {
     if (!Object.keys(result.stream_options).length) delete result.stream_options;
   }
   const mode = options.thinkingMode ?? result.thinking?.type;
+  if (mode === 'disabled' && compat.reasoningRequired) throw new ProtocolError('model_thinking_disable_unsupported');
   const mayDisable = compat.supportsThinking && (compat.disabledEfforts === null || compat.disabledEfforts.includes(effort));
   const summaryOff = request.purpose === 'compaction' && requested === null && compat.rule === 'kspmas-gateway' && name === 'glm-5.3-flash';
   const budget = result.max_completion_tokens ?? result.max_tokens;
@@ -118,12 +125,38 @@ export function applyProviderChatCompatibility(payload, request, binding) {
     || compat.thinkingBudget !== null && budget <= compat.thinkingBudget)) result.thinking = { type: 'disabled' };
   if (!compat.supportsThinking) delete result.thinking;
   if (!compat.supportsEffort) delete result.reasoning_effort;
+  if (compat.modern && ['moonshot', 'kspmas-gateway'].includes(compat.rule) && result.tools) {
+    result.tools = result.tools.map(tool => tool.type === 'function' && tool.function?.parameters
+      ? { ...tool, function: { ...tool.function, parameters: explicitLiteralTypes(tool.function.parameters) } } : tool);
+  }
   if (result.tool_choice !== undefined) result.tool_choice = projectProviderToolChoice(result.tool_choice, compat);
   if (compat.echo === 'strip' || compat.echo === 'thinking' && !compat.hints.some(hint => normalized(model).includes(hint))) {
     result.messages = result.messages.map(message => {
       if (message.role !== 'assistant') return message;
       const copy = { ...message }; delete copy.reasoning_content; return copy;
     });
+  }
+  return result;
+}
+
+/** Narrow JSON Schema dialect projection. Infer only homogeneous primitive
+ * literals; never rewrite user data, mixed enums, refs or union semantics. */
+export function explicitLiteralTypes(schema) {
+  if (!object(schema)) return schema;
+  const result = { ...schema };
+  if (result.type === undefined && (Object.hasOwn(result, 'const') || Array.isArray(result.enum))) {
+    const values = Object.hasOwn(result, 'const') ? [result.const] : result.enum;
+    const types = new Set(values.map(value => value === null ? 'null' : typeof value));
+    if (types.size === 1 && ['string', 'number', 'boolean', 'null'].includes([...types][0])) result.type = [...types][0];
+  }
+  for (const key of ['properties', 'patternProperties', '$defs', 'definitions', 'dependentSchemas']) {
+    if (object(result[key])) result[key] = Object.fromEntries(Object.entries(result[key]).map(([name, value]) => [name, explicitLiteralTypes(value)]));
+  }
+  for (const key of ['items', 'additionalProperties', 'contains', 'not', 'if', 'then', 'else', 'propertyNames']) {
+    if (object(result[key])) result[key] = explicitLiteralTypes(result[key]);
+  }
+  for (const key of ['allOf', 'anyOf', 'oneOf', 'prefixItems']) {
+    if (Array.isArray(result[key])) result[key] = result[key].map(explicitLiteralTypes);
   }
   return result;
 }

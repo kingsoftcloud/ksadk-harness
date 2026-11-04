@@ -1,3 +1,4 @@
+import { NATIVE_LOCAL_RESOURCE_PROFILES } from '@kingsoftcloud/agentkit-harness-core';
 import { localControlSettings } from './local-process.mjs';
 
 export const LOCAL_RESOURCE_PROFILE = 'agentkit.local-resource-profile/v1';
@@ -7,9 +8,12 @@ const profiles = Object.freeze({
   // per-file allowance. Keep a finite development allowance; explicit Host
   // settings always win. Other limits retain their existing values.
   'local-development/v1': Object.freeze({ maxFileBytes: 1024 ** 3 }),
+  // Versioned development budget: allow long builds without changing old Runs
+  // or the restricted profile. A Host's explicit lower limit still wins.
+  'local-development/v2': Object.freeze({ cpuSeconds: 900, maxFileBytes: 1024 ** 3 }),
 });
 export function validLocalResourceProfile(profile) {
-  return typeof profile === 'string' && Object.hasOwn(profiles, profile);
+  return typeof profile === 'string' && NATIVE_LOCAL_RESOURCE_PROFILES.includes(profile) && Object.hasOwn(profiles, profile);
 }
 
 /** Host admission selects this policy, never a model/tool argument. */

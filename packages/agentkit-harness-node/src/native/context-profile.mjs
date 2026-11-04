@@ -5,6 +5,7 @@ import { createNativeContextPort } from '@kingsoftcloud/agentkit-harness-node/na
 export function nativeContextDefaults(configuration) {
   const policy = configuration?.contextPolicy;
   return {
+    adaptiveSummaryDefaults: !configuration || policy?.summaryRecoveryPolicy === 'adaptive-budget/v1',
     structuredContinuityDefaults: !configuration || policy?.summaryFormatPolicy === 'task-continuity/v1',
     readWorkingSetDefaults: !configuration || Object.hasOwn(policy ?? {}, 'readWorkingSetCount'),
     recentToolBatchDefaults: !configuration || Object.hasOwn(policy ?? {}, 'recentToolBatchCount'),
@@ -18,7 +19,7 @@ export function nativeContextDefaults(configuration) {
 }
 
 /** Bind budget, counter and policy from the resolved Agent revision/Frozen Build. */
-export function bindNativeContext({ description, context = {}, maxTokens, structuredContinuityDefaults = false, preModelBudgetDefaults = false, orderedContextDefaults = false, sourceReuseDefaults = false, readWorkingSetDefaults = false, recentToolBatchDefaults = false, pruningThresholdDefaults = false, pruningSummaryDefaults = false, pruningIdleDefaults = false } = {}) {
+export function bindNativeContext({ description, context = {}, maxTokens, adaptiveSummaryDefaults = false, structuredContinuityDefaults = false, preModelBudgetDefaults = false, orderedContextDefaults = false, sourceReuseDefaults = false, readWorkingSetDefaults = false, recentToolBatchDefaults = false, pruningThresholdDefaults = false, pruningSummaryDefaults = false, pruningIdleDefaults = false } = {}) {
   invariant(context && typeof context === 'object' && !Array.isArray(context), 'studio_native_context_invalid');
   const raw = context.compaction ?? {};
   invariant(raw && typeof raw === 'object' && !Array.isArray(raw), 'studio_native_compaction_invalid');
@@ -29,7 +30,7 @@ export function bindNativeContext({ description, context = {}, maxTokens, struct
     'pruneToolResults', 'pruneKeepRecentBatches', 'pruneMinSavedTokens', 'pruneThresholdTokens', 'pruneIdleThresholdMinutes'];
   invariant(Object.keys(raw).every(key => supported.includes(key)), 'studio_native_compaction_option_unsupported');
   const requestedWindow = context.maxInputTokens ?? description.contextWindow;
-  const output = maxTokens ?? context.reserveOutputTokens ?? description.maxOutputTokens;
+  const output = maxTokens ?? context.reserveOutputTokens ?? description.requestOutputTokens ?? description.maxOutputTokens;
   invariant(Number.isSafeInteger(requestedWindow) && requestedWindow > 0
     && Number.isSafeInteger(output) && output > 0 && output <= description.maxOutputTokens, 'studio_native_context_budget_invalid');
   const contextWindow = Math.min(requestedWindow, description.contextWindow);
@@ -39,6 +40,8 @@ export function bindNativeContext({ description, context = {}, maxTokens, struct
   return { port, profile: { contextWindow, maxOutputTokens: output }, policy: {
     tokenizerId: port.tokens.tokenizerId, tokenizerDigest: port.tokens.tokenizerDigest,
     summaryBudgetMode: 'context_bounded_estimate',
+    ...(adaptiveSummaryDefaults ? { summaryRecoveryPolicy: 'adaptive-budget/v1',
+      summaryOutputCeiling: Math.min(raw.summaryMaxTokens ?? output, output) } : {}),
     ...(structuredContinuityDefaults ? { summaryFormatPolicy: 'task-continuity/v1' } : {}),
     ...(preModelBudgetDefaults ? { budgetTiming: 'before-model/v1' } : {}),
     ...(orderedContextDefaults && description.protocol === 'openai-chat' ? { continuityPlacement: 'after-history/v1' } : {}),

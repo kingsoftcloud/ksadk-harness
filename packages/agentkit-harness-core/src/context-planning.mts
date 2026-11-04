@@ -230,7 +230,8 @@ function codePointStop(text: string, stop: number): number {
 async function quoteChunk(snapshot: RunSnapshot, compaction: ContextCompaction, config: RunConfiguration,
   counters: ContextCounters, digest: (value: unknown) => string, policies: NativePolicyRegistry): Promise<void> {
   const maxOutputTokens = ['deadline-delivery/v1', 'deadline-delivery/v2'].includes(config.wallDeliveryPolicy ?? '')
-    ? config.profile.maxOutputTokens : Math.min(config.contextPolicy!.summaryMaxTokens, config.profile.maxOutputTokens);
+    ? config.profile.maxOutputTokens : Math.min(compaction.summaryOutputTokens ?? config.contextPolicy!.summaryMaxTokens, config.profile.maxOutputTokens);
+  invariant(Number.isSafeInteger(maxOutputTokens) && maxOutputTokens > 0 && maxOutputTokens < config.profile.contextWindow, 'context_summary_budget_invalid');
   const prefix = snapshot.messages.slice(0, compaction.prefixCount), refs = refsOf(prefix, digest);
   const projected = summaryProjection(prefix, compaction, config, digest);
   const mediaFor = (stop: number): NonNullable<Message['media']> => {
@@ -525,23 +526,41 @@ export function reduceContextModel(snapshot: RunSnapshot, result: ModelResult, c
   invariant(compaction?.chunk, 'context_summary_quote_missing');
   const base: Partial<RunSnapshot> = { pendingIntent: null, contextState: state, preparedContext: null, usage,
     phase: 'compacting', ...(result.usageReported === false ? { diagnostics: { ...snapshot.diagnostics, providerUsageIncomplete: true } } : {}) };
-  if (result.kind === 'output_limit' && result.text.trim() && result.textCommitVersion !== 'provider-finished-text/v1') {
+  const adaptive = config.contextPolicy?.summaryRecoveryPolicy === 'adaptive-budget/v1';
+  if (!adaptive && result.kind === 'output_limit' && result.text.trim() && result.textCommitVersion !== 'provider-finished-text/v1') {
     return { ...base, phase: 'finalizing', outcome: 'blocked', reason: 'context_summary_provider_commit_missing' };
   }
-  if (['final_candidate', 'output_limit'].includes(result.kind) && result.text.trim() && !result.toolCalls.length) {
+  if ((result.kind === 'final_candidate' || !adaptive && result.kind === 'output_limit') && result.text.trim() && !result.toolCalls.length) {
     compaction.proposal = result.text; return base;
   }
   if (['policy_abort', 'user_abort', 'provider_terminal_error'].includes(result.kind)) return { ...base, phase: 'finalizing',
     outcome: result.kind === 'policy_abort' ? 'blocked' : 'unverified', reason: `context_summary_${result.kind}` };
   const provider = result.kind === 'provider_retryable_error';
+  if (!provider && config.providerRecoveryPolicy === 'provider-recovery/v2') compaction.providerErrors = 0;
   // Old persisted compactions had one combined counter. Seed their first
   // provider retry conservatively; new compactions keep the two limits separate.
   const attempts = provider ? (compaction.providerErrors ?? compaction.errors) + 1 : compaction.errors + 1;
   if (provider) compaction.providerErrors = attempts;
   else compaction.errors = attempts;
   const limit = provider ? config.profile.maxProviderRetries : config.contextPolicy!.maxSummaryRetries;
-  if (attempts > limit) return { ...base, phase: 'finalizing', outcome: 'unverified', reason: 'context_summary_retry_exhausted' };
+  if (attempts > limit) {
+    if (adaptive || provider && config.providerRecoveryPolicy === 'provider-recovery/v2') {
+      compaction.errors = 0; compaction.providerErrors = 0;
+      return { ...base, phase: 'paused', resumePhase: 'compacting', outcome: null,
+        reason: provider ? 'provider_unavailable' : 'context_summary_unavailable', retryNotBefore: 0 };
+    }
+    return { ...base, phase: 'finalizing', outcome: 'unverified', reason: 'context_summary_retry_exhausted' };
+  }
+  if (adaptive && result.kind === 'output_limit') {
+    const previous = compaction.chunk.maxOutputTokens;
+    const ceiling = Math.min(config.contextPolicy!.summaryOutputCeiling ?? config.profile.maxOutputTokens,
+      config.profile.maxOutputTokens, Math.floor(config.profile.contextWindow / 2));
+    if (previous < ceiling) compaction.summaryOutputTokens = Math.min(ceiling, previous * 2);
+    else compaction.quoteLimit = Math.max(1, Math.floor((compaction.chunk.stop - compaction.chunk.start) / 2));
+    compaction.chunk = null;
+  }
   if (result.kind === 'context_overflow') {
+    invariant(compaction.chunk, 'context_summary_quote_missing');
     const length = compaction.chunk.stop - compaction.chunk.start;
     if (length <= 2) return { ...base, phase: 'finalizing', outcome: 'blocked', reason: 'context_summary_quote_overflow' };
     compaction.quoteLimit = Math.max(1, Math.floor(length / 2)); compaction.chunk = null;

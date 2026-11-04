@@ -24,6 +24,7 @@ for (const isolated of [false, true]) test(`child models use current root and di
   const contextPolicy = { tokenizerId: 'child', tokenizerDigest: 'child/v1', enabled: false, triggerRatio: .9, targetRatio: .5,
     summaryMaxTokens: 100, maxCompactions: 1, maxCompactionsWithoutProgress: 1, minModelTurnsBetween: 1, maxSummaryRetries: 1 };
   const children = await createNativeChildren({ roles, scope, sessionId: 'session', store, tools: workspaceToolDefinitions(),
+    providerRecoveryPolicy: isolated ? 'provider-recovery/v2' : undefined,
     workspaceContext: nativeWorkspaceContextBinding(root, { instructionRoots: [] }),
     fileWorkspaces: createStudioNativeChildWorkspaces({ workspaceRoot: root, stateDir: join(directory, 'isolated') }),
     resolveModel: async () => ({ profile: fixture().config.profile, supportsImages: false, contextPolicy,
@@ -62,6 +63,7 @@ for (const isolated of [false, true]) test(`child models use current root and di
   const childScope = { ...scope, agentId: scope.agentId + ':child:reader' };
   const child = store.load(childScope, store.list(childScope)[0].runId);
   assert.equal(child.snapshot.phase, 'completed');
+  assert.equal(child.configuration.providerRecoveryPolicy, isolated ? 'provider-recovery/v2' : undefined);
   assert.equal(child.configuration.hostRecoveryBinding.workspaceContext.workspaceRoot, childRoot);
   assert.deepEqual(child.snapshot.context.instructionScopes.directories, ['', 'pkg']);
   assert.doesNotMatch(canonical(child.snapshot.messages), /CHILD_ROOT_RULE|CHILD_NESTED_RULE/);

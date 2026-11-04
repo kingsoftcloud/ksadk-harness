@@ -1738,3 +1738,17 @@ test('caller cancellation while reading a 400 body still propagates', async () =
     finally { clearTimeout(timer); }
   });
 });
+
+test('v3 MiniMax HTTP clean EOF seals complete tools and request schema literals without DONE', async () => {
+  const handler = () => ({ headers: SSE_HEADERS, body: [
+    sse(ochunk({ tool_calls: [{ index: 0, id: 'call', type: 'function', function: { name: 'read', arguments: '{"kind":' } }] })),
+    sse(ochunk({ tool_calls: [{ index: 0, id: '', type: '', function: { arguments: '"file"}' } }] }, 'tool_calls')),
+    sse({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 } }),
+  ] });
+  const tool = { ...makeTool('read'), parameters: { type: 'object', properties: { kind: { enum: ['file', 'web'] } } } };
+  const request = makeRequest({ profile: makeProfile({ providerCompatibilityPolicy: { contract: 'provider-compat/v3', rule: 'kspmas-gateway' } }), tools: [tool] });
+  const { result, requests } = await collect(0, 'openai-chat', handler, request, { bindingExtra: { model: 'minimax-m3' } });
+  assert.equal(result.kind, 'tool_calls'); assert.equal(result.toolCalls[0].arguments.kind, 'file');
+  assert.equal(JSON.parse(requests[0].body).tools[0].function.parameters.properties.kind.type, 'string');
+  assert.equal(tool.parameters.properties.kind.type, undefined);
+});

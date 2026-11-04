@@ -311,6 +311,9 @@ export function reduceModel(snapshot: RunSnapshot, input: ModelResult, config: R
   const replay = boundReplay(result, config);
   const usage = addUsage(snapshot.usage, { ...result.usage, modelCalls: 0, toolCalls: 0 });
   const base: Partial<RunSnapshot> = { pendingIntent: null, preparedContext: null, usage,
+    // provider-recovery/v2: any provider response ends the consecutive-failure streak.
+    ...(config.providerRecoveryPolicy === 'provider-recovery/v2' && result.kind !== 'provider_retryable_error'
+      && snapshot.providerErrors ? { providerErrors: 0 } : {}),
     ...(snapshot.pendingGuidanceIds?.length && effectiveGuidanceResponse(result) ? { pendingGuidanceIds: [] } : {}),
     ...(result.usageReported === false || result.failureDiagnostic || snapshot.diagnostics.lastModelFailure
       ? { diagnostics: { ...snapshot.diagnostics,
@@ -440,9 +443,12 @@ export function reduceModel(snapshot: RunSnapshot, input: ModelResult, config: R
       const attempts = (provider ? snapshot.providerErrors : snapshot.modelErrors) + 1;
       const exhausted = attempts > (provider ? config.profile.maxProviderRetries : config.profile.maxRetries);
       const delay = retryDelay(result, attempts, config, random);
+      // An unavailable provider is not a task failure: pause with a fresh budget so the Host can resume later.
+      if (provider && exhausted && config.providerRecoveryPolicy === 'provider-recovery/v2') return { ...base, phase: 'paused',
+        resumePhase: 'preparing_context', outcome: null, reason: 'provider_unavailable', providerErrors: 0, retryNotBefore: 0 };
       return { ...base, phase: exhausted ? 'finalizing' : 'preparing_context', outcome: exhausted ? 'failed' : null,
         reason: exhausted ? `${result.kind}_retry_exhausted` : null,
-        providerErrors: provider ? attempts : snapshot.providerErrors,
+        providerErrors: provider ? attempts : base.providerErrors ?? snapshot.providerErrors,
         modelErrors: provider ? snapshot.modelErrors : attempts, retryNotBefore: exhausted ? 0 : now + delay,
         messages: provider ? snapshot.messages : [...snapshot.messages, { role: 'user', kind: responseContinuationPending(snapshot, config)
           ? 'response_continuation_feedback' : 'model_feedback',

@@ -1,6 +1,8 @@
 import type { ArtifactRef, Message, RunConfiguration, VerificationReport } from './contracts.mjs';
 import { canonical, copy, invariant } from './values.mjs';
 
+export const NATIVE_LOCAL_RESOURCE_PROFILES = ['bounded/v1', 'local-development/v1', 'local-development/v2'] as const;
+
 /** Facts are supplied by the execution owner, never inferred from prompt prose. */
 export interface WorkspaceBrowserCapability {
   contract: 'agentkit.workspace-browser-capability/v1'; toolName: 'browser_inspect_workspace';
@@ -16,7 +18,7 @@ export interface ModelSurface {
     commandBackend: 'local_process' | 'e2b' | 'none';
     commandCwd?: string; environmentNames?: string[];
     commandResources?: {
-      contract: 'agentkit.local-resource-profile/v1'; profile: 'bounded/v1' | 'local-development/v1';
+      contract: 'agentkit.local-resource-profile/v1'; profile: typeof NATIVE_LOCAL_RESOURCE_PROFILES[number];
       requestedLimits: { cpuSeconds: number; addressSpaceBytes: number; maxProcesses: number;
         maxOpenFiles: number; maxFileBytes: number; wallSeconds: number };
     };
@@ -58,7 +60,7 @@ export function validateModelSurface(surface: ModelSurface | undefined): void {
     invariant(env.commandBackend === 'local_process' && resources
       && Object.keys(resources).sort().join(',') === 'contract,profile,requestedLimits'
       && resources.contract === 'agentkit.local-resource-profile/v1'
-      && ['bounded/v1', 'local-development/v1'].includes(resources.profile)
+      && NATIVE_LOCAL_RESOURCE_PROFILES.includes(resources.profile)
       && resources.requestedLimits && Object.keys(resources.requestedLimits).sort().join(',') === [...keys].sort().join(',')
       && Object.values(resources.requestedLimits).every(value => Number.isSafeInteger(value) && value > 0),
     'invalid_model_command_resources');

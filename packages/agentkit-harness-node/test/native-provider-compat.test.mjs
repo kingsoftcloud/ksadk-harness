@@ -8,7 +8,10 @@ const oracle = JSON.parse(await readFile(new URL('./fixtures/native-provider-com
 for (const item of oracle.cases) test(`provider compatibility oracle: ${item.id}`, () => {
   const payload = structuredClone(item.payload);
   const result = applyProviderChatCompatibility(payload,
-    { purpose: item.purpose, profile: { ...item.profile, providerCompatibilityPolicy: admitProviderCompatibilityPolicy(item.rule) } },
+    // This oracle records the v2 wire contract. New admissions now use v3;
+    // changing that default must not silently upgrade the restored v2 cases.
+    { purpose: item.purpose, profile: { ...item.profile, providerCompatibilityPolicy: {
+      ...admitProviderCompatibilityPolicy(item.rule), contract: 'provider-compat/v2' } } },
     { model: item.model });
   assert.deepEqual(result, item.expected);
   assert.deepEqual(payload, item.payload, 'projection cannot mutate a previous attempt');

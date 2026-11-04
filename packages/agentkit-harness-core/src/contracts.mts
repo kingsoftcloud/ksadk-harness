@@ -105,7 +105,7 @@ export interface ModelProfile {
   /** Absent on older Runs; projection policy is frozen at admission. */
   inlineReasoningPolicy?: { contract: 'profiled-content/v1' | 'profiled-content/v2'; rule: 'auto' | 'permissive' | 'openai'
     | 'strict-openai' | 'cerebras' | 'groq' | 'deepseek' | 'zai' | 'kspmas-gateway' | 'moonshot' | 'mimo' };
-  providerCompatibilityPolicy?: { contract: 'provider-compat/v1' | 'provider-compat/v2'; rule: NonNullable<ModelProfile['inlineReasoningPolicy']>['rule'] };
+  providerCompatibilityPolicy?: { contract: 'provider-compat/v1' | 'provider-compat/v2' | 'provider-compat/v3'; rule: NonNullable<ModelProfile['inlineReasoningPolicy']>['rule'] };
   streaming?: boolean; outputTokenParameter?: 'max_tokens' | 'max_completion_tokens';
   streamTimeoutPolicy?: 'idle/v1'; providerThinkingDisplay?: boolean;
   /** Absent on historical Runs, whose OpenAI usage reports required equality. */
@@ -181,6 +181,9 @@ export interface HookState {
 }
 export interface ContextPlanningPolicy {
   summaryFormatPolicy?: 'task-continuity/v1';
+  /** Adapt summary quotes after output exhaustion; preserve history on failure. */
+  summaryRecoveryPolicy?: 'adaptive-budget/v1';
+  summaryOutputCeiling?: number;
   tokenizerId: string; tokenizerDigest: string; enabled: boolean;
   /** Estimates bound complete requests; exact counters keep the strict summary ceiling. */
   summaryBudgetMode?: 'strict' | 'context_bounded_estimate';
@@ -225,6 +228,7 @@ export interface ContextCompaction {
   /** Provider retry attempts are separate from invalid-summary/proposal attempts.
    * Absence on restored legacy runs conservatively inherits `errors`. */
   providerErrors?: number;
+  summaryOutputTokens?: number;
   hookSubject: ObjectValue; hooksComplete: boolean;
   workspaceRevision?: string | null;
   /** References into the immutable prefix; cleared groups must belong to removedRefs. */
@@ -302,6 +306,8 @@ export interface RunConfiguration {
   modelRecoveryPolicy: 'manual' | 'pure-inference/v1';
   guidancePolicy?: 'boundary-guide/v1' | null;
   outputRecoveryPolicy?: 'task-or-delivery/v1' | 'response-boundary/v2' | null;
+  /** v2 counts consecutive provider failures and pauses (resumable) instead of failing when they run out. */
+  providerRecoveryPolicy?: 'provider-recovery/v2' | null;
   toolErrorRecoveryPolicy?: 'diagnose-before-repeat/v1' | null;
   toolErrorRecoveryModelCalls?: number | null;
   deliveryReviewPolicy?: DeliveryReviewPolicy | null;

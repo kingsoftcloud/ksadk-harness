@@ -1841,3 +1841,12 @@ test('chat SSE provider rejection: kernel retries the model and commits a later 
     assert.equal(executions, 1); assert.equal(server.requests.length, 3);
   });
 });
+
+for (const protocol of ['openai-chat', 'anthropic-messages']) test(`provider errors never retry an already observed refusal: ${protocol}`, async () => {
+  const body = protocol === 'openai-chat' ? [sse(ochunk({ refusal: 'Cannot comply.' })), sse({ error: { type: 'server_error' } })]
+    : [ae('message_start', { type: 'message_start', message: { id: 'm1', model: 'fake-model', role: 'assistant', usage: { input_tokens: 2, output_tokens: 0 } } }),
+      ae('message_delta', { type: 'message_delta', delta: { stop_reason: 'refusal', stop_sequence: null }, usage: { output_tokens: 1 } }),
+      ae('error', { type: 'error', error: { type: 'overloaded_error' } })];
+  const { result, requests } = await collect(0, protocol, () => ({ headers: SSE_HEADERS, body }), makeRequest());
+  assert.equal(result.kind, 'policy_abort'); assert.deepEqual(result.toolCalls, []); assert.equal(requests.length, 1);
+});

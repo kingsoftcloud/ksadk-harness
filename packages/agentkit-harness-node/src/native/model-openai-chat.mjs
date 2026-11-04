@@ -515,7 +515,7 @@ export function createOpenAIStreamTurn(profile, binding) {
       const { usage, usageReported: observedUsage } = sealUsage(this.usage);
       const usageReported = observedUsage && (profile.chatUsagePolicy === undefined
         || this.usageAtFinish && !this.usageConflict);
-      if (errorKind) {
+      if (errorKind && errorKind !== 'provider_retryable_error') {
         return {
           kind: errorKind, text: this.text, toolCalls: [], usage, usageReported,
           ...(failureKind ? { failureKind } : {}),

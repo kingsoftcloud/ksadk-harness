@@ -27,7 +27,8 @@
 - Classify known provider error envelopes consistently across Chat, Responses
   and Anthropic JSON/SSE entries. Transient failures use the existing kernel
   retry budget; permanent or unknown failures remain terminal, and partial tool
-  arguments never execute. Provider message bodies are not persisted.
+  arguments never execute. An observed refusal cannot be reopened by a later
+  transient error. Provider message bodies are not persisted.
 
 ## 0.0.12 - 2026-11-04
 

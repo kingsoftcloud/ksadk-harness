@@ -655,7 +655,7 @@ export function createAnthropicStreamState(profile) {
       const usage = buildAnthropicUsage(this);
       const usageReported = hasCompleteUsage(this);
       let finish = this.refused ? 'content_filter' : mapStopReason(this.stopReason);
-      if (errorKind) {
+      if (errorKind && errorKind !== 'provider_retryable_error') {
         return { kind: errorKind, text: this.text, toolCalls: [], usage, usageReported, ...(failureKind ? { failureKind } : {}) };
       }
       if (errorKind === 'provider_retryable_error' || !this.done) {

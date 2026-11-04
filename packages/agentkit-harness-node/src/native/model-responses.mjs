@@ -1115,6 +1115,11 @@ export function createResponsesStreamState(profile) {
       // An in-stream error or a transport error during the attempt seals the
       // observed text with no tools; usage is preserved when reported.
       if (this.streamError) {
+        // A provider refusal is an observed stop decision, not permission to
+        // reopen generation because a later stream error is transient.
+        if (this.streamError.kind === 'provider_retryable_error' && (this.refused || this.finish === 'content_filter')) {
+          return { kind: 'policy_abort', text: this.text, toolCalls: [], usage, usageReported };
+        }
         return {
           kind: this.streamError.kind, text: this.text, toolCalls: [], usage, usageReported,
           ...(this.streamError.failureKind ? { failureKind: this.streamError.failureKind } : {}),

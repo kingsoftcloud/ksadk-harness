@@ -992,3 +992,12 @@ test('responses: indexed reasoning summary does not require an optional reasonin
     assert.equal(result.providerReplay?.reasoningContent, providerReplayMode === 'none' ? undefined : 'PRIVATE');
   }
 });
+
+test('responses: a transient error after an observed refusal cannot reopen it as a retry', async () => {
+  const { result } = await collect(() => ({ headers: SSE_HEADERS, body: [
+    sse(rcreated()),
+    sse({ type: 'response.output_item.done', output_index: 0, item: { type: 'message', id: 'msg-1', role: 'assistant', status: 'completed', content: [{ type: 'refusal', refusal: 'I cannot' }] } }),
+    sse(rerr({ type: 'server_error' })),
+  ] }), makeRequest());
+  assert.equal(result.kind, 'policy_abort'); assert.deepEqual(result.toolCalls, []);
+});

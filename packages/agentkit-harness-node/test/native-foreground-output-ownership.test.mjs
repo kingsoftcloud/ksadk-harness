@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, realpathSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { NativeKernel, emptyUsage } from '@kingsoftcloud/agentkit-harness-core';
 import { fixture, scope, digest } from './fixtures/native-core.mjs';
 import { SqliteRunStore } from '../src/native/sqlite-store.mjs';
@@ -44,6 +45,20 @@ test('persisted foreground output remains owned and cursor-readable after a cold
   assert.equal(stopped.backgroundCommands.length, 1, 'the advertised task_id must have a committed owner');
   assert.equal(stopped.backgroundCommands[0].notified, true, 'a settled foreground command needs no later completion notice');
   assert.equal(launch.backgroundCommandRef.taskId, launch.content.task_id);
+  assert.equal(store.observation(scope, 'run').facts.activity.terminals[0].state, 'completed',
+    'a known foreground completion must not appear as an unknown background process');
+  const authorityBefore = store.load(scope, 'run');
+  const cacheDb = new DatabaseSync(database);
+  try {
+    const cached = cacheDb.prepare('SELECT run_key,data FROM native_run_observations').get();
+    const oldView = JSON.parse(cached.data);
+    oldView.commitProjection.contract = 'agentkit.native-commit-projection/v2';
+    oldView.facts.activity.terminals[0].state = 'unknown';
+    cacheDb.prepare('UPDATE native_run_observations SET data=? WHERE run_key=?').run(JSON.stringify(oldView), cached.run_key);
+    assert.equal(store.observation(scope, 'run').facts.activity.terminals[0].state, 'completed',
+      'an older display cache is rebuilt from the unchanged original receipt');
+    assert.deepEqual(store.load(scope, 'run'), authorityBefore, 'display migration changes no execution authority');
+  } finally { cacheDb.close(); }
 
   store.close(); store = new SqliteRunStore(database); tools = makeTools();
   let generated = 0, paged;

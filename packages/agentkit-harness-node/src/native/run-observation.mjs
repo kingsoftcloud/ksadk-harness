@@ -9,7 +9,7 @@ import { canCloseNativeReadInterruption } from './read-interruption.mjs';
 import { advanceNativeContextMarkerState, nativeContextMarkerFactsFromState } from './context-markers.mjs';
 
 export const NATIVE_RUN_OBSERVATION = 'agentkit.native-run-observation/v1';
-export const NATIVE_COMMIT_PROJECTION = 'agentkit.native-commit-projection/v2';
+export const NATIVE_COMMIT_PROJECTION = 'agentkit.native-commit-projection/v3';
 
 function contextProjection(previous, record) {
   let lastPlan = previous?.lastPlan ?? null, lastAdmission = previous?.lastAdmission ?? null;

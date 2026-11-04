@@ -20,6 +20,9 @@
   task ID can be paged through the normal authorized reader, including after
   a cold restore. Settled foreground commands do not emit a second completion
   notification, and cursor reads never relaunch the process.
+- Project confirmed foreground completion from its exact committed launch
+  receipt instead of showing an unknown terminal. Rebuild older display caches
+  once; unknown or incomplete execution evidence remains unknown.
 
 ## 0.0.12 - 2026-11-04
 

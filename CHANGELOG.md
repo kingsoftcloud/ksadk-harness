@@ -29,6 +29,12 @@
   retry budget; permanent or unknown failures remain terminal, and partial tool
   arguments never execute. An observed refusal cannot be reopened by a later
   transient error. Provider message bodies are not persisted.
+- Add a frozen, opt-in timeout recovery recipe for read-only context sources.
+  Retry a timed-out read within the admitted effect budget, discard late data,
+  and pause after required-source exhaustion so the same Run can resume with
+  fresh context. Permanent binding errors and caller cancellation do not retry;
+  source recipes without this policy retain their historical behavior. Workspace
+  instruction readers and child restoration bind the same explicit recipe.
 
 ## 0.0.12 - 2026-11-04
 

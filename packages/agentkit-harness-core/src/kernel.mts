@@ -32,7 +32,7 @@ import { assertHookFeedbackRetained, deniedByHook, reduceHook, stagePostHooks } 
 import { hookBytes, hookResult } from './hook-contract.mjs';
 import { planNativeContext, reduceContextModel } from './context-planning.mjs';
 import type { ContextCounters } from './context-planning.mjs';
-import { collectContextContributions } from './context-contributions.mjs';
+import { collectContextContributions, contextSourceUnavailable } from './context-contributions.mjs';
 import { validateInstructionScopes } from './instruction-scopes.mjs';
 import { refreshContextSources } from './context-source-refresh.mjs';
 import { outputRestartPayload } from './output-recovery.mjs';
@@ -888,6 +888,7 @@ export class NativeKernel {
       }
     } catch (error) {
       const code = isNativeError(error) ? error.code : 'effect_port_error';
+      const unavailableSource = contextSourceUnavailable(error, configuration);
       facts.push(observedEffectFailure({ operationKey: intent.operationKey, kind: intent.kind, code,
         nativeError: isNativeError(error), signalAborted: effectSignal.aborted,
         elapsedMs: this.monotonicNow() - started, initialTimeoutMs: timeoutMs, observedAtMs: this.now(),
@@ -934,6 +935,13 @@ export class NativeKernel {
           changes = { pendingIntent: null, phase: 'finalizing', candidate: null, verification: null, finalText: '',
             childLifecycleFailure: intent.payload.action as 'poll' | 'wait' | 'cancel', outcome: 'unverified', reason: 'child_owner_unavailable' };
         }
+      } else if (intent.kind === 'context' && !effectSignal.aborted && code === 'context_source_unavailable'
+        && unavailableSource
+        && ['preparing_context', 'compacting'].includes(snapshot.phase)) {
+        raw = { code }; status = 'failed';
+        changes = { pendingIntent: null, preparedContext: null, phase: 'paused', resumePhase: snapshot.phase,
+          outcome: null, reason: code, context: { ...snapshot.context, preparedCursor: null } };
+        facts.push({ kind: 'context.source_unavailable', payload: { ...unavailableSource, reason: code, operationKey: intent.operationKey } });
       } else if (intent.kind === 'context' && configuration.contextPolicy || ['invalid_context_messages', 'invalid_context_tool_pairing', 'context_binding_mismatch', 'context_hook_feedback_missing', 'context_guidance_missing'].includes(code)) {
         raw = { code }; status = 'failed';
         changes = { pendingIntent: null, preparedContext: null, phase: 'finalizing', outcome: 'blocked', reason: code };

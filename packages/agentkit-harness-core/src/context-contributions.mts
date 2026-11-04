@@ -1,8 +1,22 @@
 import type { ContextPort, ContextSourceDefinition, Message, ObjectValue, PortContext, RunConfiguration, RunSnapshot } from './contracts.mjs';
-import { canonical, copy, invariant, NativeError } from './values.mjs';
+import { canonical, copy, invariant, isNativeError, NativeError } from './values.mjs';
 
 export const CONTEXT_SOURCE_CONTRACT = 'agentkit.native-context-source/v1';
 export const CONTEXT_CONTRIBUTION_CONTRACT = 'agentkit.native-context-contribution/v1';
+
+class ContextSourceUnavailable extends NativeError {
+  constructor(readonly sourceId: string, readonly bindingDigest: string, readonly timeoutRetries: number) {
+    super('context_source_unavailable');
+  }
+}
+/** Only exhaustion produced by this collector can authorize a recoverable pause. */
+export function contextSourceUnavailable(error: unknown, config: RunConfiguration): ObjectValue | null {
+  if (!(error instanceof ContextSourceUnavailable)) return null;
+  const source = config.contextSources.find(source => source.sourceId === error.sourceId
+    && source.bindingDigest === error.bindingDigest && source.required
+    && source.timeoutRecovery?.maxRetries === error.timeoutRetries);
+  return source ? { sourceId: source.sourceId, bindingDigest: source.bindingDigest, timeoutRetries: error.timeoutRetries } : null;
+}
 
 export function validateContextSource(source: ContextSourceDefinition, timeoutMs: number): void {
   invariant(source.contract === CONTEXT_SOURCE_CONTRACT && typeof source.sourceId === 'string' && !!source.sourceId.trim()
@@ -14,6 +28,24 @@ export function validateContextSource(source: ContextSourceDefinition, timeoutMs
   'invalid_context_source');
   invariant(source.instructionPolicy === undefined || source.instructionPolicy === 'current-files/v1' && source.required,
     'invalid_context_instruction_source');
+  const recovery = source.timeoutRecovery;
+  invariant(recovery === undefined || recovery && !Array.isArray(recovery)
+    && Object.keys(recovery).sort().join(',') === 'contract,maxRetries,retryDelayMs' && recovery.contract === 'context-source-timeout/v1'
+    && Number.isSafeInteger(recovery.maxRetries) && recovery.maxRetries >= 0 && recovery.maxRetries <= 3
+    && Number.isSafeInteger(recovery.retryDelayMs) && recovery.retryDelayMs >= 0 && recovery.retryDelayMs <= 60000
+    && source.timeoutMs * (recovery.maxRetries + 1) + recovery.retryDelayMs * recovery.maxRetries < timeoutMs,
+  'invalid_context_source_timeout_recovery');
+}
+
+async function retryDelay(ms: number, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted();
+  await new Promise<void>((resolve, reject) => {
+    const done = () => { signal.removeEventListener('abort', canceled); resolve(); };
+    const timer = setTimeout(done, ms);
+    const canceled = () => { clearTimeout(timer); signal.removeEventListener('abort', canceled); reject(signal.reason); };
+    signal.addEventListener('abort', canceled, { once: true });
+    if (signal.aborted) canceled();
+  });
 }
 
 export function contextContributionMessage(source: ContextSourceDefinition, item: ObjectValue): Message {
@@ -46,45 +78,59 @@ export async function collectContextContributions(context: PortContext, snapshot
   port: ContextPort, count: (messages: Message[]) => Promise<number>): Promise<{ messages: Message[]; diagnostics: ObjectValue[] }> {
   const messages: Message[] = [], diagnostics: ObjectValue[] = [];
   for (const source of [...config.contextSources].sort((a, b) => b.priority - a.priority)) {
-    context.signal.throwIfAborted();
-    const abort = new AbortController(), signal = AbortSignal.any([context.signal, abort.signal]);
-    let listener: () => void = () => {};
-    const timer = setTimeout(() => abort.abort(new NativeError('context_source_timeout')), source.timeoutMs);
-    const deadline = Date.now() + source.timeoutMs;
-    const canceled = new Promise<never>((_, reject) => {
-      listener = () => reject(signal.reason); signal.addEventListener('abort', listener, { once: true });
-      if (signal.aborted) listener();
-    });
-    try {
-      invariant(port.readSource, 'context_source_port_missing');
-      const result = await Promise.race([port.readSource({ ...context, signal, source: copy(source), snapshot: copy(snapshot),
-        configuration: copy(config), remainingTokens: Math.min(source.maxTokens, config.profile.contextWindow - config.profile.maxOutputTokens) }), canceled]);
-      signal.throwIfAborted(); invariant(Date.now() < deadline, 'context_source_timeout');
-      invariant(result && Array.isArray(result.items) && result.items.length <= 64
-        && new TextEncoder().encode(canonical(result)).length <= 4 * 1024 * 1024, 'context_source_result_invalid');
-      invariant(!source.instructionPolicy || result.items.length > 0, 'context_instruction_source_snapshot_missing');
-      const admitted: Message[] = [];
-      for (const item of result.items) {
-        invariant(item && typeof item === 'object' && !Array.isArray(item), 'context_source_result_invalid');
-        const candidate = [...admitted, contextContributionMessage(source, item)];
-        if (new TextEncoder().encode(canonical(candidate)).length > source.maxBytes) {
-          invariant(!source.instructionPolicy, 'context_instruction_source_byte_budget_exceeded'); continue;
-        }
-        const tokens = await Promise.race([count(copy(candidate)), canceled]); signal.throwIfAborted();
-        invariant(Date.now() < deadline, 'context_source_timeout');
-        invariant(Number.isSafeInteger(tokens) && tokens >= 0, 'context_token_count_invalid');
-        invariant(!source.instructionPolicy || tokens <= source.maxTokens, 'context_instruction_source_token_budget_exceeded');
-        if (tokens <= source.maxTokens) admitted.push(candidate.at(-1)!);
-      }
-      messages.push(...admitted);
-      diagnostics.push({ sourceId: source.sourceId, bindingDigest: source.bindingDigest, status: 'ok',
-        proposed: result.items.length, admitted: admitted.length });
-    } catch (error) {
+    for (let attempt = 0; ; attempt++) {
       context.signal.throwIfAborted();
-      if (source.required) throw error;
-      diagnostics.push({ sourceId: source.sourceId, bindingDigest: source.bindingDigest, status: 'skipped' });
-    } finally {
-      clearTimeout(timer); signal.removeEventListener('abort', listener); abort.abort();
+      const abort = new AbortController(), signal = AbortSignal.any([context.signal, abort.signal]);
+      let listener: () => void = () => {};
+      const timer = setTimeout(() => abort.abort(new NativeError('context_source_timeout')), source.timeoutMs);
+      const deadline = Date.now() + source.timeoutMs;
+      const canceled = new Promise<never>((_, reject) => {
+        listener = () => reject(signal.reason); signal.addEventListener('abort', listener, { once: true });
+        if (signal.aborted) listener();
+      });
+      try {
+        invariant(port.readSource, 'context_source_port_missing');
+        const result = await Promise.race([port.readSource({ ...context, signal, source: copy(source), snapshot: copy(snapshot),
+          configuration: copy(config), remainingTokens: Math.min(source.maxTokens, config.profile.contextWindow - config.profile.maxOutputTokens) }), canceled]);
+        signal.throwIfAborted(); invariant(Date.now() < deadline, 'context_source_timeout');
+        invariant(result && Array.isArray(result.items) && result.items.length <= 64
+          && new TextEncoder().encode(canonical(result)).length <= 4 * 1024 * 1024, 'context_source_result_invalid');
+        invariant(!source.instructionPolicy || result.items.length > 0, 'context_instruction_source_snapshot_missing');
+        const admitted: Message[] = [];
+        for (const item of result.items) {
+          invariant(item && typeof item === 'object' && !Array.isArray(item), 'context_source_result_invalid');
+          const candidate = [...admitted, contextContributionMessage(source, item)];
+          if (new TextEncoder().encode(canonical(candidate)).length > source.maxBytes) {
+            invariant(!source.instructionPolicy, 'context_instruction_source_byte_budget_exceeded'); continue;
+          }
+          const tokens = await Promise.race([count(copy(candidate)), canceled]); signal.throwIfAborted();
+          invariant(Date.now() < deadline, 'context_source_timeout');
+          invariant(Number.isSafeInteger(tokens) && tokens >= 0, 'context_token_count_invalid');
+          invariant(!source.instructionPolicy || tokens <= source.maxTokens, 'context_instruction_source_token_budget_exceeded');
+          if (tokens <= source.maxTokens) admitted.push(candidate.at(-1)!);
+        }
+        messages.push(...admitted);
+        diagnostics.push({ sourceId: source.sourceId, bindingDigest: source.bindingDigest, status: 'ok',
+          proposed: result.items.length, admitted: admitted.length,
+          ...(source.timeoutRecovery ? { timeoutRetries: attempt } : {}) });
+        break;
+      } catch (error) {
+        context.signal.throwIfAborted();
+        if (isNativeError(error) && error.code === 'context_source_timeout' && source.timeoutRecovery) {
+          abort.abort(error);
+          if (attempt < source.timeoutRecovery.maxRetries) {
+            await retryDelay(source.timeoutRecovery.retryDelayMs, context.signal);
+            continue;
+          }
+          if (source.required) throw new ContextSourceUnavailable(source.sourceId, source.bindingDigest, attempt);
+        }
+        if (source.required) throw error;
+        diagnostics.push({ sourceId: source.sourceId, bindingDigest: source.bindingDigest, status: 'skipped',
+          ...(source.timeoutRecovery ? { timeoutRetries: attempt } : {}) });
+        break;
+      } finally {
+        clearTimeout(timer); signal.removeEventListener('abort', listener); abort.abort();
+      }
     }
   }
   return { messages, diagnostics };

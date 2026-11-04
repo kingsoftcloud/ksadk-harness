@@ -257,6 +257,8 @@ export interface ContextSourceDefinition {
   priority: number; timeoutMs: number; required: boolean; maxTokens: number; maxBytes: number;
   /** Current file guidance is refreshed before inference, never substituted by a historical summary. */
   instructionPolicy?: 'current-files/v1';
+  /** Retry only a timed-out read; required sources pause after exhaustion. Absence keeps the frozen legacy behavior. */
+  timeoutRecovery?: { contract: 'context-source-timeout/v1'; maxRetries: number; retryDelayMs: number };
 }
 /** A frozen transcript import, never a parent Run or an execution checkpoint. */
 export interface ConversationSeed {

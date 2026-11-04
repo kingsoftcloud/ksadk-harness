@@ -7,11 +7,12 @@ import { mkdtemp, mkdir, realpath, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { nativeWorkspaceContextBinding } from '../src/native/workspace-context.mjs';
+import { nativeWorkspaceInstructionTimeoutRecovery } from '../src/native/workspace-instructions.mjs';
 import { createStudioNativeChildWorkspaces } from '../src/native/child-workspace-binding.mjs';
 import { fixture, scope, digest, verificationReport } from '../../agentkit-harness-core/test/fixtures.mjs';
 import { createNativeChildren, nativeChildRoles } from '../src/native/children.mjs';
 
-for (const isolated of [false, true]) test(`child models use current root and discovered scoped guidance in their ${isolated ? 'isolated write' : 'shared read'} workspace`, { timeout: 10000 }, async t => {
+for (const recovery of [false, true]) for (const isolated of [false, true]) test(`child models use current root and discovered scoped guidance in their ${isolated ? 'isolated write' : 'shared read'} workspace (${recovery ? 'timeout recovery' : 'legacy'})`, { timeout: 10000 }, async t => {
   const directory = await mkdtemp(join(await realpath(tmpdir()), 'child-current-instructions-'));
   const root = join(directory, 'workspace'); await mkdir(join(root, 'pkg'), { recursive: true });
   await writeFile(join(root, 'AGENTS.md'), 'CHILD_ROOT_RULE');
@@ -26,6 +27,7 @@ for (const isolated of [false, true]) test(`child models use current root and di
   const children = await createNativeChildren({ roles, scope, sessionId: 'session', store, tools: workspaceToolDefinitions(),
     providerRecoveryPolicy: isolated ? 'provider-recovery/v2' : undefined,
     workspaceContext: nativeWorkspaceContextBinding(root, { instructionRoots: [] }),
+    instructionTimeoutRecovery: recovery ? nativeWorkspaceInstructionTimeoutRecovery() : undefined,
     fileWorkspaces: createStudioNativeChildWorkspaces({ workspaceRoot: root, stateDir: join(directory, 'isolated') }),
     resolveModel: async () => ({ profile: fixture().config.profile, supportsImages: false, contextPolicy,
       context: { tokens: { tokenizerId: 'child', tokenizerDigest: 'child/v1',
@@ -65,6 +67,8 @@ for (const isolated of [false, true]) test(`child models use current root and di
   assert.equal(child.snapshot.phase, 'completed');
   assert.equal(child.configuration.providerRecoveryPolicy, isolated ? 'provider-recovery/v2' : undefined);
   assert.equal(child.configuration.hostRecoveryBinding.workspaceContext.workspaceRoot, childRoot);
+  assert.deepEqual(child.configuration.contextSources[0].timeoutRecovery,
+    recovery ? nativeWorkspaceInstructionTimeoutRecovery() : undefined);
   assert.deepEqual(child.snapshot.context.instructionScopes.directories, ['', 'pkg']);
   assert.doesNotMatch(canonical(child.snapshot.messages), /CHILD_ROOT_RULE|CHILD_NESTED_RULE/);
 });

@@ -14,7 +14,7 @@ import { nativeA2aToolDefinitions } from '@kingsoftcloud/agentkit-harness-node/n
 import { NATIVE_CHILD_WORKSPACE_TOOLS, NATIVE_CHILD_COMMAND_TOOLS } from './child-workspace-tools.mjs';
 import { validChildCommandResource } from './child-command-resource.mjs';
 import { CHILD_CAPABILITY_POLICY, admitChildCapabilities } from './child-capabilities.mjs';
-import { createNativeWorkspaceInstructions } from './workspace-instructions.mjs';
+import { createNativeWorkspaceInstructions, nativeWorkspaceInstructionTimeoutRecovery } from './workspace-instructions.mjs';
 import { nativeWorkspaceContextBinding, validateNativeWorkspaceContext } from './workspace-context.mjs';
 import { nativeInstructionTouches } from './instruction-context.mjs';
 
@@ -111,7 +111,7 @@ export function nativeChildRoles(spec = {}, { childAllocationPolicy } = {}) {
 }
 
 /** Bind every child to a declared role and its own scoped tool state. */
-export async function createNativeChildren({ roles, scope, sessionId, store, tools, hasSkills, hasMcp, mcpBinding, skillBinding, skillInstructions, workspaceContext,
+export async function createNativeChildren({ roles, scope, sessionId, store, tools, hasSkills, hasMcp, mcpBinding, skillBinding, skillInstructions, workspaceContext, instructionTimeoutRecovery,
   resolveModel, bindTools, verificationFactory, fileWorkspaces, commandResource, isClosed, onStream, a2aBinding, waitForChildReceipt, mediaSources = new Map(), artifactPolicy, artifactFactory, sourceReadPolicy, childTaskPolicy, childPlanPolicy, childAllocationPolicy, childCapabilityPolicy, outputRecoveryPolicy, outputRestartPolicy, conversationPresentation, toolExecutionPolicy, providerRecoveryPolicy, modelSurface, goalContractFactory = ({ goal }) => ({ objective: goal }) }) {
   if (!roles.length) return null;
   if (workspaceContext !== undefined) {
@@ -222,7 +222,8 @@ export async function createNativeChildren({ roles, scope, sessionId, store, too
         : workspaceContext ? nativeWorkspaceContextBinding(isolated?.root ?? workspaceContext.workspaceRoot,
           { instructionRoots: workspaceContext.instructionSource.globalRoots }) : undefined;
       validateInstructionWorkspace(childContext, isolated, workspaceContext);
-      const instructionSource = childContext ? createNativeWorkspaceInstructions(childContext) : null;
+      const instructionSource = childContext ? createNativeWorkspaceInstructions(childContext, { timeoutRecovery: source
+        ? nativeWorkspaceInstructionTimeoutRecovery(source.configuration) : instructionTimeoutRecovery }) : null;
       const executionResource = bound.commandResource ? { ...bound.commandResource, workspaceBindingDigest: hash(isolated.binding) } : undefined;
       invariant(!source || canonical(source.configuration.hostRecoveryBinding?.childExecutionResource ?? null) === canonical(executionResource ?? null),
         'studio_native_child_command_resource_changed');
@@ -306,7 +307,8 @@ export async function createNativeChildren({ roles, scope, sessionId, store, too
         'studio_native_child_workspace_binding_changed');
       const childContext = configuration.hostRecoveryBinding?.workspaceContext;
       validateInstructionWorkspace(childContext, isolated, workspaceContext);
-      const instructionSource = childContext ? createNativeWorkspaceInstructions(childContext) : null;
+      const instructionSource = childContext ? createNativeWorkspaceInstructions(childContext,
+        { timeoutRecovery: nativeWorkspaceInstructionTimeoutRecovery(configuration) }) : null;
       const executionResource = bound?.commandResource ? { ...bound.commandResource, workspaceBindingDigest: hash(isolated.binding) } : undefined;
       invariant(canonical(configuration.hostRecoveryBinding?.childExecutionResource ?? null) === canonical(executionResource ?? null)
         && configuration.backgroundNotificationPolicy === (executionResource ? 'completed-before-model/v1' : undefined),

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.0.12 - 2026-11-04
+
+- Integrate the 0.0.10 model compatibility, consecutive retry recovery,
+  adaptive compaction and shared resource profiles with the current main line.
+- Retain the already merged 0.0.11 history-delivery implementation unchanged.
+  Align Core, Node and UI and their internal dependencies on a new version so
+  consumers need not choose between the two previously published lineages.
+
 ## 0.0.10 - 2026-11-03
 
 - Admit provider-compat/v3 for new Runs: tolerate empty streamed identity deltas,

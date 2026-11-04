@@ -1,6 +1,5 @@
 {
   "name": "@kingsoftcloud/agentkit-harness-node",
-  "version": "0.0.10",
   "version": "0.0.11",
   "private": false,
   "type": "module",
@@ -138,7 +137,7 @@
     "src/package-integrity.mjs"
   ],
   "dependencies": {
-    "@kingsoftcloud/agentkit-harness-core": "0.0.10",
+    "@kingsoftcloud/agentkit-harness-core": "0.0.11",
     "@astral-sh/ruff-wasm-nodejs": "0.16.8",
     "parse5": "7.3.0",
     "playwright-core": "1.58.2",

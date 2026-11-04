@@ -203,7 +203,7 @@ async function streamResponse(response, request, binding, emit, internal, maxByt
       return failed(state.finalize({ errorKind: 'provider_terminal_error', failureKind: 'invalid_response' }), protocolCode(error));
     }
     if (error instanceof ProtocolError) {
-      // An Anthropic in-stream `error` event carries its own classification.
+      // Typed provider error envelopes carry a closed, credential-free classification.
       if (error.streamError) {
         return failed(state.finalize({ errorKind: error.streamError.kind, failureKind: error.streamError.failureKind }), 'provider_error');
       }
@@ -237,6 +237,10 @@ async function bufferedResponse(response, request, binding, maxBytes, emit, obse
     }
     return withFailure(parseOpenAIBuffered(bodyText, request, { captureReplay, binding, onThinking }), binding, 'buffered', 'protocol_invalid');
   } catch (error) {
+    if (error instanceof ProtocolError && error.streamError) {
+      const result = { ...terminalResult(error.streamError.failureKind), kind: error.streamError.kind };
+      return withFailure(result, binding, 'buffered', 'provider_error');
+    }
     return withFailure(terminalResult('invalid_response'), binding, 'buffered', protocolCode(error));
   }
 }

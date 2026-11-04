@@ -1752,3 +1752,85 @@ test('v3 MiniMax HTTP clean EOF seals complete tools and request schema literals
   assert.equal(JSON.parse(requests[0].body).tools[0].function.parameters.properties.kind.type, 'string');
   assert.equal(tool.parameters.properties.kind.type, undefined);
 });
+
+
+// HTTP 200 does not guarantee a successful provider generation. Retry only
+// recognized transient error envelopes; incomplete tools never escape them.
+for (const protocol of ['openai-chat', 'openai-responses', 'anthropic-messages']) {
+  for (const streaming of [false, true]) {
+    test(`provider error envelopes: ${protocol}, streaming=${streaming}`, async t => {
+      for (const [error, kind, failureKind] of [
+        [{ type: 'rate_limit_error' }, 'provider_retryable_error', 'rate_limit'],
+        [{ code: 'rate_limit_exceeded' }, 'provider_retryable_error', 'rate_limit'],
+        [{ type: 'server_error' }, 'provider_retryable_error', 'server_error'],
+        [{ type: 'authentication_error' }, 'provider_terminal_error', 'client_error'],
+        [{ type: 'invalid_request_error' }, 'provider_terminal_error', 'client_error'],
+        [{ code: 'insufficient_quota', type: 'rate_limit_error' }, 'provider_terminal_error', 'client_error'],
+        [{ code: 'foreign_error' }, 'provider_terminal_error', 'invalid_response'],
+        [null, 'provider_terminal_error', 'invalid_response'],
+        [['rate_limit_error'], 'provider_terminal_error', 'invalid_response'],
+      ].filter(([error]) => protocol !== 'anthropic-messages' || (!error?.code && error?.type !== 'server_error'))) await t.test(JSON.stringify(error), async () => {
+        const payload = protocol === 'openai-responses' ? { status: 'failed', error }
+          : protocol === 'anthropic-messages' ? { type: 'error', error } : { error };
+        if (error && !Array.isArray(error)) error.message = 'PRIVATE_PROVIDER_BYTES Authorization: Bearer fake-key';
+        const frame = protocol === 'anthropic-messages' ? ae('error', payload)
+          : sse(protocol === 'openai-responses' ? { type: 'response.failed', response: payload } : payload);
+        const { result, requests } = await collect(0, protocol,
+          () => streaming ? { headers: SSE_HEADERS, body: [frame] }
+            : { headers: JSON_HEADERS, body: JSON.stringify(payload) },
+          makeRequest({ profile: makeProfile({ streaming }) }));
+        assert.equal(result.kind, kind); assert.equal(result.failureKind, failureKind);
+        assert.deepEqual(result.toolCalls, []); assert.equal(requests.length, 1);
+        assert.doesNotMatch(JSON.stringify(result), /PRIVATE_PROVIDER_BYTES|fake-key/);
+      });
+    });
+  }
+}
+
+test('chat provider errors override a prior length finish and discard partial tool arguments', async () => {
+  const { result, requests } = await collect(0, 'openai-chat', () => ({ headers: SSE_HEADERS, body: [
+    sse(ochunk({ tool_calls: [{ index: 0, id: 'partial', type: 'function', function: { name: 'read', arguments: '{' } }] }, 'length')),
+    sse({ error: { code: 'rate_limit_exceeded', message: 'PRIVATE_PROVIDER_BYTES' } }), sseDone(),
+  ] }), makeRequest());
+  assert.equal(result.kind, 'provider_retryable_error'); assert.equal(result.failureKind, 'rate_limit');
+  assert.deepEqual(result.toolCalls, []); assert.equal(requests.length, 1);
+});
+
+test('buffered provider errors cannot launder conflicting successful envelopes into retries', async () => {
+  for (const [protocol, payload] of [
+    ['openai-chat', { error: { type: 'rate_limit_error' }, choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'answer' } }] }],
+    ['openai-responses', { status: 'completed', error: { type: 'rate_limit_error' }, output: [] }],
+    ['anthropic-messages', { type: 'message', error: { type: 'rate_limit_error' }, content: [] }],
+  ]) {
+    const { result } = await collect(0, protocol, () => ({ headers: JSON_HEADERS, body: JSON.stringify(payload) }), makeRequest());
+    assert.equal(result.kind, 'provider_terminal_error'); assert.equal(result.failureKind, 'invalid_response');
+  }
+});
+
+
+test('chat SSE provider rejection: kernel retries the model and commits a later complete tool batch once across cold reopen', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'native-provider-error-'));
+  let store = new SqliteRunStore(join(root, 'runs.sqlite'));
+  t.after(() => { store?.close(); rmSync(root, { recursive: true, force: true }); });
+  let attempts = 0, executions = 0;
+  await withServer(() => ({ headers: SSE_HEADERS, body: ++attempts === 1 ? [
+    sse(ochunk({ tool_calls: [{ index: 0, id: 'discard', type: 'function', function: { name: 'read', arguments: '{' } }] })),
+    sse({ error: { type: 'rate_limit_error', message: 'PRIVATE_PROVIDER_BYTES' } }),
+  ] : attempts === 2 ? [
+    sse(ochunk({ tool_calls: [{ index: 0, id: 'read-once', type: 'function', function: { name: 'read', arguments: '{}' } }] }, 'tool_calls')), sseDone(),
+  ] : [sse(ochunk({ content: 'Delivered.' }, 'stop')), sseDone()] }), async server => {
+    const { config, snapshot } = coreFixture({ tools: [coreTool()], profile: makeProfile({
+      compatibilityDigest: 'provider-error-proof/v1', requestTimeoutMs: 2000, retryInitialDelayMs: 0, retryMaxDelayMs: 0, rateLimitCooldownMs: 0 }) });
+    store.create(config, snapshot);
+    const ports = { model: makePort({ port: server.port, protocol: 'openai-chat' }),
+      tools: { execute: async () => { executions++; return { status: 'ok', content: 'Observed once' }; } } };
+    const result = await new NativeKernel({ store, digest: coreDigest, owner: 'error-proof', ports }).runUntilIdle(coreScope, 'run');
+    assert.equal(result.phase, 'completed'); assert.equal(executions, 1); assert.equal(server.requests.length, 3);
+    const failure = store.load(coreScope, 'run').receipts.find(receipt => receipt.result.failureDiagnostic);
+    assert.equal(failure.result.kind, 'provider_retryable_error'); assert.equal(failure.result.failureKind, 'rate_limit');
+    assert.deepEqual(failure.result.toolCalls, []); assert.doesNotMatch(JSON.stringify(failure), /PRIVATE_PROVIDER_BYTES/);
+    store.close(); store = new SqliteRunStore(join(root, 'runs.sqlite'));
+    assert.equal((await new NativeKernel({ store, digest: coreDigest, owner: 'error-cold', ports }).runUntilIdle(coreScope, 'run')).phase, 'completed');
+    assert.equal(executions, 1); assert.equal(server.requests.length, 3);
+  });
+});

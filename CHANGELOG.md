@@ -24,6 +24,11 @@
   receipt instead of showing an unknown terminal. Rebuild older display caches
   once; unknown or incomplete execution evidence remains unknown.
 
+- Classify known provider error envelopes consistently across Chat, Responses
+  and Anthropic JSON/SSE entries. Transient failures use the existing kernel
+  retry budget; permanent or unknown failures remain terminal, and partial tool
+  arguments never execute. Provider message bodies are not persisted.
+
 ## 0.0.12 - 2026-11-04
 
 - Integrate the 0.0.10 model compatibility, consecutive retry recovery,

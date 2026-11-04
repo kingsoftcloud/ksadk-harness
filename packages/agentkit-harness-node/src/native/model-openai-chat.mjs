@@ -15,6 +15,7 @@ import { sealModelReplay, openAIReplayFields } from './model-replay.mjs';
 import { validateMediaBlock, projectMediaOpenAI, MediaError } from './model-media.mjs';
 import { inlineReasoningMarker, projectInlineReasoning, createInlineReasoningProjector } from './model-inline-reasoning.mjs';
 import { applyProviderChatCompatibility, resolveProviderCompatibility } from './model-provider-compat.mjs';
+import { classifyOpenAIProviderError } from './model-provider-error.mjs';
 import { mergeChatUsage } from './model-chat-usage.mjs';
 // parseModelJson is the kernel's strict finite JSON parser: it rejects
 // duplicate object keys and non-finite numbers (e.g. 1e400). Using it here keeps
@@ -209,7 +210,14 @@ export function parseOpenAIBuffered(bodyText, request, { captureReplay = false, 
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     throw new ProtocolError('invalid response envelope', 'envelope_invalid');
   }
-  if ('error' in payload) throw new ProtocolError('invalid response envelope', 'provider_error');
+  if ('error' in payload) {
+    if (payload.choices != null && (!Array.isArray(payload.choices) || payload.choices.length)) {
+      throw new ProtocolError('conflicting error envelope', 'envelope_invalid');
+    }
+    throw Object.assign(new ProtocolError('provider rejected generation', 'provider_error'), {
+      streamError: classifyOpenAIProviderError(payload.error),
+    });
+  }
   const choices = payload.choices;
   if (!Array.isArray(choices) || choices.length > 1) {
     throw new ProtocolError('expected one completion choice', 'choice_invalid');
@@ -372,7 +380,14 @@ export function createOpenAIStreamTurn(profile, binding) {
       if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
         throw new ProtocolError('invalid stream envelope', 'envelope_invalid');
       }
-      if ('error' in payload) throw new ProtocolError('invalid stream envelope', 'provider_error');
+      if ('error' in payload) {
+        if (payload.choices != null && (!Array.isArray(payload.choices) || payload.choices.length)) {
+          throw new ProtocolError('conflicting error envelope', 'envelope_invalid');
+        }
+        throw Object.assign(new ProtocolError('provider rejected generation', 'provider_error'), {
+          streamError: classifyOpenAIProviderError(payload.error),
+        });
+      }
       if (payload.id != null) {
         if (typeof payload.id !== 'string' || !payload.id) throw new ProtocolError('invalid completion ID', 'identity_conflict');
         if (this.completionId != null && payload.id !== this.completionId) {
@@ -500,7 +515,7 @@ export function createOpenAIStreamTurn(profile, binding) {
       const { usage, usageReported: observedUsage } = sealUsage(this.usage);
       const usageReported = observedUsage && (profile.chatUsagePolicy === undefined
         || this.usageAtFinish && !this.usageConflict);
-      if (errorKind && errorKind !== 'provider_retryable_error') {
+      if (errorKind) {
         return {
           kind: errorKind, text: this.text, toolCalls: [], usage, usageReported,
           ...(failureKind ? { failureKind } : {}),

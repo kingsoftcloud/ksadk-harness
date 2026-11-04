@@ -388,7 +388,8 @@ export function reduceModel(snapshot: RunSnapshot, input: ModelResult, config: R
       }
       return { ...base, phase: 'executing_tools', pendingTools: result.toolCalls,
         messages: [...snapshot.messages, { ...message, toolCalls: result.toolCalls }],
-        continuations: 0, modelErrors: 0 };
+        continuations: 0, modelErrors: 0,
+        ...(config.outputRestartPolicy === 'per-response/v1' ? { outputRestarts: 0 } : {}) };
     case 'final_candidate': {
       if (config.contract.finalSubmissionSchema) {
         const errors = snapshot.modelErrors + 1;

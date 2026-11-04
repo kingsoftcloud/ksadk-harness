@@ -306,6 +306,9 @@ export interface RunConfiguration {
   modelRecoveryPolicy: 'manual' | 'pure-inference/v1';
   guidancePolicy?: 'boundary-guide/v1' | null;
   outputRecoveryPolicy?: 'task-or-delivery/v1' | 'response-boundary/v2' | null;
+  /** Restart allowance belongs to one interrupted response chain. Legacy Runs
+   * without this policy retain their original run-wide accounting. */
+  outputRestartPolicy?: 'per-response/v1';
   /** v2 counts consecutive provider failures and pauses (resumable) instead of failing when they run out. */
   providerRecoveryPolicy?: 'provider-recovery/v2' | null;
   toolErrorRecoveryPolicy?: 'diagnose-before-repeat/v1' | null;

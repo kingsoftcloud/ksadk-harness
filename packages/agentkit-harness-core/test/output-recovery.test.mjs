@@ -12,6 +12,50 @@ const response = (text, kind = 'final_candidate', extra = {}) => ({ kind, text, 
 const configuration = overrides => ({ outputRecoveryPolicy: 'task-or-delivery/v1', tools: [tool()], ...overrides });
 const limitedText = text => response(text, 'output_limit', { textCommitVersion: 'provider-finished-text/v1', outputBoundary: 'assistant-text/v1' });
 
+for (const sqlite of [false, true]) test(`response-scoped restart ${sqlite ? 'sqlite' : 'memory'}: independent complete tool steps end the previous output-failure streak`, async t => {
+  let calls = 0, tools = 0;
+  const run = setup(t, { sqlite, options: { outputRecoveryPolicy: 'response-boundary/v2', outputRestartPolicy: 'per-response/v1',
+    limits: { maxModelCalls: 20, maxOutputRestarts: 1 }, profile: { ...fixture().config.profile, maxContinuations: 1 } },
+    model: async () => {
+      calls++;
+      if ([1, 2, 4, 5].includes(calls)) return response('Unfinished action', 'output_limit', {
+        textCommitVersion: 'provider-finished-text/v1', outputBoundary: 'tool-call/v1' });
+      if ([3, 6].includes(calls)) return response('', 'tool_calls', { toolCalls: [{ callId: `read-${calls}`, name: 'read', arguments: {} }] });
+      return response('Complete answer after both steps.');
+    }, tools: async () => { tools++; return { status: 'ok', content: 'evidence' }; } });
+  if (sqlite) {
+    const first = run.kernel({ onCheckpoint: state => {
+      if (state.usage.toolCalls === 1) first.submit(scope, 'run', { commandId: 'hold-after-step', kind: 'pause', payload: {} });
+    } });
+    assert.equal((await first.runUntilIdle(scope, 'run')).phase, 'paused');
+    run.reopen();
+    run.kernel().submit(scope, 'run', { commandId: 'resume-next-step', kind: 'resume', payload: {} });
+  }
+  const result = await run.kernel().runUntilIdle(scope, 'run');
+  assert.equal(result.phase, 'completed'); assert.equal(tools, 2); assert.equal(calls, 7);
+  assert.equal(result.finalText, 'Complete answer after both steps.');
+  assert.equal(run.store.events(scope, 'run').filter(e => e.kind === 'output.restarted').length, 2);
+  if (sqlite) { run.reopen(); assert.equal(run.store.load(scope, 'run').configuration.outputRestartPolicy, 'per-response/v1'); }
+});
+
+for (const sqlite of [false, true]) test(`response-scoped restart ${sqlite ? 'sqlite' : 'memory'}: no completed step means a bounded failure, including cold resume`, async t => {
+  let calls = 0;
+  const run = setup(t, { sqlite, options: { outputRecoveryPolicy: 'response-boundary/v2', outputRestartPolicy: 'per-response/v1',
+    limits: { maxOutputRestarts: 1 }, profile: { ...fixture().config.profile, maxContinuations: 1 } },
+    model: async () => { calls++; return response('unfinished', 'output_limit', {
+      textCommitVersion: 'provider-finished-text/v1', outputBoundary: 'tool-call/v1' }); } });
+  if (sqlite) {
+    const first = run.kernel({ onCheckpoint: state => {
+      if (state.outputRestarts === 1) first.submit(scope, 'run', { commandId: 'hold-restart', kind: 'pause', payload: {} });
+    } });
+    assert.equal((await first.runUntilIdle(scope, 'run')).phase, 'paused');
+    run.reopen(); run.kernel().submit(scope, 'run', { commandId: 'resume-restart', kind: 'resume', payload: {} });
+  }
+  const result = await run.kernel().runUntilIdle(scope, 'run');
+  assert.equal(result.reason, 'continuation_budget_exhausted'); assert.equal(result.outputRestarts, 1);
+  assert.equal(calls, 4); assert.equal(result.usage.toolCalls, 0); assert.equal(result.finalText, '');
+});
+
 for (const sqlite of [false, true]) test(`response boundary ${sqlite ? 'sqlite' : 'memory'}: full tool catalog cannot turn a truncated answer into new work`, async t => {
   let calls = 0;
   const run = setup(t, { sqlite, options: { outputRecoveryPolicy: 'response-boundary/v2',

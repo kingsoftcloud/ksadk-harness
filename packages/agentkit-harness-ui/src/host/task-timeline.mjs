@@ -7,6 +7,7 @@ import { nativeStatusPanelModel } from './state/native-status-panel.mjs';
 import { nativeTaskWorkspaceRoot, taskWorkspaceFileTarget } from './state/task-links.mjs';
 import { resolveNativeRuntimeRoute, nativeRuntimeRouteInput } from './state/native-runtime-route.mjs';
 import { createNativeTaskReadModel } from './state/native-task-read-model.mjs';
+import { createTimelineEventFeed } from './state/timeline-event-feed.mjs';
 import { createSessionTaskProjector, nativeTaskState, nativeStatusForTurn, bindNativeSubagents, nativeHistoricalToolState } from './session-task-events.mjs';
 
 const labels = { result: '执行结果', thought: '思考', running: '执行中', thinking: '思考中…', ended: '本轮已结束', contextRunning: '正在压缩上下文', contextCompleted: '上下文已自动压缩',
@@ -179,7 +180,7 @@ export function installTaskTimeline(ctx, { ui, hostRemote, resolveAgentFromPrese
     inject: sessionId => {
       const binding = ctx.sessions.binding(sessionId);
       if (!binding) throw Error('Task timeline session is unavailable');
-      return { hooks: { harnessEvents: binding.eventSource } };
+      return { hooks: { harnessEvents: createTimelineEventFeed(binding.eventSource) } };
     },
   }, TaskView));
 }

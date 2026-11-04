@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.0.14 - 2026-11-04
+
+- Add opt-in response-scoped output restart accounting. An admitted complete
+  tool step ends the prior truncation streak; an unbroken truncated response
+  remains bounded. Existing Runs retain their frozen accounting policy.
+- Freeze the user-facing language preference and propagate it to child owners
+  without changing tool permissions or exposing private reasoning.
+- Coalesce transient timeline notifications without dropping authoritative
+  events. Reuse completed tool rows and mount file diff bodies only when open.
+- Hide whitespace-only model rows, retain write identity while arguments stream,
+  and use readable task-panel line spacing.
+
 ## 0.0.12 - 2026-11-04
 
 - Integrate the 0.0.10 model compatibility, consecutive retry recovery,

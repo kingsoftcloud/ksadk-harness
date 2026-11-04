@@ -36,6 +36,7 @@ export interface ConfigurationInput {
   inputPolicy?: RunConfiguration['inputPolicy'];
   sourceReadPolicy?: RunConfiguration['sourceReadPolicy'];
   outputRecoveryPolicy?: RunConfiguration['outputRecoveryPolicy'];
+  outputRestartPolicy?: RunConfiguration['outputRestartPolicy'];
   providerRecoveryPolicy?: RunConfiguration['providerRecoveryPolicy'];
   toolErrorRecoveryPolicy?: RunConfiguration['toolErrorRecoveryPolicy'];
   toolDiscoveryPolicy?: RunConfiguration['toolDiscoveryPolicy'];
@@ -96,6 +97,7 @@ export function configure(input: ConfigurationInput): RunConfiguration {
     ...(input.inputPolicy === undefined ? {} : { inputPolicy: input.inputPolicy }),
     ...(input.sourceReadPolicy === undefined ? {} : { sourceReadPolicy: input.sourceReadPolicy }),
     ...(input.outputRecoveryPolicy === undefined ? {} : { outputRecoveryPolicy: input.outputRecoveryPolicy }),
+    ...(input.outputRestartPolicy === undefined ? {} : { outputRestartPolicy: input.outputRestartPolicy }),
     ...(input.providerRecoveryPolicy === undefined ? {} : { providerRecoveryPolicy: input.providerRecoveryPolicy }),
     ...(input.toolErrorRecoveryPolicy === undefined ? {} : { toolErrorRecoveryPolicy: input.toolErrorRecoveryPolicy }),
     ...(input.toolDiscoveryPolicy === undefined ? {} : { toolDiscoveryPolicy: input.toolDiscoveryPolicy }),
@@ -152,6 +154,8 @@ export function configure(input: ConfigurationInput): RunConfiguration {
   invariant(config.guidancePolicy == null || config.guidancePolicy === 'boundary-guide/v1', 'invalid_guidance_policy');
   invariant(config.inputPolicy === undefined || config.inputPolicy === 'before-first-model/v1', 'invalid_input_policy');
   invariant(config.outputRecoveryPolicy == null || ['task-or-delivery/v1', 'response-boundary/v2'].includes(config.outputRecoveryPolicy), 'invalid_output_recovery_policy');
+  invariant(config.outputRestartPolicy === undefined || config.outputRestartPolicy === 'per-response/v1'
+    && config.outputRecoveryPolicy === 'response-boundary/v2', 'invalid_output_restart_policy');
   invariant(config.providerRecoveryPolicy == null || config.providerRecoveryPolicy === 'provider-recovery/v2', 'invalid_provider_recovery_policy');
   invariant(config.toolExecutionPolicy === undefined || config.toolExecutionPolicy === 'owner-execution/v1', 'invalid_tool_execution_policy');
   invariant(config.toolErrorRecoveryPolicy == null || config.toolErrorRecoveryPolicy === 'diagnose-before-repeat/v1', 'invalid_tool_error_recovery_policy');

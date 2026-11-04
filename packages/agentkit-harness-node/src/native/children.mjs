@@ -1,3 +1,4 @@
+import { validateConversationPresentation, conversationPresentationInstructions } from './conversation-presentation.mjs';
 import { createHash } from 'node:crypto';
 import { canonical, configure, invariant, submissionOutputFormat, artifactToolDefinitions, isArtifactTool, toolDiscoveryDefinitions,
   TOOL_SEARCH, DEFERRED_TOOL_CALL, TODO_READ, TODO_WRITE, RESPOND_TO_COORDINATOR, CHILD_TASK_POLICY,
@@ -111,7 +112,7 @@ export function nativeChildRoles(spec = {}, { childAllocationPolicy } = {}) {
 
 /** Bind every child to a declared role and its own scoped tool state. */
 export async function createNativeChildren({ roles, scope, sessionId, store, tools, hasSkills, hasMcp, mcpBinding, skillBinding, skillInstructions, workspaceContext,
-  resolveModel, bindTools, verificationFactory, fileWorkspaces, commandResource, isClosed, onStream, a2aBinding, waitForChildReceipt, mediaSources = new Map(), artifactPolicy, artifactFactory, sourceReadPolicy, childTaskPolicy, childPlanPolicy, childAllocationPolicy, childCapabilityPolicy, outputRecoveryPolicy, toolExecutionPolicy, providerRecoveryPolicy, modelSurface, goalContractFactory = ({ goal }) => ({ objective: goal }) }) {
+  resolveModel, bindTools, verificationFactory, fileWorkspaces, commandResource, isClosed, onStream, a2aBinding, waitForChildReceipt, mediaSources = new Map(), artifactPolicy, artifactFactory, sourceReadPolicy, childTaskPolicy, childPlanPolicy, childAllocationPolicy, childCapabilityPolicy, outputRecoveryPolicy, outputRestartPolicy, conversationPresentation, toolExecutionPolicy, providerRecoveryPolicy, modelSurface, goalContractFactory = ({ goal }) => ({ objective: goal }) }) {
   if (!roles.length) return null;
   if (workspaceContext !== undefined) {
     validateNativeWorkspaceContext(workspaceContext);
@@ -123,6 +124,8 @@ export async function createNativeChildren({ roles, scope, sessionId, store, too
   invariant(toolExecutionPolicy === undefined || toolExecutionPolicy === 'owner-execution/v1', 'studio_native_child_execution_policy_invalid');
   invariant(providerRecoveryPolicy === undefined || providerRecoveryPolicy === 'provider-recovery/v2', 'native_child_provider_recovery_policy_invalid');
   invariant(outputRecoveryPolicy === undefined || outputRecoveryPolicy === 'response-boundary/v2', 'studio_native_child_output_policy_invalid');
+  invariant(outputRestartPolicy === undefined || outputRestartPolicy === 'per-response/v1' && outputRecoveryPolicy === 'response-boundary/v2', 'native_child_output_restart_policy_invalid');
+  if (conversationPresentation !== undefined) validateConversationPresentation(conversationPresentation);
   invariant(childTaskPolicy === undefined || childTaskPolicy === CHILD_TASK_POLICY, 'studio_native_child_task_policy_invalid');
   invariant(childPlanPolicy === undefined || childPlanPolicy === CHILD_PLAN_POLICY, 'studio_native_child_plan_policy_invalid');
   invariant(artifactPolicy == null || artifactPolicy === 'runtime-artifacts/v1' && typeof artifactFactory === 'function',
@@ -225,6 +228,8 @@ export async function createNativeChildren({ roles, scope, sessionId, store, too
         'studio_native_child_command_resource_changed');
       const hostBindingDigest = hash({ contract: STUDIO_NATIVE_CHILD_CONTRACT, role, profile: bound.model.profile, scope: child, tools: bound.tools,
         ...(outputRecoveryPolicy ? { outputRecoveryPolicy } : {}),
+        ...(outputRestartPolicy ? { outputRestartPolicy } : {}),
+        ...(conversationPresentation ? { conversationPresentation } : {}),
         ...(providerRecoveryPolicy ? { providerRecoveryPolicy } : {}),
         ...(toolExecutionPolicy ? { toolExecutionPolicy } : {}),
         ...(childPlanPolicy ? { childPlanPolicy } : {}),
@@ -256,6 +261,7 @@ export async function createNativeChildren({ roles, scope, sessionId, store, too
           supportsImages: bound.model.supportsImages, tools: bound.tools }) } : {}),
         ...(childAllocationPolicy ? { childAllocationPolicy } : {}),
         ...(outputRecoveryPolicy ? { outputRecoveryPolicy } : {}),
+        ...(outputRestartPolicy ? { outputRestartPolicy } : {}),
         ...(providerRecoveryPolicy ? { providerRecoveryPolicy } : {}),
         ...(toolExecutionPolicy ? { toolExecutionPolicy } : {}),
         ...(executionResource ? { backgroundNotificationPolicy: 'completed-before-model/v1' } : {}),
@@ -265,7 +271,7 @@ export async function createNativeChildren({ roles, scope, sessionId, store, too
         ...(sourceReadPolicy ? { sourceReadPolicy } : {}),
         guidancePolicy: 'boundary-guide/v1',
         ...(media.length ? { inputMessages: [{ role: 'user', kind: 'user_input', content: request.task, media }] } : {}),
-        instructions: [role.instructions, ...(childSkills ? [skillInstructions] : [])].filter(Boolean).join('\n\n'), contract, tools: bound.tools,
+        instructions: [conversationPresentationInstructions(conversationPresentation), role.instructions, ...(childSkills ? [skillInstructions] : [])].filter(Boolean).join('\n\n'), contract, tools: bound.tools,
         modelRecoveryPolicy: bound.model.modelRecoveryPolicy ?? 'manual',
         ...(isolated || childSkills || childContext ? { hostRecoveryBinding: {
           ...(childContext ? { workspaceContext: childContext } : {}),
@@ -312,6 +318,7 @@ export async function createNativeChildren({ roles, scope, sessionId, store, too
         hostBindingDigest: configuration.hostBindingDigest }).profile;
       invariant(bound && role && canonical(configuration.tools) === canonical(bound.tools)
         && configuration.outputRecoveryPolicy === outputRecoveryPolicy
+        && configuration.outputRestartPolicy === outputRestartPolicy
         && configuration.providerRecoveryPolicy === providerRecoveryPolicy
         && configuration.toolExecutionPolicy === toolExecutionPolicy
         && configuration.inputPolicy === (instructionSource ? 'before-first-model/v1' : undefined)
@@ -333,7 +340,9 @@ export async function createNativeChildren({ roles, scope, sessionId, store, too
         && configuration.hostBindingDigest === hash({ contract: STUDIO_NATIVE_CHILD_CONTRACT, role,
           profile: bound.model.profile, scope: childScope(role), tools: bound.tools,
           ...(outputRecoveryPolicy ? { outputRecoveryPolicy } : {}),
-        ...(providerRecoveryPolicy ? { providerRecoveryPolicy } : {}),
+          ...(outputRestartPolicy ? { outputRestartPolicy } : {}),
+          ...(conversationPresentation ? { conversationPresentation } : {}),
+          ...(providerRecoveryPolicy ? { providerRecoveryPolicy } : {}),
           ...(toolExecutionPolicy ? { toolExecutionPolicy } : {}),
           ...(childPlanPolicy ? { childPlanPolicy } : {}),
           ...(childTaskPolicy ? { childTaskPolicy } : {}),

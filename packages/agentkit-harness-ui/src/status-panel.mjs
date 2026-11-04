@@ -424,7 +424,7 @@ export const statusPanelStyles = `
 .harness-status-panel__plan-icon--done{ color:var(--sp-success); }
 .harness-status-panel__plan-icon--active{ color:var(--sp-fg); }
 .harness-status-panel__plan-icon--pending{ color:var(--sp-fg-subtlest); }
-.harness-status-panel__plan-content{ flex:1; min-width:0; line-height:1.25; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+.harness-status-panel__plan-content{ flex:1; min-width:0; line-height:20px; overflow:hidden; overflow-wrap:anywhere; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
 .harness-status-panel__plan-content--done{ color:var(--sp-fg-subtlest); text-decoration:line-through; }
 .harness-status-panel__plan-count{ font-variant-numeric:tabular-nums; }
 .harness-status-panel__plan-count--done{ color:var(--sp-success); }

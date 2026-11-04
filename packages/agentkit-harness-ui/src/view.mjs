@@ -335,7 +335,11 @@ function toolBlock(item, opts) {
   // Dispatch to the renderer registry (execute / read / edit / default). Each
   // renderer owns its summary, body, and host-action data attributes; this
   // function is now a thin seam so the view stays a single projection.
-  return renderTool(item, opts);
+  const cached = opts.toolViewCache?.get(item);
+  if (cached) return cached;
+  const view = renderTool(item, opts);
+  opts.toolViewCache?.set(item, view);
+  return view;
 }
 
 function planDock(plan, opts) {

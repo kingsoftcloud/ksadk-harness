@@ -104,13 +104,15 @@ test("execute tool block renders one collapsed part per callId with $ command, p
   assert.equal(textOf(findByTestId(tool, "tool-title")), "Bash");
   assert.equal(textOf(findByTestId(tool, "tool-command-summary")), "npm test", "collapsed summary shows the command");
   // ZCode DESKTOP execute: `$` prompt + monospace command in the body
-  const cmd = findByTestId(tool, "execute-command");
+  assert.equal(findByTestId(tool, "execute-command"), null, 'collapsed tool details are not mounted');
+  const opened = findByTestId(viewFor(streamScenario(), { toolOpen: new Map([['call-1', true]]) }), 'tool-block');
+  const cmd = findByTestId(opened, "execute-command");
   assert.ok(cmd, "execute command block renders");
   assert.equal(textOf(findByTestId(cmd, "execute-command-prompt")), "$");
   assert.ok(hasText(findByTestId(cmd, "execute-command-text"), "npm test"));
-  assert.equal(textOf(findByTestId(tool, "tool-progress")), "running 4 tests");
-  assert.equal(attr(findByTestId(tool, "tool-progress"), "role"), "status");
-  assert.equal(textOf(findByTestId(tool, "execute-cwd")), "packages/ui");
+  assert.equal(textOf(findByTestId(opened, "tool-progress")), "running 4 tests");
+  assert.equal(attr(findByTestId(opened, "tool-progress"), "role"), "status");
+  assert.equal(textOf(findByTestId(opened, "execute-cwd")), "packages/ui");
 });
 
 test("tool can be collapsed via options; collapsed failed tool still shows the error", () => {
@@ -136,7 +138,7 @@ test("edit tool renders an inline diff with real line numbers, never the full pa
     ev(EventType.ToolResult, "x2", { callId: "c", display: { kind: "file_diff", path: "a.ts",
       patch: "--- a/a.ts\n+++ b/a.ts\n@@ -1,2 +1,2 @@\n ctx\n-old\n+new" } }),
   ]);
-  const tree = viewFor(s);
+  const tree = viewFor(s, { toolOpen: new Map([['c', true]]) });
   const diff = findByTestId(tree, "edit-diff");
   assert.ok(diff, "edit diff block renders from the result display");
   const unified = findByTestId(diff, "edit-diff-unified");

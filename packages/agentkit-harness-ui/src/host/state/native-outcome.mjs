@@ -23,6 +23,10 @@ export function nativeRunPresentation(status) {
     return status.canResume === true
       ? { label: '执行中断，等待恢复', detail: '原运行已没有活动执行者；恢复原任务后才会继续。已提交的回执保持不变。' }
       : { label: '任务已中断', detail: status.error?.message || '原运行已停止。请查看运行记录和当前可用操作。' };
+  if (['preparing_context', 'compacting'].includes(status.phase)
+    && status.modelRetryWait?.contract === 'agentkit.native-model-retry-wait/v1'
+    && Number.isFinite(status.modelRetryWait.notBefore) && status.modelRetryWait.notBefore > 0)
+    return { label: '等待模型重试', detail: '模型请求正在按重试策略等待；任务尚未停止。' };
   if (status.phase !== 'completed') return { label: phases[status.phase] || '处理中', detail: '' };
   if (status.outcome === 'failed' || status.outcome === 'budget_exhausted') return { label: '任务未完成', detail: '本轮已结束，任务未完成。请查看错误、预算和结果记录。' };
   if (status.outcome === 'verified') return { label: '任务已验证', detail: '任务已通过本次配置的验证检查；验证范围以结果证据为准。' };

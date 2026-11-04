@@ -2,6 +2,9 @@
 
 ## 0.0.14 - 2026-11-04
 
+- Expose committed retry deadlines to the read-only status projection and
+  distinguish Host-confirmed model backoff from active context preparation.
+  Expired deadlines and inactive owners do not claim a running retry.
 - Expose an atomic, read-only SQLite trace view containing compact Run status
   and a cursor-bounded event suffix. Observability consumers no longer need
   to hydrate execution receipts or transcripts to refresh a trace. The view

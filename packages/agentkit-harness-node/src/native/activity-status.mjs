@@ -2,6 +2,16 @@ import { createHash } from 'node:crypto';
 import { canonical } from '@kingsoftcloud/agentkit-harness-core';
 
 const settledCommandStates = new Set(['completed', 'failed', 'canceled', 'timed_out', 'output_limit']);
+
+/** Project a committed retry deadline at the Host's current time. This is a
+ * display fact only; it cannot schedule, resume or extend a model request. */
+export function nativeModelRetryWait(snapshot, { driving = false, now = Date.now() } = {}) {
+  if (!driving || !snapshot || !['preparing_context', 'compacting'].includes(snapshot.phase)
+    || snapshot.pendingIntent !== null || !Number.isFinite(now)
+    || !Number.isFinite(snapshot.retryNotBefore) || snapshot.retryNotBefore <= now) return null;
+  return { contract: 'agentkit.native-model-retry-wait/v1', notBefore: snapshot.retryNotBefore };
+}
+
 /** A completed foreground launch has no later background notification. Its
  * exact committed launch receipt is already a lifecycle fact, not a liveness
  * guess from a task ID, a notified bit or model-visible output text. */

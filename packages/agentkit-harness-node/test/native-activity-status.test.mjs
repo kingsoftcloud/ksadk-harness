@@ -1,9 +1,25 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { nativeActivityStatus } from '@kingsoftcloud/agentkit-harness-node/native/activity-status';
+import { nativeActivityStatus, nativeModelRetryWait } from '@kingsoftcloud/agentkit-harness-node/native/activity-status';
 const record = () => ({snapshot:{runId:'run',revision:1,todos:{items:[
   {content:'Read actual evidence',status:'completed'}, {content:'Publish findings',status:'in_progress'},
 ]},backgroundCommands:[{ref:{taskId:'task',operationKey:'op'}}]},intents:[{operationKey:'op',payload:{calls:[{arguments:{command:'node report.mjs'}}]}}],events:[]});
+
+test('model retry display uses an active owner and an unexpired committed deadline without changing the snapshot', () => {
+  const snapshot = { phase: 'preparing_context', pendingIntent: null, retryNotBefore: 1200.5 };
+  const before = structuredClone(snapshot);
+  assert.deepEqual(nativeModelRetryWait(snapshot, { driving: true, now: 1000 }),
+    { contract: 'agentkit.native-model-retry-wait/v1', notBefore: 1200.5 });
+  assert.deepEqual(snapshot, before);
+  assert.equal(nativeModelRetryWait(snapshot, { now: 1000 }), null);
+  assert.equal(nativeModelRetryWait(snapshot, { driving: true, now: 1200.5 }), null);
+  assert.equal(nativeModelRetryWait(snapshot, { driving: true, now: 1300 }), null);
+  assert.equal(nativeModelRetryWait(snapshot, { driving: true, now: NaN }), null);
+  for (const change of [{ pendingIntent: 'claimed-context' }, { phase: 'executing_tools' }, { phase: 'paused' },
+    { phase: 'completed' }, { retryNotBefore: Infinity }, { retryNotBefore: undefined }])
+    assert.equal(nativeModelRetryWait({ ...snapshot, ...change }, { driving: true, now: 1000 }), null);
+  assert.ok(nativeModelRetryWait({ ...snapshot, phase: 'compacting' }, { driving: true, now: 1000 }));
+});
 test('activity reports committed todos and keeps UI keys across status updates without implying a running driver', () => {
   const r=record(), first=nativeActivityStatus(r);
   assert.equal(first.plan.completedCount,1); assert.equal(first.plan.totalCount,2); assert.equal(first.isRunning,false);

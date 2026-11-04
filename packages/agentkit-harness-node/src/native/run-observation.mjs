@@ -24,7 +24,7 @@ function contextProjection(previous, record) {
 function observationHeader(s) {
   const header = Object.fromEntries(['scope', 'runId', 'sessionId', 'turnId', 'buildId', 'parentRunId', 'taskChainId',
     'configDigest', 'phase', 'revision', 'eventSeq', 'usage', 'descendantUsage', 'outcome', 'reason', 'pendingIntent',
-    'toolReconciliation'].filter(key => s[key] !== undefined).map(key => [key, s[key]]));
+    'toolReconciliation', 'retryNotBefore'].filter(key => s[key] !== undefined).map(key => [key, s[key]]));
   header.diagnostics = Object.fromEntries(['providerUsageIncomplete', 'descendantUsageIncomplete', 'lastModelFailure']
     .filter(key => s.diagnostics[key] !== undefined).map(key => [key, s.diagnostics[key]]));
   return header;

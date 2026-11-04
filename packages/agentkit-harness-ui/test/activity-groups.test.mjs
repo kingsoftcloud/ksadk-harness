@@ -58,7 +58,7 @@ test('the view gives only its true running tail the stage indicator, and replaye
     state=reduce(state,{v:1,id:`r${i}`,type:'tool.result',callId:String(i),result:'observed'});
   }
   assert.equal(findByTestId(buildViewModel(state),'activity-group').props['data-streaming'],'true');
-  state=reduce(state,{v:1,id:'body',type:'text.delta',text:'Actual answer',itemId:'answer'});
+  state=reduce(state,{v:1,id:'body',type:'text.delta',delta:'Actual answer',itemId:'answer'});
   assert.equal(findByTestId(buildViewModel(state),'activity-group').props['data-streaming'],'false');
   state=reduce(state,{v:1,id:'body-done',type:'text.done',text:'Actual answer',itemId:'answer'});
   const terminal=reduce(state,{v:1,id:'finished',type:'task.finished',outcome:'completed',finalAnswerId:'answer'});

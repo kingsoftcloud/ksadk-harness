@@ -1,6 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.0.10 - 2026-11-03
+
+- Admit provider-compat/v3 for new Runs: tolerate empty streamed identity deltas,
+  accept known MiniMax clean EOF only with finish and usage evidence, preserve
+  required GLM reasoning, and project literal types for strict tool-schema dialects.
+  Earlier admitted compatibility policies retain their wire behavior.
+- Add opt-in adaptive summary budgets and smaller quotes after output exhaustion;
+  exhausted summaries pause with their source history intact and can resume.
+- Add local-development/v2 with a 900-second CPU budget; explicit Host limits and
+  earlier resource profiles retain their values. Allow up to ten provider retries.
+- Keep Core, Node and UI package versions aligned; this release has no UI changes.
 
 - Add opt-in `providerRecoveryPolicy: 'provider-recovery/v2'`. Provider
   retries count consecutive failures (any provider response resets the

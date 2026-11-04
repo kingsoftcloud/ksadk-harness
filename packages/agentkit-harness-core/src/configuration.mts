@@ -222,7 +222,7 @@ export function configure(input: ConfigurationInput): RunConfiguration {
   }
   invariant(profile.maxOutputTokens > 0 && profile.maxOutputTokens < profile.contextWindow
     && profile.requestTimeoutMs > 0 && profile.requestTimeoutMs < limits.effectTimeoutMs
-    && profile.maxProviderRetries <= 9 && profile.retryInitialDelayMs <= profile.retryMaxDelayMs
+    && profile.maxProviderRetries <= 10 && profile.retryInitialDelayMs <= profile.retryMaxDelayMs
     && Number.isFinite(profile.retryBackoffMultiplier) && profile.retryBackoffMultiplier >= 1, 'invalid_model_profile');
   if (profile.inlineReasoningPolicy !== undefined) {
     const policy = profile.inlineReasoningPolicy;
@@ -236,7 +236,7 @@ export function configure(input: ConfigurationInput): RunConfiguration {
     const policy = profile.providerCompatibilityPolicy;
     invariant(policy !== null && typeof policy === 'object' && !Array.isArray(policy)
       && Object.keys(policy).every(key => ['contract', 'rule'].includes(key))
-      && ['provider-compat/v1', 'provider-compat/v2'].includes(policy.contract)
+      && ['provider-compat/v1', 'provider-compat/v2', 'provider-compat/v3'].includes(policy.contract)
       && ['auto', 'permissive', 'openai', 'strict-openai', 'cerebras', 'groq', 'deepseek',
         'zai', 'kspmas-gateway', 'moonshot', 'mimo'].includes(policy.rule), 'invalid_provider_compatibility_policy');
   }
@@ -357,6 +357,10 @@ export function configure(input: ConfigurationInput): RunConfiguration {
     || config.backgroundNotificationPolicy === 'completed-before-model/v1', 'invalid_background_notification_policy');
   if (config.contextPolicy) {
     const policy = config.contextPolicy;
+    invariant(policy.summaryOutputCeiling === undefined || policy.summaryRecoveryPolicy === 'adaptive-budget/v1'
+      && Number.isSafeInteger(policy.summaryOutputCeiling) && policy.summaryOutputCeiling > 0
+      && policy.summaryOutputCeiling <= profile.maxOutputTokens, 'invalid_summary_output_ceiling');
+    invariant(policy.summaryRecoveryPolicy === undefined || policy.summaryRecoveryPolicy === 'adaptive-budget/v1', 'invalid_summary_recovery_policy');
     invariant(policy.summaryFormatPolicy === undefined || policy.summaryFormatPolicy === 'task-continuity/v1',
       'invalid_summary_format_policy');
     invariant(typeof policy.tokenizerId === 'string' && policy.tokenizerId.trim() && typeof policy.tokenizerDigest === 'string' && policy.tokenizerDigest.trim()

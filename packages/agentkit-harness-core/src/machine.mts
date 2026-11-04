@@ -23,7 +23,7 @@ import { advanceDiagnosticRecovery, advanceObservedProgress, advanceToolErrorStr
   toolErrorStreakExhausted } from './tool-error-recovery.mjs';
 import { deliveryReadOutsidePaths, deliverySummaryAllowed, deliveryTaskMessages, observeExecutionBudget, rememberDeliveryWrite, scopedDeliveryReader, wallDeliveryOnly } from './deadline-delivery.mjs';
 import { contextContinuity } from './context-planning.mjs';
-import { discoveryModelTools, resolveDiscoveredCalls, discoveredCallExposed, TOOL_SEARCH } from './tool-discovery.mjs';
+import { discoveryModelTools, resolveDiscoveredCalls, discoveredCallExposed, toolAdmissionRejection, TOOL_SEARCH } from './tool-discovery.mjs';
 import { NativePolicyRegistry } from './policy-registry.mjs';
 import { reduceCoordinatorResponses } from './coordinator-response.mjs';
 import { RESULT_DELIVERY_POLICY } from './deliverables.mjs';
@@ -232,7 +232,8 @@ export function plan(snapshot: RunSnapshot, config: RunConfiguration, capabiliti
     const definition = config.tools.find(tool => tool.name === first.name);
     if (!definition || config.contract.allowedToolNames !== null && !config.contract.allowedToolNames.includes(first.name)) {
       return transition(snapshot, { pendingTools: snapshot.pendingTools.slice(1), messages: [...snapshot.messages,
-        { role: 'tool', content: canonical({ status: 'error', code: 'tool_not_advertised' }), callId: first.callId, name: first.name }] },
+        { role: 'tool', content: canonical(toolAdmissionRejection(snapshot, config, first,
+          advertisedTools(snapshot, config, policies))), callId: first.callId, name: first.name }] },
       [{ kind: 'tool.rejected', payload: { callId: first.callId, name: first.name, reason: 'tool_not_advertised' } }]);
     }
     if (toolRoom(snapshot, config) <= 0) {
@@ -375,8 +376,9 @@ export function reduceModel(snapshot: RunSnapshot, input: ModelResult, config: R
       if (finalizationOnly({ ...snapshot, usage: { ...snapshot.usage, modelCalls: snapshot.usage.modelCalls - 1 } }, config)) {
         return { ...base, phase: 'finalizing', outcome: 'budget_exhausted', reason: 'tool_call_after_finalization_reserve' };
       }
-      if (result.toolCalls.some(call => !advertisedTools({ ...snapshot,
-        usage: { ...snapshot.usage, modelCalls: snapshot.usage.modelCalls - 1 } }, config, policies).some(tool => tool.name === call.name)
+      const tools = advertisedTools({ ...snapshot,
+        usage: { ...snapshot.usage, modelCalls: snapshot.usage.modelCalls - 1 } }, config, policies);
+      if (result.toolCalls.some(call => !tools.some(tool => tool.name === call.name)
         || !discoveredCallExposed(snapshot, config, call))) {
         const unbound = result.toolCalls.some(call => !config.tools.some(tool => tool.name === call.name)
           || !discoveredCallExposed(snapshot, config, call));
@@ -384,7 +386,7 @@ export function reduceModel(snapshot: RunSnapshot, input: ModelResult, config: R
         return { ...base, phase: exhausted ? 'finalizing' : 'preparing_context', pendingTools: [], modelErrors: errors,
           outcome: exhausted ? 'blocked' : null, reason: exhausted ? 'tool_call_not_advertised_retry_exhausted' : null, messages: [...snapshot.messages,
           { ...message, toolCalls: result.toolCalls }, ...result.toolCalls.map(call => ({ role: 'tool' as const,
-            callId: call.callId, name: call.name, content: canonical({ status: 'error', code: 'tool_not_advertised' }) }))] };
+            callId: call.callId, name: call.name, content: canonical(toolAdmissionRejection(snapshot, config, call, tools)) }))] };
       }
       return { ...base, phase: 'executing_tools', pendingTools: result.toolCalls,
         messages: [...snapshot.messages, { ...message, toolCalls: result.toolCalls }],

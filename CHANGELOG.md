@@ -2,6 +2,11 @@
 
 ## 0.0.14 - 2026-11-04
 
+- Return scoped discovery guidance when a model calls a deferred tool before
+  loading its definition. Rejected calls remain unexecuted, mixed batches do
+  not partly dispatch, and unavailable tools never gain a discovery route.
+  Feedback follows the admitted direct or wrapper calling convention and
+  keeps the existing bounded repair budget.
 - Add opt-in response-scoped output restart accounting. An admitted complete
   tool step ends the prior truncation streak; an unbroken truncated response
   remains bounded. Existing Runs retain their frozen accounting policy.

@@ -25,7 +25,12 @@ test('native references keep the complete scoped catalog but do not authorize un
       assert.ok(request.tools.some(definition => definition.name === hidden.name && definition.discovery?.deferred));
       assert.equal(request.tools.some(definition => definition.name === 'DeferredToolCall'), false);
       if (++models === 1) return result([invoke]);
-      if (models === 2) { assert.match(request.messages.at(-1).content, /not_advertised/); return result([search]); }
+      if (models === 2) {
+        const rejected = JSON.parse(request.messages.at(-1).content);
+        assert.equal(rejected.code, 'tool_not_advertised'); assert.equal(rejected.executed, false);
+        assert.deepEqual(rejected.recovery, { name: 'ToolSearch', arguments: search.arguments, call_after_discovery: 'direct' });
+        assert.equal(writes, 0); return result([search]);
+      }
       if (models === 3) {
         assert.deepEqual(request.messages.at(-1).discoveredToolNames, [hidden.name]);
         assert.equal(request.messages.at(-1).content.includes('parameters'), false);

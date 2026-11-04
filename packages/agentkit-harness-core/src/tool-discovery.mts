@@ -1,4 +1,4 @@
-import type { ContextPlanningResult, RunConfiguration, RunSnapshot, ToolCall, ToolDefinition, ToolResult } from './contracts.mjs';
+import type { ContextPlanningResult, ObjectValue, RunConfiguration, RunSnapshot, ToolCall, ToolDefinition, ToolResult } from './contracts.mjs';
 import { canonical, copy, invariant } from './values.mjs';
 import { toolInputRejection } from './tool-input.mjs';
 import { searchTools } from './tool-search-ranking.mjs';
@@ -125,6 +125,31 @@ export function discoveredCallExposed(snapshot: RunSnapshot, config: RunConfigur
       && snapshot.toolDiscovery?.discovered.includes(call.name) === true
     || config.profile.providerToolSearchPolicy === 'anthropic-deferred/v1'
       && snapshot.toolDiscovery?.discovered.includes(call.name) === true;
+}
+
+/** Describe a rejected model call using only the current, scoped execution
+ * catalog. Discovery is a suggested next call, never authority to dispatch the
+ * rejected operation. Historical events and frozen tool definitions stay intact. */
+export function toolAdmissionRejection(snapshot: RunSnapshot, config: RunConfiguration, call: ToolCall,
+  tools: ToolDefinition[]): ObjectValue {
+  const base = { status: 'error', code: 'tool_not_advertised', executed: false };
+  const available = tools.some(tool => tool.name === call.name);
+  const search = tools.find(tool => tool.name === TOOL_SEARCH);
+  const arguments_ = { query: `select:${call.name}` };
+  if (available && !discoveredCallExposed(snapshot, config, call) && search
+    && call.name === call.name.trim() && !/[,\r\n]/.test(call.name)
+    && !toolInputRejection(search, { callId: call.callId, name: TOOL_SEARCH, arguments: arguments_ })) {
+    const direct = config.profile.discoveredToolExposure === 'direct-after-search/v1'
+      || config.profile.providerToolSearchPolicy === 'anthropic-deferred/v1';
+    return { ...base, reason: 'definition_not_loaded', recovery: {
+      name: TOOL_SEARCH, arguments: arguments_,
+      call_after_discovery: direct ? 'direct' : DEFERRED_TOOL_CALL,
+    } };
+  }
+  const catalog = boundedCapabilityCatalog(discoveryModelTools(snapshot, config, tools)
+    .map(tool => ({ name: tool.name, description: '' })), 1024);
+  return { ...base, reason: available && discoveredCallExposed(snapshot, config, call) ? 'batch_not_executed' : 'tool_unavailable',
+    available_tool_names: catalog.entries.map(tool => tool.name), omitted_tool_names: catalog.omitted };
 }
 
 /** Reconstitute the provider's original call; execution records keep the real target. */

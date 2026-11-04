@@ -96,6 +96,6 @@
     "registry": "https://registry.npmjs.org"
   },
   "dependencies": {
-    "@kingsoftcloud/agentkit-harness-core": "0.0.9"
+    "@kingsoftcloud/agentkit-harness-core": "0.0.11"
   }
 }

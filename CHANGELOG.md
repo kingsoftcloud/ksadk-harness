@@ -2,6 +2,10 @@
 
 ## 0.0.14 - 2026-11-04
 
+- Expose an atomic, read-only SQLite trace view containing compact Run status
+  and a cursor-bounded event suffix. Observability consumers no longer need
+  to hydrate execution receipts or transcripts to refresh a trace. The view
+  does not grant execution authority or change conversation delivery.
 - Return scoped discovery guidance when a model calls a deferred tool before
   loading its definition. Rejected calls remain unexecuted, mixed batches do
   not partly dispatch, and unavailable tools never gain a discovery route.

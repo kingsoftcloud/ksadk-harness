@@ -36,7 +36,17 @@
   source recipes without this policy retain their historical behavior. Workspace
   instruction readers and child restoration bind the same explicit recipe.
 
-## 0.0.12 - 2026-11-04
+## 0.0.13 - 2026-11-04
+
+- Publish the corrected integration lineage across Core, Node and UI. All three
+  registry packages identify source commit
+  `3687a3bd9f0854d5b7106dc18d9e1c0f24cf47da`.
+- This is the published baseline for 0.0.14 and includes the 0.0.10 model and
+  runtime improvements intended by the integration notes below. The published
+  0.0.12 archive used the earlier, pre-rebuild lineage; use 0.0.13 or later for
+  the corrected integration.
+
+## 0.0.12 source integration - 2026-11-04
 
 - Integrate the 0.0.10 model compatibility, consecutive retry recovery,
   adaptive compaction and shared resource profiles with the current main line.

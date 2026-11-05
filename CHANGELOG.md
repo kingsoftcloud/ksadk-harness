@@ -2,6 +2,13 @@
 
 ## 0.0.14 - 2026-11-04
 
+- Add opt-in diagnose-before-repeat/v2 admission with a default ten-inference
+  tool-diagnosis allowance, independent of unlimited task budgets. Smaller
+  configured allowances and explicit null remain supported. Frozen v1 Runs
+  retain their original settings; refused actions never dispatch a tool.
+- Use one strict Python grammar boundary for command inspection and workspace
+  syntax checks. Long Unicode documentation no longer enters Ruff's unsafe
+  comment debug renderer; invalid grammar and restricted calls stay guarded.
 - Expose committed retry deadlines to the read-only status projection and
   distinguish Host-confirmed model backoff from active context preparation.
   Expired deadlines and inactive owners do not claim a running retry.

@@ -313,7 +313,9 @@ export interface RunConfiguration {
   outputRestartPolicy?: 'per-response/v1';
   /** v2 counts consecutive provider failures and pauses (resumable) instead of failing when they run out. */
   providerRecoveryPolicy?: 'provider-recovery/v2' | null;
-  toolErrorRecoveryPolicy?: 'diagnose-before-repeat/v1' | null;
+  /** v2 admits a ten-inference diagnostic allowance unless explicitly configured.
+   * Frozen v1 configurations retain their original unbounded/default semantics. */
+  toolErrorRecoveryPolicy?: 'diagnose-before-repeat/v1' | 'diagnose-before-repeat/v2' | null;
   toolErrorRecoveryModelCalls?: number | null;
   deliveryReviewPolicy?: DeliveryReviewPolicy | null;
   /** Opaque, Host-owned recovery locator. The core never interprets it as authority. */

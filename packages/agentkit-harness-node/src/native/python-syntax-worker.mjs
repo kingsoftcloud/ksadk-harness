@@ -1,6 +1,7 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { Workspace, PositionEncoding } from '@astral-sh/ruff-wasm-nodejs';
 import { NATIVE_PYTHON_SYNTAX } from './python-syntax.mjs';
+import { assertPythonGrammar } from './python-grammar.mjs';
 
 if (Workspace.version() !== NATIVE_PYTHON_SYNTAX.parserVersion) throw new Error('Python parser version mismatch');
 const workspace = new Workspace({ 'target-version': NATIVE_PYTHON_SYNTAX.targetVersion,
@@ -16,9 +17,9 @@ try {
   if (nul !== -1) issues = issueAt(nul, 'Source code cannot contain NUL bytes.');
   // `check` also performs compile-time checks even with no lint rules selected:
   // duplicate parameters, module nonlocal, unreachable match cases, etc.
-  // CPython ast.parse deliberately permits these. `comments` first calls the
-  // strict grammar parser, without those later scoping/compilation checks.
-  try { if (!issues) workspace.comments(workerData); }
+  // CPython ast.parse deliberately permits these. Use the shared strict grammar
+  // boundary without the comment debug renderer or later compilation checks.
+  try { if (!issues) assertPythonGrammar(workspace, workerData); }
   catch (error) {
     const match = /^(.*) at byte range (\d+)\.\.(\d+)$/s.exec(error.message);
     if (!match) throw error;

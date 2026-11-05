@@ -108,7 +108,9 @@ export function configure(input: ConfigurationInput): RunConfiguration {
     ...(input.planModePolicy === undefined ? {} : { planModePolicy: input.planModePolicy }),
     ...(input.planModeInitialActive === undefined ? {} : { planModeInitialActive: input.planModeInitialActive }),
     ...(input.childPlanPolicy === undefined ? {} : { childPlanPolicy: input.childPlanPolicy }),
-    ...(input.toolErrorRecoveryModelCalls === undefined ? {} : { toolErrorRecoveryModelCalls: input.toolErrorRecoveryModelCalls }),
+    ...(input.toolErrorRecoveryModelCalls === undefined
+      ? input.toolErrorRecoveryPolicy === 'diagnose-before-repeat/v2' ? { toolErrorRecoveryModelCalls: 10 } : {}
+      : { toolErrorRecoveryModelCalls: input.toolErrorRecoveryModelCalls }),
     ...(input.deliveryReviewPolicy === undefined ? {} : { deliveryReviewPolicy: input.deliveryReviewPolicy === null ? null : normalizeDeliveryReviewPolicy(input.deliveryReviewPolicy) }),
     ...(input.hostRecoveryBinding === undefined ? {} : { hostRecoveryBinding: input.hostRecoveryBinding }),
     ...(input.backgroundSessionBindingDigest === undefined ? {} : { backgroundSessionBindingDigest: input.backgroundSessionBindingDigest }),
@@ -158,7 +160,9 @@ export function configure(input: ConfigurationInput): RunConfiguration {
     && config.outputRecoveryPolicy === 'response-boundary/v2', 'invalid_output_restart_policy');
   invariant(config.providerRecoveryPolicy == null || config.providerRecoveryPolicy === 'provider-recovery/v2', 'invalid_provider_recovery_policy');
   invariant(config.toolExecutionPolicy === undefined || config.toolExecutionPolicy === 'owner-execution/v1', 'invalid_tool_execution_policy');
-  invariant(config.toolErrorRecoveryPolicy == null || config.toolErrorRecoveryPolicy === 'diagnose-before-repeat/v1', 'invalid_tool_error_recovery_policy');
+  invariant(config.toolErrorRecoveryPolicy == null || ['diagnose-before-repeat/v1', 'diagnose-before-repeat/v2'].includes(config.toolErrorRecoveryPolicy), 'invalid_tool_error_recovery_policy');
+  invariant(config.toolErrorRecoveryPolicy !== 'diagnose-before-repeat/v2' || config.toolErrorRecoveryModelCalls !== undefined,
+    'missing_tool_error_recovery_model_calls');
   invariant(config.toolErrorRecoveryModelCalls == null || Number.isSafeInteger(config.toolErrorRecoveryModelCalls)
     && config.toolErrorRecoveryModelCalls >= 1 && config.toolErrorRecoveryModelCalls <= 10, 'invalid_tool_error_recovery_model_calls');
   invariant(config.deliveryReviewPolicy == null || !config.tools.some(tool => tool.name === REVIEW_SUBMISSION_TOOL), 'reserved_delivery_review_tool');

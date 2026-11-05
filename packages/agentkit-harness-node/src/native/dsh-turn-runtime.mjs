@@ -169,7 +169,7 @@ export function createNativeDshTurnExecutor({ store, resolveTurn, resolveRecover
   invariant(Number.isSafeInteger(ownershipFlushTimeoutMs) && ownershipFlushTimeoutMs > 0
     && ownershipFlushTimeoutMs <= 2_147_483_647, 'native_dsh_ownership_flush_timeout_invalid');
   const active = new Set(), backgroundDrivers = new Set(), revisions = streamRevisions;
-  const run = async (payload, admission, background = null) => {
+  const run = async (payload, admission, background = null, operatorResume = false) => {
     const { agent, input, turn, signal } = payload;
     invariant(agent?.session && typeof agent.session.id === 'string' && agent.session.id.trim()
       && input?.kind === 'enter' && Array.isArray(input.messages)
@@ -310,6 +310,19 @@ export function createNativeDshTurnExecutor({ store, resolveTurn, resolveRecover
       releaseControls = onActive?.(payload, { kernel, scope: structuredClone(scope), sessionId, runId, wake: () => wakeIdle(),
         ...(binding.sessionApproval ? { sessionApproval: binding.sessionApproval } : {}) });
       invariant(releaseControls === undefined || typeof releaseControls === 'function', 'native_dsh_controls_cleanup_invalid');
+      if (operatorResume) {
+        signal.throwIfAborted();
+        const current = store.load(scope, runId).snapshot;
+        if (current.phase === 'paused') {
+          // Rebinding an SDK turn is not a Native state transition. Only this
+          // explicit Host entry submits the durable command; ordinary delivery
+          // and crash reattachment keep user/policy pauses intact. Core owns
+          // cancellation precedence and any permitted budget recovery.
+          const commandId = `native-dsh-resume-${hash({ scope, runId, revision: current.revision, eventSeq: current.eventSeq })}`;
+          invariant(kernel.submit(scope, runId, { commandId, kind: 'resume', payload: {} }).status !== 'rejected',
+            'native_dsh_resume_rejected');
+        }
+      }
       let snapshot;
       try {
         snapshot = await kernel.runUntilIdle(scope, runId, { signal });
@@ -453,7 +466,7 @@ export function createNativeDshTurnExecutor({ store, resolveTurn, resolveRecover
       const admission = readNativeDshOwnership(resumed.ownership, { sessionId: agent.session.id, turn: resumed.turn });
       return run({ ...request, ...resumed, agent,
         signal: request.signal ? AbortSignal.any([request.signal, resumed.signal]) : resumed.signal,
-        input: { kind: 'enter', messages: structuredClone(admission.messages) } }, admission);
+        input: { kind: 'enter', messages: structuredClone(admission.messages) } }, admission, null, true);
     });
   };
   /** Drive only the persisted notification identified by an already claimed owner. */

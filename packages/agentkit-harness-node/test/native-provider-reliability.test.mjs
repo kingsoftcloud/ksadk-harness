@@ -31,6 +31,15 @@ test('v3 assembles empty identity deltas but never executes conflicting or unfin
   assert.equal(turn({ contract: 'provider-compat/v2' }).finalize().kind, 'malformed_tool_call');
 });
 
+test('v4 keeps the existing stream identity, complete-call and known EOF boundaries', () => {
+  const result = turn({ contract: 'provider-compat/v4' }).finalize();
+  assert.equal(result.kind, 'tool_calls'); assert.equal(result.toolCalls[0].arguments.path, 'a.txt');
+  assert.equal(turn({ contract: 'provider-compat/v4', tailId: 'different' }).finalize().kind, 'malformed_tool_call');
+  assert.equal(turn({ contract: 'provider-compat/v4', complete: false }).finalize().toolCalls[0].wireArgumentsInvalid, true);
+  assert.equal(turn({ contract: 'provider-compat/v4', model: 'minimax-m3', done: false, tailId: 'call-1' }).finalize().kind, 'tool_calls');
+  assert.equal(turn({ contract: 'provider-compat/v4', model: 'unknown', done: false, tailId: 'call-1' }).finalize().kind, 'provider_retryable_error');
+});
+
 test('known MiniMax clean EOF requires finish and usage; errors and unknown providers stay incomplete', () => {
   const options = { model: 'minimax-m3', done: false, tailId: 'call-1' };
   assert.equal(turn(options).finalize().kind, 'tool_calls');
@@ -50,7 +59,7 @@ test('known MiniMax clean EOF requires finish and usage; errors and unknown prov
 test('v3 leaves mandatory GLM reasoning on for both task and summary, old requests stay frozen', () => {
   const binding = { model: 'glm-5.3-flash', baseUrl: 'https://kspmas.ksyun.com/v1' };
   const payload = { model: binding.model, max_tokens: 8192, tools: [{ type: 'function', function: { name: 'read' } }], messages: [] };
-  assert.equal(admitProviderCompatibilityPolicy().contract, 'provider-compat/v3');
+  assert.equal(admitProviderCompatibilityPolicy().contract, 'provider-compat/v4');
   for (const purpose of ['task', 'compaction']) {
     const modern = applyProviderChatCompatibility(payload, { purpose, profile: profile('provider-compat/v3') }, binding);
     assert.equal(modern.thinking, undefined);

@@ -105,7 +105,7 @@ export interface ModelProfile {
   /** Absent on older Runs; projection policy is frozen at admission. */
   inlineReasoningPolicy?: { contract: 'profiled-content/v1' | 'profiled-content/v2'; rule: 'auto' | 'permissive' | 'openai'
     | 'strict-openai' | 'cerebras' | 'groq' | 'deepseek' | 'zai' | 'kspmas-gateway' | 'moonshot' | 'mimo' };
-  providerCompatibilityPolicy?: { contract: 'provider-compat/v1' | 'provider-compat/v2' | 'provider-compat/v3'; rule: NonNullable<ModelProfile['inlineReasoningPolicy']>['rule'] };
+  providerCompatibilityPolicy?: { contract: 'provider-compat/v1' | 'provider-compat/v2' | 'provider-compat/v3' | 'provider-compat/v4'; rule: NonNullable<ModelProfile['inlineReasoningPolicy']>['rule'] };
   streaming?: boolean; outputTokenParameter?: 'max_tokens' | 'max_completion_tokens';
   streamTimeoutPolicy?: 'idle/v1'; providerThinkingDisplay?: boolean;
   /** Absent on historical Runs, whose OpenAI usage reports required equality. */

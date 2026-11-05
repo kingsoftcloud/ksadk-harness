@@ -247,7 +247,7 @@ export function configure(input: ConfigurationInput): RunConfiguration {
     const policy = profile.providerCompatibilityPolicy;
     invariant(policy !== null && typeof policy === 'object' && !Array.isArray(policy)
       && Object.keys(policy).every(key => ['contract', 'rule'].includes(key))
-      && ['provider-compat/v1', 'provider-compat/v2', 'provider-compat/v3'].includes(policy.contract)
+      && ['provider-compat/v1', 'provider-compat/v2', 'provider-compat/v3', 'provider-compat/v4'].includes(policy.contract)
       && ['auto', 'permissive', 'openai', 'strict-openai', 'cerebras', 'groq', 'deepseek',
         'zai', 'kspmas-gateway', 'moonshot', 'mimo'].includes(policy.rule), 'invalid_provider_compatibility_policy');
   }

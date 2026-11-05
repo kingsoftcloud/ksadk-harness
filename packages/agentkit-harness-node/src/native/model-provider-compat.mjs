@@ -44,24 +44,31 @@ export function applyAnthropicThinking(payload, profile, binding) {
 }
 
 export function admitProviderCompatibilityPolicy(override) {
-  return { contract: 'provider-compat/v3', rule: admitInlineReasoningPolicy(override).rule };
+  return { contract: 'provider-compat/v4', rule: admitInlineReasoningPolicy(override).rule };
 }
 
 export function resolveProviderCompatibility(policy, binding) {
   if (!policy) return null;
-  if (!['provider-compat/v1', 'provider-compat/v2', 'provider-compat/v3'].includes(policy.contract)) throw new ProtocolError('invalid_provider_compatibility_policy');
+  if (!['provider-compat/v1', 'provider-compat/v2', 'provider-compat/v3', 'provider-compat/v4'].includes(policy.contract)) throw new ProtocolError('invalid_provider_compatibility_policy');
   const rule = resolveCompatibilityRule(policy.rule, binding);
   const name = String(binding.model ?? '').trim().toLowerCase();
   const kimi = ['kspmas-gateway', 'moonshot'].includes(rule)
     && ['kimi-k2.7-code', 'kimi-k2.7-code-highspeed'].includes(name);
-  const reasoningRequired = policy.contract === 'provider-compat/v3' && rule === 'kspmas-gateway' && name === 'glm-5.3-flash';
+  const modern = ['provider-compat/v3', 'provider-compat/v4'].includes(policy.contract);
+  const reasoningRequired = modern && rule === 'kspmas-gateway' && name === 'glm-5.3-flash';
   const disabledEfforts = mandatory.has(name) || reasoningRequired ? [] : name === 'claude-haiku-5-5' ? ['low', 'medium', 'high'] : null;
   return { rule, supportsUsage: !strict.has(rule), supportsThinking: !strict.has(rule) && !kimi,
-    supportsToolArgumentStreaming: ['provider-compat/v2', 'provider-compat/v3'].includes(policy.contract)
+    supportsToolArgumentStreaming: ['provider-compat/v2', 'provider-compat/v3', 'provider-compat/v4'].includes(policy.contract)
       && ['zai', 'kspmas-gateway'].includes(rule) && incrementalToolModels.has(normalized(binding.model)),
-    reasoningRequired, modern: policy.contract === 'provider-compat/v3',
+    reasoningRequired, modern,
+    // This route already uses the supported non-thinking mode for tool work.
+    // A bounded summary has no tools: omitting the switch can instead select
+    // the provider's default high reasoning and consume its whole output cap.
+    // Freeze this purpose-specific default only on new admissions; mandatory
+    // thinking models and explicit caller choices remain authoritative.
+    compactionThinkingOff: policy.contract === 'provider-compat/v4' && rule === 'kspmas-gateway' && !kimi,
     // Only the observed provider/model dialects may seal without [DONE].
-    finishOnEof: policy.contract === 'provider-compat/v3' && ['permissive', 'kspmas-gateway'].includes(rule)
+    finishOnEof: modern && ['permissive', 'kspmas-gateway'].includes(rule)
       && ['minimax-m3', 'minimax-m2.5'].includes(name),
     supportsEffort: !kimi, toolThinkingOff: ['zai', 'kspmas-gateway'].includes(rule) && !kimi,
     thinkingBudget: rule === 'zai' && !kimi && !disabledEfforts ? 32000 : null,
@@ -116,11 +123,13 @@ export function applyProviderChatCompatibility(payload, request, binding) {
   if (mode === 'disabled' && compat.reasoningRequired) throw new ProtocolError('model_thinking_disable_unsupported');
   const mayDisable = compat.supportsThinking && (compat.disabledEfforts === null || compat.disabledEfforts.includes(effort));
   const summaryOff = request.purpose === 'compaction' && requested === null && compat.rule === 'kspmas-gateway' && name === 'glm-5.3-flash';
+  const boundedSummaryOff = request.purpose === 'compaction' && compat.compactionThinkingOff
+    && requested === null && mode === undefined;
   const budget = result.max_completion_tokens ?? result.max_tokens;
   if (mode === 'enabled') {
     if (!compat.supportsThinking) throw new ProtocolError('model_thinking_mode_unsupported');
     result.thinking = { type: 'enabled' };
-  } else if (mayDisable && (mode === 'disabled' || summaryOff
+  } else if (mayDisable && (mode === 'disabled' || summaryOff || boundedSummaryOff
     || compat.toolThinkingOff && !!result.tools?.length && result.tool_choice !== 'none'
     || compat.thinkingBudget !== null && budget <= compat.thinkingBudget)) result.thinking = { type: 'disabled' };
   if (!compat.supportsThinking) delete result.thinking;

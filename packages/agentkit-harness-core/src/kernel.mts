@@ -217,6 +217,9 @@ export class NativeKernel {
       const facts: { kind: string; payload: ObjectValue }[] = [{ kind: send ? 'child.input_queued'
         : command.kind === 'resume_child' ? 'child.resume_requested' : 'child.cancel_requested',
         payload: { childRunId: id, commandId: command.commandId } }];
+      if (['resume_child', 'cancel_child'].includes(command.kind) && snapshot.phase === 'paused' && snapshot.reason === 'child_paused') {
+        Object.assign(changes, { phase: snapshot.resumePhase ?? 'preparing_context', resumePhase: null, reason: null });
+      }
       if (command.kind === 'cancel_child' && snapshot.childApproval?.childRunId === id) {
         facts.push({ kind: 'approval.resolved', payload: { interactionId: snapshot.pendingInteraction?.interactionId ?? '',
           callId: snapshot.childApproval.toolCall.callId, decision: 'canceled', reason: 'child_cancel_requested' } });

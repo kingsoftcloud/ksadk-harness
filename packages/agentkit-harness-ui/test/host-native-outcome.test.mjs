@@ -12,6 +12,13 @@ test('permission pause presentations distinguish rejection, withdrawal and unava
   }
 });
 
+test('a joined child pause explains the preserved original child and does not claim delivery or implicit recovery', () => {
+  const view = nativeRunPresentation({ runId: 'run', phase: 'paused', reason: 'child_paused', state: 'available', canResume: false });
+  assert.equal(view.label, '子任务已暂停，等待处理'); assert.match(view.detail, /运行与子任务/);
+  assert.match(view.detail, /明确恢复或取消原子任务/); assert.doesNotMatch(view.detail, /核对后恢复原运行/);
+  assert.deepEqual(nativeRunPresentation({ runId: 'run', phase: 'paused', reason: 'child_paused', canResume: true }), view);
+});
+
 test('output exhaustion explains the paused original run without inventing resume authority or successful delivery', () => {
   const status = { runId: 'run', phase: 'paused', reason: 'output_budget_exhausted', outcome: null, state: 'available' };
   const available = nativeRunPresentation({ ...status, canResume: true });

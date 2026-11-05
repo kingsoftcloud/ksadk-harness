@@ -222,7 +222,7 @@ export function createNativeChildOwner({ scope, childScopes = [scope], store, re
       request.signal.throwIfAborted();
       toolInvocation(request);
       if (entry && !terminal(record.snapshot.phase)) drive(entry);
-      while (!terminal(record.snapshot.phase) && !childNeedsApproval(record)) {
+      while (!terminal(record.snapshot.phase) && record.snapshot.phase !== 'paused' && !childNeedsApproval(record)) {
         request.signal.throwIfAborted(); const parent = toolInvocation(request);
         if (parent.commands.some(row => !row.consumed && ['pause', 'promote_child', 'message_child', 'cancel_child', 'resume_child'].includes(row.command.kind))
           || entry?.error && entry.error.code !== 'lease_busy') return startup();
@@ -231,14 +231,14 @@ export function createNativeChildOwner({ scope, childScopes = [scope], store, re
         if (entry?.error?.code === 'lease_busy') drive(entry);
       }
       request.signal.throwIfAborted(); toolInvocation(request);
-      if (childNeedsApproval(record) || record.snapshot.phase === 'interrupted' || unsafeReceipt(record)) return startup();
+      if (childNeedsApproval(record) || record.snapshot.phase === 'paused' || record.snapshot.phase === 'interrupted' || unsafeReceipt(record)) return startup();
       return { ...terminalReceipt(record, reservation), childBudgetReservation: copy(reservation) };
     } finally { request.signal.removeEventListener('abort', cancel); }
   };
   const projection = (record, reservation) => ({ runId: record.snapshot.runId, sessionId: record.snapshot.sessionId,
     operationKey: reservation.parentOperationKey, callId: reservation.parentToolCallId,
     state: unsafeReceipt(record) && !canWaitForReceipt?.(record) ? 'interrupted' : record.snapshot.phase === 'created' ? 'prepared' : childNeedsApproval(record) ? 'awaiting_interaction'
-      : terminal(record.snapshot.phase) ? record.snapshot.phase : 'running',
+      : record.snapshot.phase === 'paused' || terminal(record.snapshot.phase) ? record.snapshot.phase : 'running',
     reservedModelCalls: reservation.maxModelCalls, reservedToolCalls: reservation.maxToolCalls,
     usage: addUsage(record.snapshot.usage, record.snapshot.descendantUsage), notified: false, metadata: {} });
 
@@ -576,10 +576,13 @@ export function createNativeChildOwner({ scope, childScopes = [scope], store, re
       // Reconcile observes ledgers only. A proven original receipt wait may
       // remain pending after the parent collector died; it is not a failed
       // collection and grants no authority to query/send/drive that child.
+      // A known pause with no outstanding effect is also a ledger fact. It
+      // can restore the parent's join without resuming the child implicitly.
       // Rebinding and execution happen later in a fresh fenced collect.
       if (records.some(record => terminal(record.snapshot.phase)
         ? record.snapshot.phase === 'interrupted' || unsafeReceipt(record)
-        : request.action === 'cancel' || !canWaitForReceipt?.(record))) return null;
+        : request.action === 'cancel' || !canWaitForReceipt?.(record)
+          && !(childResumeAllowed(record.snapshot) && !unsafeReceipt(record)))) return null;
       return { operationKey: request.operationKey,
         results: records.flatMap((record, index) => terminal(record.snapshot.phase) ? [terminalReceipt(record, request.reservations[index], false)] : []),
         ...(request.responseCursors === undefined ? {} : { responses: records.flatMap(record => responses(record, request.responseCursors)) }),

@@ -307,7 +307,8 @@ export function createNativeDshTurnExecutor({ store, resolveTurn, resolveRecover
         signal.addEventListener('abort', cancelListener, { once: true });
       }
       let wakeIdle = () => {};
-      releaseControls = onActive?.(payload, { kernel, scope: structuredClone(scope), sessionId, runId, wake: () => wakeIdle() });
+      releaseControls = onActive?.(payload, { kernel, scope: structuredClone(scope), sessionId, runId, wake: () => wakeIdle(),
+        ...(binding.sessionApproval ? { sessionApproval: binding.sessionApproval } : {}) });
       invariant(releaseControls === undefined || typeof releaseControls === 'function', 'native_dsh_controls_cleanup_invalid');
       let snapshot;
       try {
@@ -322,6 +323,7 @@ export function createNativeDshTurnExecutor({ store, resolveTurn, resolveRecover
             if (store.load(scope, runId).commands.some(row => !row.consumed)) wakeIdle();
             command = await resolveWhileLive(() => onIdle(idlePayload, structuredClone(snapshot), {
               waitForToolReceipt: binding.ports.tools.waitForReceipt,
+              ...(binding.sessionApproval ? { sessionApproval: binding.sessionApproval } : {}),
             }), idlePayload);
           } catch (error) {
             if (!woken || signal.aborted) throw error;

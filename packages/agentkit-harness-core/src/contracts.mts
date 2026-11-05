@@ -421,7 +421,7 @@ export interface CompletionCandidate {
 }
 export interface ChildState {
   runId: string; sessionId: string; operationKey: string; callId: string;
-  state: 'prepared' | 'running' | 'awaiting_interaction' | 'completed' | 'failed' | 'canceled' | 'interrupted';
+  state: 'prepared' | 'running' | 'paused' | 'awaiting_interaction' | 'completed' | 'failed' | 'canceled' | 'interrupted';
   reservedModelCalls: number | null; reservedToolCalls: number | null; usage: Usage;
   notified: boolean; metadata: ObjectValue;
 }

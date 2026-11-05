@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { NativeKernel, MemoryRunStore, emptyUsage, modelRoom, toolRoom, transition, prepareEffect, contextContinuity,
+import { NativeKernel, MemoryRunStore, emptyUsage, modelRoom, toolRoom, transition, prepareEffect, contextContinuity, reduceCommand,
   prepareChildLifecycle, childLifecycleRequest, reduceChildLifecycle } from '../dist/index.mjs';
 import { SqliteRunStore } from '@kingsoftcloud/agentkit-harness-node/native/sqlite-store';
 import { fixture, scope, digest, tool } from './fixtures.mjs';
@@ -58,6 +58,52 @@ test('recovering a lost child collector observes pending children without declar
   assert.equal(reduceChildLifecycle(batch.snapshot, config, request, observed, digest).reason, 'background_children_unsettled');
   assert.equal(reduceChildLifecycle(batch.snapshot, config, request, { ...observed, errorCode: 'child_receipt_unavailable' }, digest,
     { observationOnly: true }).reason, 'child_receipt_unavailable');
+});
+
+test('only the selected join pauses for a paused child; polling, cancellation and unknown receipts retain their own semantics', () => {
+  const { config, snapshot } = fixture({ childLifecyclePolicy: 'owned-background/v2' });
+  const foreground = { ...reservation({ operationKey: 'foreground-op', call: call('fg', 'start_child') }), deliveryMode: 'foreground' };
+  const background = { ...reservation({ operationKey: 'background-op', call: call('bg', 'start_child') }), childRunId: 'background' };
+  const children = [foreground, background].map(item => ({ runId: item.childRunId, sessionId: item.childRunId,
+    operationKey: item.parentOperationKey, callId: item.parentToolCallId, state: 'paused', usage: emptyUsage(),
+    reservedModelCalls: item.maxModelCalls, reservedToolCalls: item.maxToolCalls, notified: false, metadata: {} }));
+  const held = { ...snapshot, phase: 'verifying', childRunIds: ['child', 'background'], childBudgetReservations: [foreground, background] };
+  for (const scenario of ['join', 'recovered-join', 'poll', 'unselected', 'cancel', 'unknown']) {
+    const initial = { ...held, phase: scenario === 'poll' ? 'preparing_context' : scenario === 'cancel' ? 'finalizing' : held.phase,
+      ...(scenario === 'poll' ? { childBudgetReservations: [background], childRunIds: ['background'] } : {}) };
+    const batch = prepareChildLifecycle(initial, config), intent = batch.intents[0];
+    const request = childLifecycleRequest(batch.snapshot, intent, new AbortController().signal);
+    if (scenario === 'unselected') request.waitForChildRunIds = ['child'];
+    const result = { operationKey: request.operationKey, results: [], approvals: [],
+      pendingChildRunIds: request.reservations.map(item => item.childRunId),
+      children: children.filter(item => request.reservations.some(reservation => reservation.childRunId === item.runId))
+        .map(item => scenario === 'unselected' && item.runId === 'child' ? { ...item, state: 'running' } : item),
+      errorCode: scenario === 'unknown' ? 'child_receipt_unavailable' : null };
+    const next = reduceChildLifecycle(batch.snapshot, config, request, result, digest, { observationOnly: scenario === 'recovered-join' });
+    if (['join', 'recovered-join'].includes(scenario)) {
+      assert.equal(next.phase, 'paused'); assert.equal(next.reason, 'child_paused'); assert.equal(next.outcome, null);
+      assert.equal(next.resumePhase, 'verifying'); assert.equal(next.childLifecycleFailure, null);
+    } else if (scenario === 'poll') {
+      assert.equal(next.phase, 'preparing_context'); assert.equal(next.reason, null);
+    } else {
+      assert.equal(next.phase, 'finalizing'); assert.notEqual(next.reason, 'child_paused');
+      assert.equal(next.reason, scenario === 'unknown' ? 'child_receipt_unavailable' : 'background_children_unsettled');
+    }
+    assert.deepEqual(next.childBudgetReservations, initial.childBudgetReservations); assert.equal(next.descendantUsage.modelCalls, 0);
+  }
+});
+
+test('an explicit parent resume clears its child-wait reason so a subsequent manual pause stays manual', () => {
+  const { config, snapshot } = fixture({ childLifecyclePolicy: 'owned-background/v2' });
+  const paused = { ...snapshot, phase: 'paused', resumePhase: 'verifying', reason: 'child_paused',
+    usage: { ...emptyUsage(), modelCalls: 2 }, continuations: 2, outputRestarts: 1 };
+  const resumed = reduceCommand(paused, { commandId: 'resume-parent', kind: 'resume', payload: {} }, null,
+    { configuration: config, digest }).snapshot;
+  assert.equal(resumed.phase, 'verifying'); assert.equal(resumed.reason, null);
+  assert.deepEqual(resumed.usage, paused.usage); assert.equal(resumed.continuations, 2); assert.equal(resumed.outputRestarts, 1);
+  const manual = reduceCommand(resumed, { commandId: 'pause-parent', kind: 'pause', payload: {} }, null,
+    { configuration: config, digest }).snapshot;
+  assert.equal(manual.phase, 'paused'); assert.equal(manual.reason, null);
 });
 
 for (const backend of ['memory', 'sqlite']) {

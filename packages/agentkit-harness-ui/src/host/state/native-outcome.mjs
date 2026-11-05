@@ -5,6 +5,7 @@ const phases = { created: '已准备', preparing_context: '整理上下文', req
 // Stable ledger reasons, never raw provider/tool exception text. These are
 // explanations only; canResume still comes from the current Host authority.
 const pauseReasons = {
+  child_paused: ['子任务已暂停，等待处理', '原子任务及已提交结果已保留。请在“运行与子任务”中核对暂停原因，明确恢复或取消原子任务。'],
   approval_rejected: ['审批被拒绝，已暂停', '这次操作没有获得批准，尚未执行。已停止继续申请和生成，等待补充指导或明确恢复。'],
   approval_cancelled: ['审批已取消，已暂停', '这次审批被取消，操作尚未执行。原任务已保留，不会自动重新申请。'],
   approval_unavailable: ['审批通道不可用，已暂停', '尚未取得审批结果，操作没有获得批准。请先恢复审批通道再核对原任务。'],
@@ -37,6 +38,7 @@ export function nativeRunPresentation(status) {
   if (status.phase === 'canceled') return { label: '已取消', detail: '本轮执行已停止；已经发生的文件或外部修改不会因此自动撤销。' };
   if (status.phase === 'paused' && Object.hasOwn(pauseReasons, status.reason)) {
     const [label, detail] = pauseReasons[status.reason];
+    if (status.reason === 'child_paused') return { label, detail };
     return { label, detail: detail + (status.canResume === true
       ? '请在运行与子任务中核对后恢复原运行；不会重新执行已提交的操作。'
       : '请在运行与子任务中核对原因及当前可用操作。') };

@@ -149,7 +149,7 @@ export function reduceCommand(snapshot: RunSnapshot, command: RunCommand, pendin
           ? { reason: null, continuations: 0, outputRestarts: 0 } : {}),
         ...(bindings.configuration?.approvalOutcomePolicy === APPROVAL_OUTCOME_POLICY
           && ['approval_rejected', 'approval_cancelled', 'approval_unavailable'].includes(snapshot.reason ?? '') ? { reason: null } : {}),
-        ...(['provider_unavailable', 'context_summary_unavailable'].includes(snapshot.reason ?? '') ? { reason: null } : {}) };
+        ...(['provider_unavailable', 'context_summary_unavailable', 'child_paused'].includes(snapshot.reason ?? '') ? { reason: null } : {}) };
       break;
     case 'submit_interaction': {
       const pending = snapshot.pendingInteraction;

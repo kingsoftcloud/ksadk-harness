@@ -132,7 +132,7 @@ export function reduceChildLifecycle(snapshot: RunSnapshot, config: RunConfigura
       const owned = request.reservations.find(item => item.childRunId === child.runId);
       invariant(owned && owned.parentOperationKey === child.operationKey && owned.parentToolCallId === child.callId
         && child.reservedModelCalls === owned.maxModelCalls && child.reservedToolCalls === owned.maxToolCalls
-        && ['prepared', 'running', 'awaiting_interaction', 'completed', 'failed', 'canceled', 'interrupted'].includes(child.state)
+        && ['prepared', 'running', 'paused', 'awaiting_interaction', 'completed', 'failed', 'canceled', 'interrupted'].includes(child.state)
         && (settled.includes(child.runId) ? ['completed', 'failed', 'canceled'].includes(child.state)
           : !['completed', 'failed', 'canceled'].includes(child.state))
         && child.usage.modelCalls <= owned.maxModelCalls && child.usage.toolCalls <= owned.maxToolCalls
@@ -152,6 +152,12 @@ export function reduceChildLifecycle(snapshot: RunSnapshot, config: RunConfigura
     updated.pendingInteraction = { interactionId: `${request.operationKey}:approval`, hostInteractionId: `native-child-${digest(approval)}`,
       callId: approval.toolCall.callId, operationKey: request.operationKey };
     updated.interaction = null;
+  } else if (!result.errorCode && request.action === 'wait' && result.children?.some(child => child.state === 'paused'
+    && pending.includes(child.runId) && (!request.waitForChildRunIds || request.waitForChildRunIds.includes(child.runId)))) {
+    // A joined child can still own valid results and an unspent reservation.
+    // Preserve that original run until an explicit control resumes or cancels
+    // it. Background polls do not block the parent's independent work.
+    updated.resumePhase = updated.phase; updated.phase = 'paused'; updated.reason = 'child_paused'; updated.outcome = null;
   } else if (result.errorCode || !observationOnly && request.action !== 'poll'
     && pending.some(id => !request.waitForChildRunIds || request.waitForChildRunIds.includes(id))) {
     updated.phase = 'finalizing'; updated.candidate = null; updated.verification = null;

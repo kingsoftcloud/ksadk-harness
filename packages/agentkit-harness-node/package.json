@@ -26,6 +26,7 @@
     "./native/child-command-resource": "./src/native/child-command-resource.mjs",
     "./native/child-owner": "./src/native/child-owner.mjs",
     "./native/session-tool-approval": "./src/native/session-tool-approval.mjs",
+    "./native/approval-preflight": "./src/native/approval-preflight.mjs",
     "./native/child-publication": "./src/native/child-publication.mjs",
     "./native/child-readers": "./src/native/child-readers.mjs",
     "./native/child-tools": "./src/native/child-tools.mjs",

@@ -97,6 +97,31 @@ for (const required of [false, true]) test(`source timeout is ${required ? 'bloc
 
 const timeoutRecovery = { contract: 'context-source-timeout/v1', maxRetries: 2, retryDelayMs: 1 };
 for (const sqlite of [false, true]) {
+  test(`${sqlite ? 'sqlite' : 'memory'}: event-loop blockage discards an overdue context result and rereads before dispatch`, async t => {
+    const run = setup(t, sqlite, { contextSources: [source({ required: true, timeoutMs: 200, timeoutRecovery })] });
+    let reads = 0, models = 0, blockedSignal;
+    run.ports.context.readSource = async request => {
+      if (++reads === 1) {
+        blockedSignal = request.signal;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 240);
+        return { items: [{ content: 'overdue result from a blocked event loop' }] };
+      }
+      assert.equal(blockedSignal.aborted, true);
+      return { items: [{ content: 'fresh result after event-loop recovery' }] };
+    };
+    run.ports.model.generate = async request => {
+      models++;
+      const data = request.messages.filter(message => message.kind === 'context_contribution');
+      assert.equal(data.length, 1);
+      assert.equal(JSON.parse(data[0].content).item.content, 'fresh result after event-loop recovery');
+      return final('Delivered');
+    };
+    const result = await run.worker().runUntilIdle(scope, 'run');
+    assert.equal(result.phase, 'completed', result.reason);
+    assert.equal(reads, 2); assert.equal(models, 1); assert.equal(result.usage.toolCalls, 0);
+    assert.equal(result.context.contributions.sources[0].timeoutRetries, 1);
+  });
+
   test(`${sqlite ? 'sqlite' : 'memory'}: timed-out context read retries with fresh data before any model request`, async t => {
     const run = setup(t, sqlite, { contextSources: [source({ required: true, timeoutMs: 30, timeoutRecovery })] });
     let reads = 0, models = 0, late, firstSignal;
@@ -115,6 +140,33 @@ for (const sqlite of [false, true]) {
     late({ items: [{ content: 'stale late read must never be admitted' }] });
     assert.equal(result.phase, 'completed'); assert.equal(reads, 2); assert.equal(models, 1);
     assert.equal(result.context.contributions.sources[0].timeoutRetries, 1);
+  });
+
+  test(`${sqlite ? 'sqlite' : 'memory'}: persistent event-loop blockage pauses and permits fresh recovery without dispatching stale context`, async t => {
+    const run = setup(t, sqlite, { contextSources: [source({ required: true, timeoutMs: 200, timeoutRecovery })] });
+    let reads = 0, models = 0;
+    run.ports.context.readSource = async () => {
+      reads++;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 240);
+      return { items: [{ content: 'stale overdue instruction snapshot' }] };
+    };
+    run.ports.model.generate = async request => {
+      models++;
+      const contribution = request.messages.find(message => message.kind === 'context_contribution');
+      assert.equal(JSON.parse(contribution.content).item.content, 'fresh instructions after recovery');
+      return final('Recovered');
+    };
+    const paused = await run.worker().runUntilIdle(scope, 'run');
+    assert.equal(paused.phase, 'paused'); assert.equal(paused.reason, 'context_source_unavailable');
+    assert.equal(paused.outcome, null); assert.equal(reads, 3); assert.equal(models, 0);
+    if (sqlite) run.reopen();
+    run.ports.context.readSource = async () => { reads++; return { items: [{ content: 'fresh instructions after recovery' }] }; };
+    const worker = run.worker();
+    worker.submit(scope, 'run', { commandId: 'resume-after-loop-blockage', kind: 'resume', payload: {} });
+    const recovered = await worker.runUntilIdle(scope, 'run');
+    assert.equal(recovered.phase, 'completed', recovered.reason);
+    assert.equal(recovered.runId, paused.runId); assert.equal(recovered.configDigest, paused.configDigest);
+    assert.equal(reads, 4); assert.equal(models, 1); assert.equal(recovered.usage.toolCalls, 0);
   });
 
   test(`${sqlite ? 'sqlite' : 'memory'}: exhausted required context source pauses and resumes with a fresh read`, async t => {

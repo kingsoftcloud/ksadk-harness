@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { NativeKernel, NativeError, isNativeError, CHILD_OWNER_CONTRACT, canonical, copy, configure,
   addUsage, admittedToolBudget, childLifecycleRequest, childReadyProbe, scopeKey, terminal,
-  CHILD_TASK_POLICY, COORDINATOR_RESPONSE_POLICY, activePlanMode, isPlanChildCall, planModeWriteDenial,
+  CHILD_TASK_POLICY, COORDINATOR_RESPONSE_POLICY, activePlanMode, isPlanChildCall, planModeWriteDenial, childResumeAllowed,
   CHILD_PLAN_POLICY, CHILD_PLAN_MODE_POLICY, defaultPolicyBindings } from '@kingsoftcloud/agentkit-harness-core';
 import { loadSessionChild, accountedChildDelivery, hasUnsafeChildReceipt, childNeedsApproval } from './owned-child.mjs';
 import { CHILD_ALLOCATION_POLICY, CHILD_ALLOCATION_DEFAULTS, LEGACY_CALL_DEFAULTS,
@@ -224,7 +224,7 @@ export function createNativeChildOwner({ scope, childScopes = [scope], store, re
       if (entry && !terminal(record.snapshot.phase)) drive(entry);
       while (!terminal(record.snapshot.phase) && !childNeedsApproval(record)) {
         request.signal.throwIfAborted(); const parent = toolInvocation(request);
-        if (parent.commands.some(row => !row.consumed && ['pause', 'promote_child', 'message_child', 'cancel_child'].includes(row.command.kind))
+        if (parent.commands.some(row => !row.consumed && ['pause', 'promote_child', 'message_child', 'cancel_child', 'resume_child'].includes(row.command.kind))
           || entry?.error && entry.error.code !== 'lease_busy') return startup();
         await observeWhileLive(new Promise(resolve => setTimeout(resolve, 25)), request.signal);
         record = ownedChild(request, reservation);
@@ -283,7 +283,10 @@ export function createNativeChildOwner({ scope, childScopes = [scope], store, re
           && !terminal(child.phase) && (!unsafeReceipt(record) || canWaitForReceipt?.(record)) && reservation.settledUsageDigest === null;
         rows.push({ childRunId: child.runId, sessionId: child.sessionId, role: binding.role, phase: child.phase, goalRevision: child.goalRevision, delivery,
           canPromote: live && delivery === 'foreground' && effective(parent).childPromotionPolicy === 'owned-child-promotion/v1',
-          canCancel: live, canSendInput: live });
+          canCancel: live, canSendInput: live,
+          ...(child.phase === 'paused' || record.configuration.outputRestartPolicy === 'per-response/v2'
+            || record.configuration.providerRecoveryPolicy === 'provider-recovery/v2'
+            ? { canResume: live && childResumeAllowed(record.snapshot) } : {}) });
       }
       return rows;
     },
@@ -476,7 +479,11 @@ export function createNativeChildOwner({ scope, childScopes = [scope], store, re
           const expected = request.childApproval;
           check(request.interaction.interactionId === `native-child-${hash(expected)}`
             && request.interaction.callId === expected.toolCall.callId && ['allow', 'deny'].includes(request.interaction.decision), 'child_approval_identity_conflict');
-          const commandId = `parent-approval-${hash({ parent: identity(request), approval: expected, decision: request.interaction.decision })}`;
+          const reply = { interactionId: expected.interactionId, decision: request.interaction.decision,
+            ...(record.configuration.approvalOutcomePolicy === 'owner-outcome/v1'
+              && Object.hasOwn(request.interaction, 'approvalOutcome') ? { approvalOutcome: request.interaction.approvalOutcome } : {}) };
+          const commandId = `parent-approval-${hash({ parent: identity(request), approval: expected,
+            decision: Object.hasOwn(reply, 'approvalOutcome') ? reply : request.interaction.decision })}`;
           // A promotion may detach this observer after the decision was
           // durably delivered. Accept only that same saved decision; never
           // infer approval from a child's phase or ask for it a second time.
@@ -485,11 +492,10 @@ export function createNativeChildOwner({ scope, childScopes = [scope], store, re
             `parent-approval-${hash({ parent: item.operationKey, approval: expected, decision: request.interaction.decision })}`);
           const delivered = record.commands.some(row => row.command.kind === 'submit_interaction'
             && [commandId, ...previousIds].includes(row.command.commandId)
-            && same(row.command.payload, { interactionId: expected.interactionId, decision: request.interaction.decision }));
+            && same(row.command.payload, reply));
           if (!delivered) {
             check(same(childApproval(record, reservation), expected), 'child_approval_identity_conflict');
-            submit(entry, { commandId, kind: 'submit_interaction',
-              payload: { interactionId: expected.interactionId, decision: request.interaction.decision } });
+            submit(entry, { commandId, kind: 'submit_interaction', payload: reply });
           }
         }
         if (!childNeedsApproval(record) || request.action === 'cancel' || request.childApproval?.childRunId === entry.runId) {

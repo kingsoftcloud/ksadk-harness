@@ -3,6 +3,46 @@ import assert from 'node:assert/strict';
 import { nativeRunPresentation } from '../src/host/state/native-outcome.mjs';
 import { validateNativeRecoveryStatus } from '../src/host/state/native-recovery.mjs';
 
+test('permission pause presentations distinguish rejection, withdrawal and unavailable approval without implying execution', () => {
+  const labels = ['审批被拒绝，已暂停', '审批已取消，已暂停', '审批通道不可用，已暂停'];
+  for (const [index, reason] of ['approval_rejected', 'approval_cancelled', 'approval_unavailable'].entries()) {
+    const view = nativeRunPresentation({ runId: 'run', phase: 'paused', state: 'available', reason, canResume: false });
+    assert.equal(view.label, labels[index]); assert.match(view.detail, /尚未执行|没有获得批准/);
+    assert.doesNotMatch(view.detail, /核对后恢复原运行/);
+  }
+});
+
+test('output exhaustion explains the paused original run without inventing resume authority or successful delivery', () => {
+  const status = { runId: 'run', phase: 'paused', reason: 'output_budget_exhausted', outcome: null, state: 'available' };
+  const available = nativeRunPresentation({ ...status, canResume: true });
+  assert.match(available.label, /输出恢复额度.*暂停/);
+  assert.match(available.detail, /已保留.*工具结果和回复片段/);
+  assert.match(available.detail, /核对后恢复原运行/);
+  const unavailable = nativeRunPresentation({ ...status, canResume: false });
+  assert.doesNotMatch(unavailable.detail, /核对后恢复原运行/);
+  assert.match(unavailable.detail, /当前可用操作/);
+  assert.equal(nativeRunPresentation({ ...status, phase: 'executing_tools', state: 'recovering' }).label, '执行工具');
+  assert.equal(nativeRunPresentation({ ...status, reason: 'untrusted arbitrary error' }).label, '已暂停');
+});
+
+test('failure presentation distinguishes response allowance, whole-task budgets, provider retries and context failures', () => {
+  for (const [reason, label] of [
+    ['continuation_budget_exhausted', '输出续写额度已耗尽'],
+    ['model_budget_exhausted', '模型调用预算已耗尽'],
+    ['execution_budget_exhausted', '执行时间预算已耗尽'],
+    ['provider_retryable_error_retry_exhausted', '模型请求重试已耗尽'],
+    ['context_compaction_limit', '上下文压缩次数已耗尽'],
+    ['context_mandatory_state_over_budget', '必需上下文超过预算'],
+  ]) {
+    const status = { runId: 'run', phase: 'failed', state: 'closed', canResume: false, reason };
+    assert.equal(nativeRunPresentation(status).label, label);
+    assert.ok(nativeRunPresentation(status).detail);
+    assert.equal(nativeRunPresentation({ ...status, error: { message: '已脱敏的具体原因' } }).detail, '已脱敏的具体原因');
+  }
+  const unknown = nativeRunPresentation({ runId: 'run', phase: 'failed', reason: 'secret_raw_exception' });
+  assert.equal(unknown.label, '执行失败'); assert.doesNotMatch(unknown.detail, /secret_raw_exception/);
+});
+
 test('the status client retains a valid retry display fact and rejects malformed or contradictory waiting records', () => {
   const identity = { agentId: 'agent', sessionId: 'session', runId: 'run' };
   const status = { ...identity, contract: 'agentkit.studio-native-recovery/v1', state: 'recovering',

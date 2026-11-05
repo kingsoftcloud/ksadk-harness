@@ -42,7 +42,8 @@ export function mergeNativeChildHistory(request, inventories) {
     for (const parent of sourceParents) parents.add(parent);
   }
   const selected = tasks.map(task => task.parentRunId === runId ? task
-    : { ...task, canPromote: false, canCancel: false, canSendInput: false });
+    : { ...task, canPromote: false, canCancel: false, canSendInput: false,
+      ...(task.canResume === undefined ? {} : { canResume: false }) });
   return pageInventory(request, { contract: NATIVE_CHILD_HISTORY_CONTRACT, sessionId: request.sessionId, runId,
     inventoryDigest: hash({ contract: 'agentkit.native-child-inventory-merge/v1', sessionId: request.sessionId,
       sources: present.map(value => [value.runId, value.inventoryDigest]) }), tasks: selected });
@@ -118,7 +119,7 @@ export function createNativeChildHistory({ scope, store, liveTasks = () => [], l
   const taskRow = ({ parent, child, control }) => {
     const snapshot = child.snapshot, binding = child.configuration.childOwnerBinding;
     const accounted = Boolean(accountedChildDelivery(parent, child));
-    const command = parent.commands.filter(row => ['message_child', 'cancel_child', 'promote_child'].includes(row.command.kind)
+    const command = parent.commands.filter(row => ['message_child', 'cancel_child', 'promote_child', 'resume_child'].includes(row.command.kind)
       && row.command.payload.childRunId === snapshot.runId).at(-1);
     const applied = command && parent.events.find(event => event.kind === 'command.applied' && event.payload.commandId === command.command.commandId);
     const lastControl = command ? { commandId: command.command.commandId, action: command.command.kind,
@@ -135,6 +136,8 @@ export function createNativeChildHistory({ scope, store, liveTasks = () => [], l
       delivery: control?.delivery ?? (binding.deliveryMode === 'foreground'
         && !(parent.snapshot.promotedChildRunIds ?? []).includes(snapshot.runId) ? 'foreground' : 'background'),
       canPromote: control?.canPromote === true, canCancel: control?.canCancel === true, canSendInput: control?.canSendInput === true,
+      ...(child.configuration.outputRestartPolicy === 'per-response/v2' || child.configuration.providerRecoveryPolicy === 'provider-recovery/v2'
+        || control?.canResume !== undefined ? { canResume: control?.canResume === true } : {}),
       goalRevision: snapshot.goalRevision,
       lastControl,
       goalPreview: [...snapshot.goal].slice(0, 256).join(''), goalComplete: [...snapshot.goal].length <= 256,

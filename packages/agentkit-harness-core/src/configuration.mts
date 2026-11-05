@@ -37,6 +37,7 @@ export interface ConfigurationInput {
   sourceReadPolicy?: RunConfiguration['sourceReadPolicy'];
   outputRecoveryPolicy?: RunConfiguration['outputRecoveryPolicy'];
   outputRestartPolicy?: RunConfiguration['outputRestartPolicy'];
+  approvalOutcomePolicy?: RunConfiguration['approvalOutcomePolicy'];
   providerRecoveryPolicy?: RunConfiguration['providerRecoveryPolicy'];
   toolErrorRecoveryPolicy?: RunConfiguration['toolErrorRecoveryPolicy'];
   toolDiscoveryPolicy?: RunConfiguration['toolDiscoveryPolicy'];
@@ -98,6 +99,7 @@ export function configure(input: ConfigurationInput): RunConfiguration {
     ...(input.sourceReadPolicy === undefined ? {} : { sourceReadPolicy: input.sourceReadPolicy }),
     ...(input.outputRecoveryPolicy === undefined ? {} : { outputRecoveryPolicy: input.outputRecoveryPolicy }),
     ...(input.outputRestartPolicy === undefined ? {} : { outputRestartPolicy: input.outputRestartPolicy }),
+    ...(input.approvalOutcomePolicy === undefined ? {} : { approvalOutcomePolicy: input.approvalOutcomePolicy }),
     ...(input.providerRecoveryPolicy === undefined ? {} : { providerRecoveryPolicy: input.providerRecoveryPolicy }),
     ...(input.toolErrorRecoveryPolicy === undefined ? {} : { toolErrorRecoveryPolicy: input.toolErrorRecoveryPolicy }),
     ...(input.toolDiscoveryPolicy === undefined ? {} : { toolDiscoveryPolicy: input.toolDiscoveryPolicy }),
@@ -156,8 +158,9 @@ export function configure(input: ConfigurationInput): RunConfiguration {
   invariant(config.guidancePolicy == null || config.guidancePolicy === 'boundary-guide/v1', 'invalid_guidance_policy');
   invariant(config.inputPolicy === undefined || config.inputPolicy === 'before-first-model/v1', 'invalid_input_policy');
   invariant(config.outputRecoveryPolicy == null || ['task-or-delivery/v1', 'response-boundary/v2'].includes(config.outputRecoveryPolicy), 'invalid_output_recovery_policy');
-  invariant(config.outputRestartPolicy === undefined || config.outputRestartPolicy === 'per-response/v1'
+  invariant(config.outputRestartPolicy === undefined || ['per-response/v1', 'per-response/v2'].includes(config.outputRestartPolicy)
     && config.outputRecoveryPolicy === 'response-boundary/v2', 'invalid_output_restart_policy');
+  invariant(config.approvalOutcomePolicy === undefined || config.approvalOutcomePolicy === 'owner-outcome/v1', 'invalid_approval_outcome_policy');
   invariant(config.providerRecoveryPolicy == null || config.providerRecoveryPolicy === 'provider-recovery/v2', 'invalid_provider_recovery_policy');
   invariant(config.toolExecutionPolicy === undefined || config.toolExecutionPolicy === 'owner-execution/v1', 'invalid_tool_execution_policy');
   invariant(config.toolErrorRecoveryPolicy == null || ['diagnose-before-repeat/v1', 'diagnose-before-repeat/v2'].includes(config.toolErrorRecoveryPolicy), 'invalid_tool_error_recovery_policy');

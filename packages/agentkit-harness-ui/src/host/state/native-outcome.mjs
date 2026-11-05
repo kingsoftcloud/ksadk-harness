@@ -2,6 +2,26 @@ const phases = { created: '已准备', preparing_context: '整理上下文', req
   compacting: '压缩上下文', verifying: '验证结果', executing_tools: '执行工具', awaiting_interaction: '等待审批或输入', paused: '已暂停',
   awaiting_reconciliation: '等待核对执行结果', reconciling_tool: '正在核对执行结果', interrupted: '执行中断，需要核对', finalizing: '收尾中' };
 
+// Stable ledger reasons, never raw provider/tool exception text. These are
+// explanations only; canResume still comes from the current Host authority.
+const pauseReasons = {
+  approval_rejected: ['审批被拒绝，已暂停', '这次操作没有获得批准，尚未执行。已停止继续申请和生成，等待补充指导或明确恢复。'],
+  approval_cancelled: ['审批已取消，已暂停', '这次审批被取消，操作尚未执行。原任务已保留，不会自动重新申请。'],
+  approval_unavailable: ['审批通道不可用，已暂停', '尚未取得审批结果，操作没有获得批准。请先恢复审批通道再核对原任务。'],
+  output_budget_exhausted: ['输出恢复额度已耗尽，已暂停', '同一响应多次达到输出上限，已保留已提交的工具结果和回复片段。'],
+  provider_unavailable: ['模型服务暂不可用，已暂停', '模型请求的本轮重试已耗尽，原运行和已提交结果已保留。'],
+  context_summary_unavailable: ['上下文整理暂不可用，已暂停', '上下文摘要暂未生成，原运行已保留，没有丢弃必需上下文。'],
+  context_source_unavailable: ['上下文读取暂不可用，已暂停', '必需的上下文读取尚未成功，原运行和已提交结果已保留。'],
+};
+const failureReasons = {
+  continuation_budget_exhausted: ['输出续写额度已耗尽', '本轮输出续写与重启额度已耗尽，任务没有完成。请核对模型输出上限和运行记录。'],
+  model_budget_exhausted: ['模型调用预算已耗尽', '本轮已达到模型调用总预算，不能通过恢复补回已经消耗的预算。'],
+  execution_budget_exhausted: ['执行时间预算已耗尽', '本轮已达到执行时间预算，任务没有完成。'],
+  provider_retryable_error_retry_exhausted: ['模型请求重试已耗尽', '模型服务持续未能完成请求，任务没有完成。'],
+  context_compaction_limit: ['上下文压缩次数已耗尽', '本轮已达到上下文压缩次数上限，任务尚未完成。'],
+  context_mandatory_state_over_budget: ['必需上下文超过预算', '任务必需的上下文超过可用预算，无法安全省略后继续。'],
+};
+
 /** The committed phase survives a crash; only the owner control state says work is still being driven. */
 export function nativeRunIsInactive(status, transportRunning = true) {
   return status?.state ? status.state !== 'recovering' : !transportRunning;
@@ -15,6 +35,16 @@ export function nativeRunPresentation(status) {
     && status.backgroundInterruptionReview.confirmedStopped === true && status.state === 'closed')
     return { label: '已结束等待，原结果未知', detail: '已核对原操作停止并关闭本轮；未知结果与原回执保持不变，没有重跑原命令。' };
   if (status.phase === 'canceled') return { label: '已取消', detail: '本轮执行已停止；已经发生的文件或外部修改不会因此自动撤销。' };
+  if (status.phase === 'paused' && Object.hasOwn(pauseReasons, status.reason)) {
+    const [label, detail] = pauseReasons[status.reason];
+    return { label, detail: detail + (status.canResume === true
+      ? '请在运行与子任务中核对后恢复原运行；不会重新执行已提交的操作。'
+      : '请在运行与子任务中核对原因及当前可用操作。') };
+  }
+  if (status.phase === 'failed' && Object.hasOwn(failureReasons, status.reason)) {
+    const [label, detail] = failureReasons[status.reason];
+    return { label, detail: status.error?.message || detail };
+  }
   if (status.outcome === 'blocked') return { label: '任务受阻', detail: status.error?.message || '本轮未能完成任务。请查看回复中的缺项，检查 Agent 的「绑定能力」及审批要求。' };
   if (status.phase === 'failed') return { label: '执行失败', detail: status.error?.message || '本轮执行未成功，请查看错误并核对结果后重试。' };
   if (status.phase === 'interrupted' && status.reason === 'effect_outcome_unknown')

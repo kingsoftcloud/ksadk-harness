@@ -5,6 +5,7 @@ import { backgroundCommandObservation, backgroundCommandRef } from './background
 import { initialSnapshot, configure } from './configuration.mjs';
 import { projectSessionHistory } from './history.mjs';
 import { canonical, copy, invariant, NativeError, isNativeError, scopeKey } from './values.mjs';
+import { responseScopedOutputRestarts } from './response-continuation.mjs';
 
 export const BACKGROUND_NOTIFICATION_ADMISSION = 'agentkit.background-notification-admission/v1' as const;
 type Digest = (value: unknown) => string;
@@ -161,12 +162,12 @@ export async function admitBackgroundNotification({ store, scope, sourceRunId, t
   invariant((limits.maxModelCalls === null || limits.maxModelCalls > 0) && (limits.maxWallMs === null || limits.maxWallMs > 0),
     'background_notification_budget_exhausted');
   limits.maxRepairs = Math.max(0, limits.maxRepairs - used.repairs);
-  if (source.configuration.outputRestartPolicy !== 'per-response/v1')
+  if (!responseScopedOutputRestarts(source.configuration))
     limits.maxOutputRestarts = Math.max(0, limits.maxOutputRestarts - used.outputRestarts);
   limits.maxRecoveryRetries = Math.max(0, limits.maxRecoveryRetries - used.recovery);
   const contract = copy(head.taskContract ?? parent.configuration.contract);
   const configuration = configure({ ...copy(source.configuration), contract, limits, inputMessages: null,
-    profile: { ...source.configuration.profile, maxContinuations: source.configuration.outputRestartPolicy === 'per-response/v1'
+    profile: { ...source.configuration.profile, maxContinuations: responseScopedOutputRestarts(source.configuration)
       ? source.configuration.profile.maxContinuations : Math.max(0, source.configuration.profile.maxContinuations - used.continuations) } });
   const snapshot = initialSnapshot({ scope: fixedScope, runId, sessionId: source.snapshot.sessionId,
     turnId: runId, buildId: source.snapshot.buildId, parentRunId: head.runId, taskChainId: source.snapshot.taskChainId }, configuration, digest(configuration));

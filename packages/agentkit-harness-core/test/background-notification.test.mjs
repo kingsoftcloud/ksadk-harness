@@ -14,10 +14,12 @@ const launcher = tool({ name: 'run_command', readOnly: false, concurrentSafe: fa
   backgroundCommandPolicy: 'owned-command-launch/v1' });
 const finish = () => ({ kind: 'final_candidate', text: 'Done', toolCalls: [], usage: emptyUsage() });
 
-async function setup(t, { backend = 'sqlite', tasks = 2, limits = {}, profile = {}, unknownAfterLaunch = false } = {}) {
+async function setup(t, { backend = 'sqlite', tasks = 2, limits = {}, profile = {}, unknownAfterLaunch = false,
+  outputRestartPolicy, finishTruncated = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'native-notification-')), filename = join(root, 'runs.sqlite');
   let store = backend === 'sqlite' ? new SqliteRunStore(filename) : new MemoryRunStore();
-  const data = fixture({ tools: [{ ...launcher, timeoutMs: Math.min(launcher.timeoutMs, (limits.effectTimeoutMs ?? 120000) - 1) },
+  const data = fixture({ ...(outputRestartPolicy ? { outputRecoveryPolicy: 'response-boundary/v2', outputRestartPolicy } : {}),
+    tools: [{ ...launcher, timeoutMs: Math.min(launcher.timeoutMs, (limits.effectTimeoutMs ?? 120000) - 1) },
     ...(unknownAfterLaunch ? [tool({ name: 'write', readOnly: false, concurrentSafe: false })] : [])], backgroundNotificationPolicy: 'completed-before-model/v1',
     limits: { finalizationReserveModelCalls: 0, maxModelCalls: 7, maxToolCalls: 3, ...limits },
     profile: { ...fixture().config.profile, ...profile } });
@@ -25,7 +27,9 @@ async function setup(t, { backend = 'sqlite', tasks = 2, limits = {}, profile = 
   const kernel = new NativeKernel({ store, digest, owner: 'source', ports: {
     model: { generate: async () => ++models <= tasks
       ? { ...finish(), kind: 'tool_calls', toolCalls: [{ callId: `launch-${models}`, name: 'run_command', arguments: {} }] }
-      : unknownAfterLaunch && models === tasks + 1 ? { ...finish(), kind: 'tool_calls', toolCalls: [{ callId: 'unknown-write', name: 'write', arguments: {} }] } : finish() },
+      : unknownAfterLaunch && models === tasks + 1 ? { ...finish(), kind: 'tool_calls', toolCalls: [{ callId: 'unknown-write', name: 'write', arguments: {} }] }
+        : finishTruncated && models === tasks + 1 ? { ...finish(), kind: 'output_limit', text: 'Original ',
+          textCommitVersion: 'provider-finished-text/v1', outputBoundary: 'assistant-text/v1' } : finish() },
     tools: { execute: async request => request.call.name === 'write' ? { status: 'uncertain', content: { code: 'external_write_unknown' } }
       : ({ status: 'ok', content: { backend: 'sandbox/local_process' },
         backgroundCommandRef: { taskId: (++launches).toString(16).padStart(64, '0'), sourceRunId: request.runId, operationKey: request.operationKey } }) },
@@ -42,6 +46,20 @@ async function setup(t, { backend = 'sqlite', tasks = 2, limits = {}, profile = 
   return { source, get store() { return store; }, admission, launches: () => launches, filename,
     reopen() { if (backend === 'sqlite') { store.close(); store = new SqliteRunStore(filename); } return store; } };
 }
+
+for (const backend of ['memory', 'sqlite']) for (const policy of ['per-response/v1', 'per-response/v2'])
+test(`${backend}: ${policy} notification keeps a new response allowance without resetting the total model budget`, async t => {
+  const h = await setup(t, { backend, tasks: 1, outputRestartPolicy: policy, finishTruncated: true,
+    profile: { maxContinuations: 1 }, limits: { maxOutputRestarts: 1 } });
+  assert.equal(h.source.continuations, 1); assert.equal(h.source.usage.modelCalls, 3);
+  const before = h.store.load(scope, 'run'), next = await h.admission();
+  assert.equal(next.configuration.outputRestartPolicy, policy);
+  assert.equal(next.configuration.profile.maxContinuations, 1);
+  assert.equal(next.configuration.limits.maxOutputRestarts, 1);
+  assert.equal(next.configuration.limits.maxModelCalls, 4);
+  assert.equal(next.snapshot.continuations, 0);
+  assert.deepEqual(h.store.load(scope, 'run'), before);
+});
 
 for (const backend of ['memory', 'sqlite']) {
   test(`${backend}: notification admission persists exact origin, notice and dedup before a fresh model`, async t => {

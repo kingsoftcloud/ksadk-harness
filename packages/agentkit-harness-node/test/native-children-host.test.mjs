@@ -73,13 +73,16 @@ for (const recovery of [false, true]) for (const isolated of [false, true]) test
   assert.doesNotMatch(canonical(child.snapshot.messages), /CHILD_ROOT_RULE|CHILD_NESTED_RULE/);
 });
 
-for (const toolExecutionPolicy of [undefined,'owner-execution/v1']) test(`two standalone child admissions freeze parent execution policy (${toolExecutionPolicy??'legacy'}) and child-owned model facts`, { timeout: 10000 }, async t => {
+for (const toolExecutionPolicy of [undefined,'owner-execution/v1']) for (const outputRestartPolicy of [undefined, 'per-response/v1', 'per-response/v2']) test(`two standalone child admissions freeze parent execution policy (${toolExecutionPolicy??'legacy'}, ${outputRestartPolicy??'legacy output'}) and child-owned model facts`, { timeout: 10000 }, async t => {
   const policy = 'parent-shared/v1', store = new MemoryRunStore();
+  const approvalOutcomePolicy = outputRestartPolicy === 'per-response/v2' ? 'owner-outcome/v1' : undefined;
   const roles = nativeChildRoles({ subAgents: [{ name: 'reader', instructions: 'Inspect assigned evidence.',
     tools: ['read_workspace_file'] }] }, { childAllocationPolicy: policy });
   let release; const gate = new Promise(resolve => { release = resolve; });
   const children = await createNativeChildren({ roles, scope, sessionId: 'session', store,
-    childAllocationPolicy: policy, toolExecutionPolicy, tools: workspaceToolDefinitions(), hasSkills: false, hasMcp: false,
+    childAllocationPolicy: policy, toolExecutionPolicy, outputRestartPolicy, approvalOutcomePolicy,
+    outputRecoveryPolicy: outputRestartPolicy ? 'response-boundary/v2' : undefined,
+    tools: workspaceToolDefinitions(), hasSkills: false, hasMcp: false,
     modelSurface: { contract: 'bound-model-surface/v1', environment: { workspaceRoot: '/bound/work', cwd: '/bound/work',
       platform: 'linux', date: '2026-10-28', commandBackend: 'none', supportsImages: true } },
     resolveModel: async () => ({ profile: { ...fixture().config.profile, supportsImages: false, requestTimeoutMs: 60000 }, supportsImages: false,
@@ -115,6 +118,9 @@ for (const toolExecutionPolicy of [undefined,'owner-execution/v1']) test(`two st
     assert.equal(reservation.settledUsageDigest, null);
     const child = store.load(reservation.childScope, reservation.childRunId);
     assert.equal(child.configuration.toolExecutionPolicy,toolExecutionPolicy);
+    assert.equal(child.configuration.outputRestartPolicy, outputRestartPolicy);
+    assert.equal(child.configuration.approvalOutcomePolicy, approvalOutcomePolicy);
+    assert.equal(child.configuration.outputRecoveryPolicy, outputRestartPolicy ? 'response-boundary/v2' : undefined);
     assert.equal(child.configuration.childOwnerBinding.childAllocationPolicy, policy);
     assert.equal(child.configuration.modelSurface.environment.cwd, '/bound/work');
     assert.equal(child.configuration.modelSurface.environment.supportsImages, false);

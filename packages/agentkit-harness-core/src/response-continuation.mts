@@ -1,5 +1,9 @@
 import type { Message, RunConfiguration, RunSnapshot } from './contracts.mjs';
 
+export function responseScopedOutputRestarts(config: Pick<RunConfiguration, 'outputRestartPolicy'>): boolean {
+  return config.outputRestartPolicy === 'per-response/v1' || config.outputRestartPolicy === 'per-response/v2';
+}
+
 /** Journaled Host controls may be staged between response fragments. Actual
  * user input, tool observations and new assistant messages end the chain. */
 function hostControl(message: Message): boolean {

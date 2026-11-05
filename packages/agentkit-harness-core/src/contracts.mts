@@ -308,9 +308,13 @@ export interface RunConfiguration {
   modelRecoveryPolicy: 'manual' | 'pure-inference/v1';
   guidancePolicy?: 'boundary-guide/v1' | null;
   outputRecoveryPolicy?: 'task-or-delivery/v1' | 'response-boundary/v2' | null;
-  /** Restart allowance belongs to one interrupted response chain. Legacy Runs
-   * without this policy retain their original run-wide accounting. */
-  outputRestartPolicy?: 'per-response/v1';
+  /** Restart allowance belongs to one interrupted response chain. v2 pauses
+   * exhausted chains for explicit resume instead of terminating the Run.
+   * Legacy Runs retain their frozen accounting and exhaustion behavior. */
+  outputRestartPolicy?: 'per-response/v1' | 'per-response/v2';
+  /** The interactive owner preserves typed Host outcomes and pauses on a
+   * non-grant. Children retain the outcome without duplicating that pause. */
+  approvalOutcomePolicy?: 'owner-outcome/v1';
   /** v2 counts consecutive provider failures and pauses (resumable) instead of failing when they run out. */
   providerRecoveryPolicy?: 'provider-recovery/v2' | null;
   /** v2 admits a ten-inference diagnostic allowance unless explicitly configured.
@@ -527,7 +531,7 @@ export type EffectKind = 'workspace' | 'model' | 'tool' | 'verify' | 'context' |
 export interface EffectIntent { operationKey: string; kind: EffectKind; payload: ObjectValue; status: 'prepared' | 'running'; claimedAtMs?: number; claimedFence?: number }
 export interface EffectReceipt { operationKey: string; status: 'committed' | 'failed' | 'uncertain' | 'not_dispatched'; result: ObjectValue }
 export type CommandKind = 'cancel' | 'policy_revoked' | 'pause' | 'resume' | 'submit_interaction'
-  | 'reconcile_tool' | 'repair_workspace' | 'steer' | 'guide' | 'promote_child' | 'message_child' | 'cancel_child';
+  | 'reconcile_tool' | 'repair_workspace' | 'steer' | 'guide' | 'promote_child' | 'message_child' | 'cancel_child' | 'resume_child';
 export interface RunCommand { commandId: string; kind: CommandKind; payload: ObjectValue }
 export interface CommandReceipt { commandId: string; status: 'accepted' | 'duplicate' | 'rejected'; reason: string | null }
 export interface Lease { owner: string; fence: number; expiresAt: number }
@@ -736,5 +740,5 @@ export const terminal = (phase: Phase): boolean => ['completed', 'failed', 'canc
 export const emptyUsage = (): Usage => ({ inputTokens: 0, outputTokens: 0, modelCalls: 0, toolCalls: 0, cost: 0 });
 export const commandPriority: Record<CommandKind, number> = {
   cancel: 100, policy_revoked: 95, submit_interaction: 90, cancel_child: 85,
-  pause: 80, resume: 80, reconcile_tool: 75, repair_workspace: 75, promote_child: 70, message_child: 70, steer: 60, guide: 60,
+  pause: 80, resume: 80, reconcile_tool: 75, repair_workspace: 75, promote_child: 70, message_child: 70, resume_child: 70, steer: 60, guide: 60,
 };

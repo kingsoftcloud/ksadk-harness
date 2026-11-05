@@ -412,7 +412,8 @@ export class TransactionalRunStore implements RunStore {
       const command = parent.commands.find(row => !row.consumed && row.command.commandId === batch.consumedCommandId)?.command;
       invariant(command, 'child_control_command_missing');
       validateChildControlDelivery(parent, childRecord, command, delivery);
-      invariant(batch.events.some(event => event.kind === (command.kind === 'message_child' ? 'child.input_queued' : 'child.cancel_requested')
+      invariant(batch.events.some(event => event.kind === (command.kind === 'message_child' ? 'child.input_queued'
+        : command.kind === 'resume_child' ? 'child.resume_requested' : 'child.cancel_requested')
         && event.payload.commandId === command.commandId && event.payload.childRunId === target.runId), 'child_control_event_missing');
       invariant(!previous || canonical(previous.command) === canonical(delivery.command), 'command_replay_conflict');
       return { records: [updated.record, previous ? childRecord : { ...childRecord,

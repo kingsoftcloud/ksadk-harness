@@ -6,6 +6,7 @@ import type { SteeringBindings } from './task-contract.mjs';
 import { admitChildPromotion, unsettledChildren } from './child-runtime.mjs';
 import { guidanceReason } from './guidance.mjs';
 import { bindOperatorInput } from './anthropic-context.mjs';
+import { APPROVAL_OUTCOME_POLICY, normalizeHostApprovalOutcome, approvalOutcomePauseReason } from './approval-outcome.mjs';
 
 export function transition(snapshot: RunSnapshot, changes: Partial<RunSnapshot>, facts: { kind: string; payload: ObjectValue }[] = [],
   options: { intents?: EffectIntent[]; receipts?: EffectReceipt[]; commandId?: string; requireNoPendingCommands?: boolean } = {}): CommitBatch {
@@ -144,18 +145,34 @@ export function reduceCommand(snapshot: RunSnapshot, command: RunCommand, pendin
     case 'resume':
       if (snapshot.phase !== 'paused') reason = 'not_paused';
       else changes = { phase: snapshot.resumePhase ?? 'preparing_context', resumePhase: null,
+        ...(snapshot.reason === 'output_budget_exhausted' && bindings.configuration?.outputRestartPolicy === 'per-response/v2'
+          ? { reason: null, continuations: 0, outputRestarts: 0 } : {}),
+        ...(bindings.configuration?.approvalOutcomePolicy === APPROVAL_OUTCOME_POLICY
+          && ['approval_rejected', 'approval_cancelled', 'approval_unavailable'].includes(snapshot.reason ?? '') ? { reason: null } : {}),
         ...(['provider_unavailable', 'context_summary_unavailable'].includes(snapshot.reason ?? '') ? { reason: null } : {}) };
       break;
     case 'submit_interaction': {
       const pending = snapshot.pendingInteraction;
+      const hasOutcome = Object.hasOwn(command.payload, 'approvalOutcome');
+      const approvalOutcome = normalizeHostApprovalOutcome(command.payload.approvalOutcome);
       if (snapshot.phase !== 'awaiting_interaction' || !pending || command.payload.interactionId !== pending.interactionId
         || command.payload.decision !== 'allow' && command.payload.decision !== 'deny') reason = 'interaction_mismatch';
+      else if (hasOutcome && (bindings.configuration?.approvalOutcomePolicy !== APPROVAL_OUTCOME_POLICY
+        || approvalOutcome !== command.payload.approvalOutcome
+        || (approvalOutcome === 'allowed-once') !== (command.payload.decision === 'allow'))) reason = 'interaction_outcome_mismatch';
       else {
         changes = { phase: snapshot.childApproval ? snapshot.resumePhase ?? 'preparing_context' : 'executing_tools',
           ...(snapshot.childApproval ? { resumePhase: null, childLifecycleCursor: null } : {}), pendingInteraction: null,
           interaction: pending.approvalPolicy === 'durable-preflight/v1' ? null : { interactionId: pending.hostInteractionId, callId: pending.callId, decision: command.payload.decision,
+            ...(hasOutcome ? { approvalOutcome } : {}),
             ...(snapshot.planMode && typeof command.payload.feedback === 'string' ? { feedback: command.payload.feedback } : {}) } };
-        facts.push({ kind: 'approval.resolved', payload: { interactionId: pending.interactionId, callId: pending.callId, decision: command.payload.decision } });
+        // One human answer pauses the interactive owner once. Its children
+        // receive the same denied decision after that owner is explicitly
+        // resumed; no second pause or implicit tool permission is introduced.
+        const pauseReason = hasOutcome && !bindings.configuration?.childOwnerBinding ? approvalOutcomePauseReason(approvalOutcome) : null;
+        if (pauseReason) Object.assign(changes, { resumePhase: changes.phase, phase: 'paused', reason: pauseReason, outcome: null });
+        facts.push({ kind: 'approval.resolved', payload: { interactionId: pending.interactionId, callId: pending.callId, decision: command.payload.decision,
+          ...(hasOutcome ? { approvalOutcome } : {}) } });
       }
       break;
     }

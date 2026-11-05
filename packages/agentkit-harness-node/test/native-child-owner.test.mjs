@@ -18,11 +18,12 @@ const childDefinition = tool({ name: 'write_proof', readOnly: false, concurrentS
 const controlDefinition = nativeChildToolDefinitions(['worker'])[1];
 const call = { callId: 'start-1', name: startDefinition.name, arguments: { role: 'worker', task: 'Write the child proof' } };
 const response = (text, toolCalls = []) => ({ kind: toolCalls.length ? 'tool_calls' : 'final_candidate', text, toolCalls, usage: emptyUsage() });
-const childConfig = () => configure({ profile: fixture().config.profile, contract: { objective: call.arguments.task }, tools: [childDefinition],
+const childConfig = approvalOutcomePolicy => configure({ profile: fixture().config.profile, contract: { objective: call.arguments.task }, tools: [childDefinition],
+  ...(approvalOutcomePolicy ? { approvalOutcomePolicy } : {}),
   hostBindingDigest: 'child-fixture', limits: { maxModelCalls: 3, maxToolCalls: 2 } });
 
 function setup(t, backend, { approval = false, uncertain = false, hold = false, control = null, foreground = false, delegate = false,
-  promotion = false, input = false, holdModel = false, leaseMs = 30000, onChildModel, onContinuation, checkpoint } = {}) {
+  promotion = false, input = false, holdModel = false, leaseMs = 30000, onChildModel, onContinuation, checkpoint, approvalOutcomePolicy } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'native-child-owner-'));
   const store = backend === 'sqlite' ? new SqliteRunStore(join(dir, 'runs.sqlite')) : new MemoryRunStore();
   let writes = 0, starts = 0, release;
@@ -44,12 +45,13 @@ function setup(t, backend, { approval = false, uncertain = false, hold = false, 
     return { status: 'ok', content: 'Written' };
   } } };
   const owner = createNativeChildOwner({ scope, childScopes: [childScope], store,
-    resolveChild: async () => { starts++; return { scope: childScope, configuration: childConfig(), ports: childPorts }; },
+    resolveChild: async () => { starts++; return { scope: childScope, configuration: childConfig(approvalOutcomePolicy), ports: childPorts }; },
     restoreChild: async () => childPorts });
   t.after(async () => { release(); await owner.releaseRun({ scope, runId: 'run' }); store.close?.(); rmSync(dir, { recursive: true, force: true }); });
   const definition = delegate ? nativeChildToolDefinitions(['worker'])[2] : startDefinition;
   const startCall = { ...call, name: definition.name, arguments: { ...call.arguments, ...(foreground ? { background: false } : {}) } };
   const { config, snapshot } = fixture({ tools: [definition, ...(control ? [controlDefinition] : [])],
+    ...(approvalOutcomePolicy ? { approvalOutcomePolicy } : {}),
     limits: { maxModelCalls: 20, maxToolCalls: 20, effectTimeoutMs: 130000, leaseMs },
     childLifecyclePolicy: 'owned-background/v2', childApprovalPolicy: 'owned-child-approval/v1',
     ...(promotion ? { childPromotionPolicy: 'owned-child-promotion/v1' } : {}),
@@ -88,6 +90,31 @@ async function childStarted(store) {
   }
   assert.fail('child never entered its real tool effect');
 }
+
+for (const backend of ['memory', 'sqlite']) for (const approvalOutcome of ['allowed-once', 'rejected', 'cancelled', 'unavailable'])
+test(`${backend}: typed child permission ${approvalOutcome} pauses the interactive parent once and preserves its exact decision`, async t => {
+  const f = setup(t, backend, { foreground: true, approval: true, approvalOutcomePolicy: 'owner-outcome/v1' });
+  const pending = await f.kernel.runUntilIdle(scope, 'run');
+  assert.equal(pending.phase, 'awaiting_interaction'); const childId = pending.childApproval.childRunId;
+  f.kernel.submit(scope, 'run', { commandId: 'typed-child-permission', kind: 'submit_interaction', payload: {
+    interactionId: pending.pendingInteraction.interactionId, decision: approvalOutcome === 'allowed-once' ? 'allow' : 'deny', approvalOutcome,
+  } });
+  f.release();
+  let result = await f.kernel.runUntilIdle(scope, 'run');
+  if (approvalOutcome !== 'allowed-once') {
+    assert.equal(result.phase, 'paused'); assert.equal(result.reason, `approval_${approvalOutcome === 'rejected' ? 'rejected' : approvalOutcome}`);
+    assert.equal(f.writes(), 0); assert.equal(f.rounds(), 1);
+    assert.equal(f.store.load(childScope, childId).snapshot.phase, 'awaiting_interaction');
+    f.kernel.submit(scope, 'run', { commandId: 'explicit-parent-resume', kind: 'resume', payload: {} });
+    result = await f.kernel.runUntilIdle(scope, 'run');
+  }
+  assert.equal(result.phase, 'completed'); assert.equal(f.writes(), approvalOutcome === 'allowed-once' ? 1 : 0);
+  assert.equal(f.starts(), 1);
+  const child = f.store.load(childScope, childId);
+  assert.equal(child.snapshot.phase, 'completed', 'one human answer cannot introduce a second pause at the child');
+  assert.equal(child.events.find(event => event.kind === 'approval.resolved').payload.approvalOutcome, approvalOutcome);
+  assert.equal(child.commands.filter(row => row.command.kind === 'submit_interaction').length, 1);
+});
 
 for (const position of ['inside', 'after']) test(`SQLite process exit ${position} child control commit preserves one atomic delivery`, async t => {
   const requests = [];

@@ -17,7 +17,7 @@ import { admittedToolBudget, outstandingChildCalls, reduceChildBudget } from './
 import { prepareChildLifecycle, unsettledChildren } from './child-runtime.mjs';
 import { toolResourceUsage, toolUsageIncomplete } from './tool-resource-usage.mjs';
 import { completeContinuation, outputRecoveryMode, restartContinuation } from './output-recovery.mjs';
-import { responseContinuationPending } from './response-continuation.mjs';
+import { responseContinuationPending, responseScopedOutputRestarts } from './response-continuation.mjs';
 import { advanceDiagnosticRecovery, advanceObservedProgress, advanceToolErrorStreak, guardedToolErrorAction,
   refuseUndiagnosedToolAction, reserveDiagnosticTrial, toolErrorRecoveryBoundary, toolErrorRecoveryEnabled,
   toolErrorStreakExhausted } from './tool-error-recovery.mjs';
@@ -391,7 +391,7 @@ export function reduceModel(snapshot: RunSnapshot, input: ModelResult, config: R
       return { ...base, phase: 'executing_tools', pendingTools: result.toolCalls,
         messages: [...snapshot.messages, { ...message, toolCalls: result.toolCalls }],
         continuations: 0, modelErrors: 0,
-        ...(config.outputRestartPolicy === 'per-response/v1' ? { outputRestarts: 0 } : {}) };
+        ...(responseScopedOutputRestarts(config) ? { outputRestarts: 0 } : {}) };
     case 'final_candidate': {
       if (config.contract.finalSubmissionSchema) {
         const errors = snapshot.modelErrors + 1;
@@ -408,25 +408,13 @@ export function reduceModel(snapshot: RunSnapshot, input: ModelResult, config: R
         messages: [...snapshot.messages, { ...message, content: text, kind: 'final_candidate' }] };
     }
     case 'output_limit': {
-      if (snapshot.continuations >= config.profile.maxContinuations) {
-        if (responseContinuationPending(snapshot, config)) return { ...base, phase: 'finalizing', outcome: 'unverified', reason: 'continuation_budget_exhausted' };
-        if (snapshot.outputRestarts < config.limits.maxOutputRestarts) {
-          try { return { ...base, ...restartContinuation(snapshot, config, result.text, digest), phase: 'preparing_context',
-            continuations: 0, outputRestarts: snapshot.outputRestarts + 1 }; }
-          catch (error) { if (!(error instanceof Error) || !('code' in error)) throw error;
-            return { ...base, phase: 'finalizing', outcome: 'blocked', reason: String(error.code) }; }
-        }
-        return { ...base, phase: 'finalizing', outcome: 'unverified', reason: 'continuation_budget_exhausted' };
-      }
-      if (!result.text && responseContinuationPending(snapshot, config)) return { ...base, phase: 'preparing_context',
-        continuations: snapshot.continuations + 1,
-        messages: [...snapshot.messages, { role: 'user', kind: 'response_continuation_feedback',
-          content: 'No visible continuation was returned. The interrupted text response is still pending. Return only its missing text suffix.' }] };
-      const mode = result.text ? outputRecoveryMode({ ...snapshot, ...base }, config,
-        advertisedTools({ ...snapshot, ...base }, config, policies).length > 0, result) : 'empty_output';
-      const responseId = snapshot.pendingIntent ?? `${snapshot.runId}:model:${snapshot.usage.modelCalls}`;
-      return { ...base, phase: 'preparing_context', continuations: snapshot.continuations + 1,
-        messages: [...snapshot.messages, ...(result.text ? [{ ...message, kind: 'continuation_fragment', continuationResponseId: responseId }] : []),
+      const resumable = config.outputRestartPolicy === 'per-response/v2';
+      const continuation = () => {
+        const mode = result.text ? outputRecoveryMode({ ...snapshot, ...base }, config,
+          advertisedTools({ ...snapshot, ...base }, config, policies).length > 0, result) : 'empty_output';
+        const responseId = snapshot.pendingIntent ?? `${snapshot.runId}:model:${snapshot.usage.modelCalls}`;
+        const messages: Message[] = [...snapshot.messages,
+          ...(result.text ? [{ ...message, kind: 'continuation_fragment', continuationResponseId: responseId }] : []),
           { role: 'user', kind: 'continuation_observation', continuationMode: mode, continuationResponseId: responseId,
             ...(config.outputRecoveryPolicy === 'response-boundary/v2' && config.contract.finalOutputFormat === 'text' && mode === 'suffix'
               ? { continuationPolicy: 'response-boundary/v2' as const } : {}),
@@ -435,7 +423,33 @@ export function reduceModel(snapshot: RunSnapshot, input: ModelResult, config: R
               : result.text ? 'The last response hit its output limit. Return only the exact missing suffix of that response. '
                 + (config.outputRecoveryPolicy === 'response-boundary/v2' ? 'You may replay the final incomplete line verbatim before continuing; the Host joins this exact overlap. Do not replay any complete line. ' : '')
                 + 'Incomplete tool calls were not executed.'
-                : 'The last response hit its output limit without visible content or a committed tool call. Continue the task from the last committed state; take the next useful action or answer only if the task is complete.' }] };
+                : 'The last response hit its output limit without visible content or a committed tool call. Continue the task from the last committed state; take the next useful action or answer only if the task is complete.' }];
+        return { mode, messages };
+      };
+      const exhausted = (): Partial<RunSnapshot> => resumable
+        ? { phase: 'paused', resumePhase: 'preparing_context', outcome: null, reason: 'output_budget_exhausted',
+          messages: result.text ? continuation().messages : snapshot.messages }
+        : { phase: 'finalizing', outcome: 'unverified', reason: 'continuation_budget_exhausted' };
+      if (snapshot.continuations >= config.profile.maxContinuations) {
+        // Committed answer text stays a suffix contract even when the first
+        // response has no remaining continuation allowance. It is not a tool
+        // fragment that may be discarded for an output restart.
+        if (responseContinuationPending(snapshot, config) || resumable && continuation().mode === 'suffix')
+          return { ...base, ...exhausted() };
+        if (snapshot.outputRestarts < config.limits.maxOutputRestarts) {
+          try { return { ...base, ...restartContinuation(snapshot, config, result.text, digest), phase: 'preparing_context',
+            continuations: 0, outputRestarts: snapshot.outputRestarts + 1 }; }
+          catch (error) { if (!(error instanceof Error) || !('code' in error)) throw error;
+            return { ...base, phase: 'finalizing', outcome: 'blocked', reason: String(error.code) }; }
+        }
+        return { ...base, ...exhausted() };
+      }
+      if (!result.text && responseContinuationPending(snapshot, config)) return { ...base, phase: 'preparing_context',
+        continuations: snapshot.continuations + 1,
+        messages: [...snapshot.messages, { role: 'user', kind: 'response_continuation_feedback',
+          content: 'No visible continuation was returned. The interrupted text response is still pending. Return only its missing text suffix.' }] };
+      return { ...base, phase: 'preparing_context', continuations: snapshot.continuations + 1,
+        messages: continuation().messages };
     }
     case 'context_overflow':
       return { ...base, phase: 'compacting', context: { ...snapshot.context, preparedCursor: null } };

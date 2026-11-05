@@ -155,7 +155,7 @@ export class NativeKernel {
     if (result.status !== 'rejected' && ['cancel', 'policy_revoked'].includes(command.kind)) {
       this.active.get(runKey(scope, runId))?.abort(new NativeError('command_interrupt'));
     }
-    if (result.status === 'accepted' && ['pause', 'promote_child', 'message_child', 'cancel_child'].includes(command.kind)) {
+    if (result.status === 'accepted' && ['pause', 'promote_child', 'message_child', 'cancel_child', 'resume_child'].includes(command.kind)) {
       const observer = this.childObservers.get(runKey(scope, runId));
       if (observer && (command.kind !== 'pause' || observer.canPause)) observer.controller.abort(
         new NativeError(command.kind === 'pause' ? 'child_observation_paused' : 'child_observation_promoted'));
@@ -180,6 +180,9 @@ export class NativeKernel {
   cancelChild(scope: RunScope, runId: string, childRunId: string, commandId: string) {
     return this.submitChildControl(scope, runId, { commandId, kind: 'cancel_child', payload: { childRunId } });
   }
+  resumeChild(scope: RunScope, runId: string, childRunId: string, commandId: string) {
+    return this.submitChildControl(scope, runId, { commandId, kind: 'resume_child', payload: { childRunId } });
+  }
   private submitChildControl(scope: RunScope, runId: string, command: RunCommand) {
     const record = this.store.load(scope, runId), send = command.kind === 'message_child';
     // Stable retries retain the original target, even after it becomes terminal.
@@ -190,7 +193,7 @@ export class NativeKernel {
     invariant(target, 'child_control_not_owned');
     childControlDelivery(record.snapshot, command, target);
     const task = this.childTaskStates(record.snapshot).find(task => task.childRunId === target.runId);
-    invariant(task && (send ? task.canSendInput : task.canCancel), 'child_control_unavailable');
+    invariant(task && (send ? task.canSendInput : command.kind === 'resume_child' ? task.canResume === true : task.canCancel), 'child_control_unavailable');
     return this.submit(scope, runId, command);
   }
   private childTaskStates(snapshot: RunSnapshot): ChildTaskControlState[] {
@@ -199,6 +202,7 @@ export class NativeKernel {
     return copy(this.ports.children?.tasks?.({ scope: copy(snapshot.scope), runId: snapshot.runId, sessionId: snapshot.sessionId,
       turnId: snapshot.turnId, buildId: snapshot.buildId, parentRunId: snapshot.parentRunId, taskChainId: snapshot.taskChainId }) ?? [])
       .map(task => ({ ...task, canCancel: task.canCancel && controls,
+        ...(task.canResume === undefined ? {} : { canResume: task.canResume && controls }),
         canSendInput: task.canSendInput && controls && config.childInputPolicy === 'owned-child-input/v1' }));
   }
   private async consumeChildControl(snapshot: RunSnapshot, config: RunConfiguration, command: RunCommand, lease: Lease): Promise<void> {
@@ -210,9 +214,10 @@ export class NativeKernel {
       const target = port.controlTarget(snapshot, id);
       invariant(target, 'child_control_not_owned');
       const delivery = childControlDelivery(snapshot, command, target), changes: Partial<RunSnapshot> = { childLifecycleCursor: null };
-      const facts: { kind: string; payload: ObjectValue }[] = [{ kind: send ? 'child.input_queued' : 'child.cancel_requested',
+      const facts: { kind: string; payload: ObjectValue }[] = [{ kind: send ? 'child.input_queued'
+        : command.kind === 'resume_child' ? 'child.resume_requested' : 'child.cancel_requested',
         payload: { childRunId: id, commandId: command.commandId } }];
-      if (!send && snapshot.childApproval?.childRunId === id) {
+      if (command.kind === 'cancel_child' && snapshot.childApproval?.childRunId === id) {
         facts.push({ kind: 'approval.resolved', payload: { interactionId: snapshot.pendingInteraction?.interactionId ?? '',
           callId: snapshot.childApproval.toolCall.callId, decision: 'canceled', reason: 'child_cancel_requested' } });
         Object.assign(changes, { childApproval: null, pendingInteraction: null, interaction: null,
@@ -283,6 +288,8 @@ export class NativeKernel {
       } catch (error) { leaseError = error; controller.abort(new NativeError('lease_lost')); }
     }, Math.max(10, Math.floor(initial.configuration.limits.leaseMs / 3)));
     let deliveredRevision = -1;
+    let recoveredChildControls = false;
+    const wokenChildControls = new Set<string>();
     let browserChecked = !(initial.snapshot.browserSessionRefs?.length || initial.snapshot.lastBrowserObservation);
     try {
       while (true) {
@@ -311,8 +318,9 @@ export class NativeKernel {
               : prepareToolReceipt(this.store.load(scope, runId), command));
             continue;
           }
-          if (['message_child', 'cancel_child'].includes(command.kind)) {
+          if (['message_child', 'cancel_child', 'resume_child'].includes(command.kind)) {
             await this.consumeChildControl(snapshot, config, command, lease);
+            wokenChildControls.add(command.commandId);
             continue;
           }
           const intent = record.pendingIntent;
@@ -331,6 +339,28 @@ export class NativeKernel {
             controller = new AbortController(); this.active.set(key, controller);
           }
           continue;
+        }
+        if (!recoveredChildControls) {
+          recoveredChildControls = true;
+          // The pair transaction may have committed immediately before a
+          // process died, leaving a paused child with an existing resume inbox
+          // entry but no wake. Recover notification, never re-enqueue a command
+          // or infer permission from a child's phase. The owner authenticates
+          // the exact inbox entry before it can drive the original child.
+          const children = this.ports.children;
+          if (config.childLifecyclePolicy === 'owned-background/v2' && snapshot.childRunIds.length
+            && snapshot.phase !== 'finalizing' && !snapshot.childTerminalPhase
+            && children?.controlTarget && children.wakeControl) {
+            const saved = this.store.load(scope, runId);
+            const delivered = new Set(saved.events.filter(event => event.kind === 'child.resume_requested')
+              .map(event => event.payload.commandId));
+            for (const row of saved.commands) if (row.consumed && row.command.kind === 'resume_child'
+              && delivered.has(row.command.commandId) && !wokenChildControls.has(row.command.commandId)) {
+              const target = children.controlTarget(snapshot, String(row.command.payload.childRunId));
+              if (target) await children.wakeControl(snapshot, childControlDelivery(snapshot, row.command, target));
+            }
+            if (controller.signal.aborted || this.drivingCommands(this.drivingState(scope, runId)).length) continue;
+          }
         }
         if (!browserChecked) {
           const pending = record.pendingIntent;

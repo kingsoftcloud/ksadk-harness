@@ -611,6 +611,32 @@ export function createNativeChildOwner({ scope, childScopes = [scope], store, re
           ? { ...terminalReceipt(record, reservation), childBudgetReservation: copy(reservation) }
           : startupReceipt(reservation, record.configuration.childOwnerBinding.role) }];
     },
+    // Host disposal is not an operator cancellation. Only detach settled idle
+    // workers: their identity, pending decision and join stay in the ledger for
+    // a replacement Host. A busy worker requires an explicit stop/recovery
+    // path; do not drop its owner or infer that its effect never ran.
+    detachRun(request) {
+      check(same(request.scope, parentScope), 'child_parent_scope_mismatch');
+      const parent = store.load(parentScope, request.runId);
+      check(['paused', 'awaiting_interaction'].includes(parent.snapshot.phase), 'child_detach_parent_not_idle');
+      const owned = [...entries.values()].filter(entry => entry.configuration.childOwnerBinding.parent.runId === request.runId);
+      for (const entry of owned) {
+        const record = store.load(entry.scope, entry.runId);
+        check(!entry.promise && !entry.idle && !record.lease
+          && record.snapshot.pendingIntent === null && !unsafeReceipt(record)
+          && (terminal(record.snapshot.phase) || ['paused', 'awaiting_interaction'].includes(record.snapshot.phase)),
+        'child_detach_worker_not_idle');
+      }
+      for (const entry of owned) entries.delete(entry.runId);
+    },
+    async closeRun(request) {
+      check(same(request.scope, parentScope), 'child_parent_scope_mismatch');
+      const parent = store.load(parentScope, request.runId);
+      // Terminal cleanup owns cancellation of descendants. Host shutdown does
+      // not grant that authority while the durable parent is still resumable.
+      if (terminal(parent.snapshot.phase)) return this.releaseRun(request);
+      return this.detachRun(request);
+    },
     async releaseRun(request) {
       check(same(request.scope, parentScope), 'child_parent_scope_mismatch');
       const jobs = [];

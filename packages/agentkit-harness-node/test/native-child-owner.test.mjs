@@ -79,7 +79,7 @@ function setup(t, backend, { approval = false, uncertain = false, hold = false, 
       if (!approval && !hold && intent?.kind === 'child' && intent.payload.action === 'wait') release();
     } });
   kernel.start(snapshot, config);
-  return { dir, store, owner, kernel, release, writes: () => writes, starts: () => starts, observed: () => observed, rounds: () => rounds };
+  return { dir, store, owner, kernel, childPorts, release, writes: () => writes, starts: () => starts, observed: () => observed, rounds: () => rounds };
 }
 
 async function childStarted(store) {
@@ -90,6 +90,63 @@ async function childStarted(store) {
   }
   assert.fail('child never entered its real tool effect');
 }
+
+for (const backend of ['memory', 'sqlite']) for (const outcome of ['allowed-once', 'rejected'])
+test(`${backend}: detaching an idle Host preserves the child approval and its original human answer ${outcome}`, async t => {
+  const f = setup(t, backend, { foreground: true, approval: true, approvalOutcomePolicy: 'owner-outcome/v1' });
+  const pending = await f.kernel.runUntilIdle(scope, 'run'), childId = pending.childApproval.childRunId;
+  if (outcome === 'rejected') {
+    f.kernel.submit(scope, 'run', { commandId: 'deny-before-shutdown', kind: 'submit_interaction', payload: {
+      interactionId: pending.pendingInteraction.interactionId, decision: 'deny', approvalOutcome: outcome,
+    } });
+    assert.equal((await f.kernel.runUntilIdle(scope, 'run')).phase, 'paused');
+  }
+  const before = f.store.load(childScope, childId), parentBefore = f.store.load(scope, 'run');
+  await assert.rejects(async () => f.owner.detachRun({ scope: { ...scope, userId: 'other' }, runId: 'run' }), /child_parent_scope_mismatch/);
+  await f.owner.closeRun({ scope, runId: 'run' });
+  assert.deepEqual(f.store.load(childScope, childId), before, 'Host disposal must not enqueue user cancellation or execute the approval');
+  assert.deepEqual(f.store.load(scope, 'run'), parentBefore);
+  // The old object no longer owns this entry; even its terminal cleanup cannot cancel it.
+  await f.owner.releaseRun({ scope, runId: 'run' });
+  assert.deepEqual(f.store.load(childScope, childId), before);
+  let starts = 0;
+  const replacement = createNativeChildOwner({ scope, childScopes: [childScope], store: f.store,
+    resolveChild: async () => { starts++; assert.fail('must restore the original child'); }, restoreChild: async () => f.childPorts });
+  const kernel = new NativeKernel({ store: f.store, digest, owner: 'replacement-host', ports: { children: replacement,
+    tools: { execute: async () => assert.fail('the parent cannot replace its original delegate') },
+    model: { generate: async () => response('Parent reports the actual original child result') } } });
+  if (outcome === 'rejected') kernel.submit(scope, 'run', { commandId: 'explicit-resume-after-shutdown', kind: 'resume', payload: {} });
+  else kernel.submit(scope, 'run', { commandId: 'allow-after-shutdown', kind: 'submit_interaction', payload: {
+    interactionId: pending.pendingInteraction.interactionId, decision: 'allow', approvalOutcome: outcome,
+  } });
+  f.release();
+  assert.equal((await kernel.runUntilIdle(scope, 'run')).phase, 'completed');
+  const child = f.store.load(childScope, childId);
+  assert.equal(child.snapshot.phase, 'completed'); assert.equal(starts, 0);
+  assert.equal(f.writes(), outcome === 'allowed-once' ? 1 : 0);
+  assert.equal(child.events.find(e => e.kind === 'approval.resolved').payload.approvalOutcome, outcome);
+  assert.deepEqual(child.receipts.slice(0, before.receipts.length), before.receipts);
+  await replacement.closeRun({ scope, runId: 'run' });
+});
+
+for (const backend of ['memory', 'sqlite'])
+test(`${backend}: an idle Host detach refuses a busy child without changing its receipt or cancelling it`, async t => {
+  const f = setup(t, backend, { hold: true });
+  const driving = f.kernel.runUntilIdle(scope, 'run');
+  const started = await childStarted(f.store);
+  await assert.rejects(async () => f.owner.closeRun({ scope, runId: 'run' }), /child_detach_parent_not_idle/);
+  f.kernel.submit(scope, 'run', { commandId: 'pause-parent-with-busy-child', kind: 'pause', payload: {} });
+  assert.equal((await driving).phase, 'paused');
+  const before = f.store.load(childScope, started.runId);
+  await assert.rejects(async () => f.owner.closeRun({ scope, runId: 'run' }), /child_detach_worker_not_idle/);
+  assert.deepEqual(f.store.load(childScope, started.runId), before);
+  assert.equal(f.writes(), 0);
+  f.release();
+  f.kernel.submit(scope, 'run', { commandId: 'resume-original-busy-child-join', kind: 'resume', payload: {} });
+  assert.equal((await f.kernel.runUntilIdle(scope, 'run')).phase, 'completed');
+  assert.equal(f.writes(), 1); assert.equal(f.starts(), 1);
+  assert.equal(f.store.load(childScope, started.runId).snapshot.phase, 'completed');
+});
 
 for (const backend of ['memory', 'sqlite']) for (const approvalOutcome of ['allowed-once', 'rejected', 'cancelled', 'unavailable'])
 test(`${backend}: typed child permission ${approvalOutcome} pauses the interactive parent once and preserves its exact decision`, async t => {

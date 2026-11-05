@@ -34,6 +34,7 @@ for (const wrapped of [false, true]) test(`bound ${wrapped ? 'wrapped' : 'direct
         const feedback = JSON.parse(request.messages.at(-1).content);
         assert.equal(feedback.executed, false);
         assert.deepEqual(feedback.loaded_tool_names, [target.name]);
+        assert.equal(feedback.recovery, undefined, 'do not suggest another search for an already loaded schema');
         assert.equal(store.load(scope, 'run').snapshot.modelErrors, 0);
         return response([{ callId: 'resubmitted', name: target.name, arguments: { value: 1 } }]);
       }

@@ -379,16 +379,17 @@ export function reduceModel(snapshot: RunSnapshot, input: ModelResult, config: R
       const tools = advertisedTools({ ...snapshot,
         usage: { ...snapshot.usage, modelCalls: snapshot.usage.modelCalls - 1 } }, config, policies);
       const discovery = discoverRejectedCalls(snapshot, config, result.toolCalls, tools);
+      const discovered = discovery ? { ...snapshot, toolDiscovery: discovery.state } : snapshot;
       if (discovery || result.toolCalls.some(call => !tools.some(tool => tool.name === call.name)
         || !discoveredCallExposed(snapshot, config, call))) {
         const unbound = result.toolCalls.some(call => !(config.toolAdmissionPolicy ? tools : config.tools).some(tool => tool.name === call.name)
-          || !discoveredCallExposed(discovery ? { ...snapshot, toolDiscovery: discovery.state } : snapshot, config, call));
+          || !discoveredCallExposed(discovered, config, call));
         const errors = snapshot.modelErrors + Number(unbound), exhausted = errors > config.profile.maxRetries;
         return { ...base, phase: exhausted ? 'finalizing' : 'preparing_context', pendingTools: [], modelErrors: errors,
           ...(discovery ? { toolDiscovery: discovery.state } : {}),
           outcome: exhausted ? 'blocked' : null, reason: exhausted ? 'tool_call_not_advertised_retry_exhausted' : null, messages: [...snapshot.messages,
           { ...message, toolCalls: result.toolCalls }, ...result.toolCalls.map(call => ({ role: 'tool' as const,
-            callId: call.callId, name: call.name, content: canonical({ ...toolAdmissionRejection(snapshot, config, call, tools),
+            callId: call.callId, name: call.name, content: canonical({ ...toolAdmissionRejection(discovered, config, call, tools),
               ...(discovery ? { loaded_tool_names: discovery.names,
                 instruction: 'The whole batch was not executed. Complete definitions for the listed tools are loaded in the next request. Resubmit valid calls by their exact names; normal permissions and approvals still apply.' } : {}) }) }))] };
       }

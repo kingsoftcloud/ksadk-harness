@@ -12,6 +12,50 @@ import { createStudioNativeChildWorkspaces } from '../src/native/child-workspace
 import { fixture, scope, digest, verificationReport } from '../../agentkit-harness-core/test/fixtures.mjs';
 import { createNativeChildren, nativeChildRoles } from '../src/native/children.mjs';
 
+for (const deferred of [false, true]) test(`child-owned catalog freezes admission policy only with discovery (${deferred})`, async t => {
+  const store = new MemoryRunStore(), roles = nativeChildRoles({ subAgents: [{ name: 'reader',
+    instructions: 'Read scoped evidence.', tools: ['read_workspace_file'], maxTurns: 4 }] });
+  const read = workspaceToolDefinitions().find(tool => tool.name === 'read_workspace_file');
+  const tools = [{ ...read, ...(deferred ? { discovery: { deferred: true } } : {}) }];
+  let models = 0, executions = 0;
+  const children = await createNativeChildren({ roles, scope, sessionId: 'session', store, tools,
+    hasSkills: false, hasMcp: false, toolAdmissionPolicy: 'discover-before-retry/v1',
+    resolveModel: async () => ({ profile: fixture().config.profile, supportsImages: false,
+      model: { generate: async request => {
+        models++;
+        if (models === 1 || deferred && models === 2) {
+          assert.equal(request.tools.some(tool => tool.name === read.name), !deferred || models === 2);
+          assert.equal(executions, 0);
+          return { kind: 'tool_calls', text: '', usage: emptyUsage(), toolCalls: [{ callId: 'read-' + models,
+            name: read.name, arguments: { path: 'evidence.txt' } }] };
+        }
+        return { kind: 'final_candidate', text: 'Scoped evidence read.', toolCalls: [], usage: emptyUsage() };
+      } } }),
+    bindTools: () => ({ tools: { execute: async request => {
+      assert.equal(request.call.callId, 'read-' + (deferred ? 2 : 1)); executions++;
+      return { status: 'ok', content: 'evidence' };
+    } } }),
+    verificationFactory: async () => ({ verify: async request => verificationReport(request, { checks: [] }) }),
+  });
+  t.after(() => children.owner.releaseRun({ scope, runId: 'run' }));
+  const start = nativeChildToolDefinitions(['reader'])[0]; let parentModels = 0;
+  const { config, snapshot } = fixture({ tools: [start], childLifecyclePolicy: 'owned-background/v2',
+    limits: { effectTimeoutMs: 130000 } });
+  const kernel = new NativeKernel({ store, digest, owner: 'parent-admission', ports: { children: children.owner,
+    tools: { execute: request => children.execute(request) }, model: { generate: async () => ++parentModels === 1
+      ? { kind: 'tool_calls', text: '', usage: emptyUsage(), toolCalls: [{ callId: 'start', name: start.name,
+        arguments: { role: 'reader', task: 'Read evidence.txt.', background: false } }] }
+      : { kind: 'final_candidate', text: 'Delivered.', toolCalls: [], usage: emptyUsage() } } } });
+  kernel.start(snapshot, config); const done = await kernel.runUntilIdle(scope, 'run');
+  assert.equal(done.phase, 'completed'); assert.equal(executions, 1); assert.equal(models, deferred ? 3 : 2);
+  const childScope = { ...scope, agentId: scope.agentId + ':child:reader' };
+  const child = store.load(childScope, store.list(childScope)[0].runId);
+  assert.equal(child.configuration.toolAdmissionPolicy, deferred ? 'discover-before-retry/v1' : undefined);
+  assert.equal(child.snapshot.phase, 'completed');
+  assert.equal(Object.hasOwn(config, 'toolAdmissionPolicy'), false, 'child policy must not mutate the parent');
+  if (deferred) assert.deepEqual(child.snapshot.toolDiscovery.promoted, [read.name]);
+});
+
 for (const recovery of [false, true]) for (const isolated of [false, true]) test(`child models use current root and discovered scoped guidance in their ${isolated ? 'isolated write' : 'shared read'} workspace (${recovery ? 'timeout recovery' : 'legacy'})`, { timeout: 10000 }, async t => {
   const directory = await mkdtemp(join(await realpath(tmpdir()), 'child-current-instructions-'));
   const root = join(directory, 'workspace'); await mkdir(join(root, 'pkg'), { recursive: true });

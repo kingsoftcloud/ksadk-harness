@@ -41,6 +41,7 @@ export interface ConfigurationInput {
   providerRecoveryPolicy?: RunConfiguration['providerRecoveryPolicy'];
   toolErrorRecoveryPolicy?: RunConfiguration['toolErrorRecoveryPolicy'];
   toolDiscoveryPolicy?: RunConfiguration['toolDiscoveryPolicy'];
+  toolAdmissionPolicy?: RunConfiguration['toolAdmissionPolicy'];
   todoPolicy?: RunConfiguration['todoPolicy'];
   toolExecutionPolicy?: RunConfiguration['toolExecutionPolicy'];
   childTaskPolicy?: RunConfiguration['childTaskPolicy'];
@@ -103,6 +104,7 @@ export function configure(input: ConfigurationInput): RunConfiguration {
     ...(input.providerRecoveryPolicy === undefined ? {} : { providerRecoveryPolicy: input.providerRecoveryPolicy }),
     ...(input.toolErrorRecoveryPolicy === undefined ? {} : { toolErrorRecoveryPolicy: input.toolErrorRecoveryPolicy }),
     ...(input.toolDiscoveryPolicy === undefined ? {} : { toolDiscoveryPolicy: input.toolDiscoveryPolicy }),
+    ...(input.toolAdmissionPolicy === undefined ? {} : { toolAdmissionPolicy: input.toolAdmissionPolicy }),
     ...(input.todoPolicy === undefined ? {} : { todoPolicy: input.todoPolicy }),
     ...(input.toolExecutionPolicy === undefined ? {} : { toolExecutionPolicy: input.toolExecutionPolicy }),
     ...(input.childTaskPolicy === undefined ? {} : { childTaskPolicy: input.childTaskPolicy }),

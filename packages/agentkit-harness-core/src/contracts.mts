@@ -290,6 +290,8 @@ export interface RunConfiguration {
   planModeInitialActive?: boolean;
   childPlanPolicy?: 'inherit-plan/v1';
   toolDiscoveryPolicy?: 'local-tool-search/v1';
+  /** A premature call may load an already authorized schema, but never dispatch its operation. */
+  toolAdmissionPolicy?: 'discover-before-retry/v1';
   artifactPolicy?: 'runtime-artifacts/v1' | null;
   /** The execution owner must prepare Host context before the first inference. */
   inputPolicy?: 'before-first-model/v1';

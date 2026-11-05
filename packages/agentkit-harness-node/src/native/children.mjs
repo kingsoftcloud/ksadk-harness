@@ -112,7 +112,7 @@ export function nativeChildRoles(spec = {}, { childAllocationPolicy } = {}) {
 
 /** Bind every child to a declared role and its own scoped tool state. */
 export async function createNativeChildren({ roles, scope, sessionId, store, tools, hasSkills, hasMcp, mcpBinding, skillBinding, skillInstructions, workspaceContext, instructionTimeoutRecovery,
-  resolveModel, bindTools, verificationFactory, fileWorkspaces, commandResource, isClosed, onStream, a2aBinding, waitForChildReceipt, mediaSources = new Map(), artifactPolicy, artifactFactory, sourceReadPolicy, childTaskPolicy, childPlanPolicy, childAllocationPolicy, childCapabilityPolicy, outputRecoveryPolicy, outputRestartPolicy, approvalOutcomePolicy, conversationPresentation, toolExecutionPolicy, providerRecoveryPolicy, modelSurface, goalContractFactory = ({ goal }) => ({ objective: goal }) }) {
+  resolveModel, bindTools, verificationFactory, fileWorkspaces, commandResource, isClosed, onStream, a2aBinding, waitForChildReceipt, mediaSources = new Map(), artifactPolicy, artifactFactory, sourceReadPolicy, childTaskPolicy, childPlanPolicy, childAllocationPolicy, childCapabilityPolicy, outputRecoveryPolicy, outputRestartPolicy, approvalOutcomePolicy, conversationPresentation, toolExecutionPolicy, toolAdmissionPolicy, providerRecoveryPolicy, modelSurface, goalContractFactory = ({ goal }) => ({ objective: goal }) }) {
   if (!roles.length) return null;
   if (workspaceContext !== undefined) {
     validateNativeWorkspaceContext(workspaceContext);
@@ -121,6 +121,7 @@ export async function createNativeChildren({ roles, scope, sessionId, store, too
   invariant(typeof goalContractFactory === 'function', 'native_child_goal_contract_factory_invalid');
   invariant(childAllocationPolicy === undefined || childAllocationPolicy === CHILD_ALLOCATION_POLICY, 'studio_native_child_allocation_policy_invalid');
   invariant(childCapabilityPolicy === undefined || childCapabilityPolicy === CHILD_CAPABILITY_POLICY, 'studio_native_child_capability_policy_invalid');
+  invariant(toolAdmissionPolicy === undefined || toolAdmissionPolicy === 'discover-before-retry/v1', 'studio_native_child_admission_policy_invalid');
   invariant(toolExecutionPolicy === undefined || toolExecutionPolicy === 'owner-execution/v1', 'studio_native_child_execution_policy_invalid');
   invariant(providerRecoveryPolicy === undefined || providerRecoveryPolicy === 'provider-recovery/v2', 'native_child_provider_recovery_policy_invalid');
   invariant(outputRecoveryPolicy === undefined || outputRecoveryPolicy === 'response-boundary/v2', 'studio_native_child_output_policy_invalid');
@@ -236,6 +237,7 @@ export async function createNativeChildren({ roles, scope, sessionId, store, too
         ...(conversationPresentation ? { conversationPresentation } : {}),
         ...(providerRecoveryPolicy ? { providerRecoveryPolicy } : {}),
         ...(toolExecutionPolicy ? { toolExecutionPolicy } : {}),
+        ...(toolAdmissionPolicy && bound.toolDiscoveryPolicy ? { toolAdmissionPolicy } : {}),
         ...(childPlanPolicy ? { childPlanPolicy } : {}),
         ...(childTaskPolicy ? { childTaskPolicy } : {}),
         ...(childAllocationPolicy ? { childAllocationPolicy } : {}),
@@ -269,6 +271,7 @@ export async function createNativeChildren({ roles, scope, sessionId, store, too
         ...(approvalOutcomePolicy ? { approvalOutcomePolicy } : {}),
         ...(providerRecoveryPolicy ? { providerRecoveryPolicy } : {}),
         ...(toolExecutionPolicy ? { toolExecutionPolicy } : {}),
+        ...(toolAdmissionPolicy && bound.toolDiscoveryPolicy ? { toolAdmissionPolicy } : {}),
         ...(executionResource ? { backgroundNotificationPolicy: 'completed-before-model/v1' } : {}),
         ...(childTaskPolicy ? { todoPolicy: 'session-todos/v1', coordinatorResponsePolicy: COORDINATOR_RESPONSE_POLICY } : {}),
         ...(bound.toolDiscoveryPolicy ? { toolDiscoveryPolicy: bound.toolDiscoveryPolicy } : {}),
@@ -328,6 +331,7 @@ export async function createNativeChildren({ roles, scope, sessionId, store, too
         && configuration.approvalOutcomePolicy === approvalOutcomePolicy
         && configuration.providerRecoveryPolicy === providerRecoveryPolicy
         && configuration.toolExecutionPolicy === toolExecutionPolicy
+        && configuration.toolAdmissionPolicy === (bound.toolDiscoveryPolicy ? toolAdmissionPolicy : undefined)
         && configuration.inputPolicy === (instructionSource ? 'before-first-model/v1' : undefined)
         && canonical(configuration.contextSources) === canonical(instructionSource ? [instructionSource.source] : [])
         && (configuration.childAllocationPolicy ?? null) === (childAllocationPolicy ?? null)
@@ -352,6 +356,7 @@ export async function createNativeChildren({ roles, scope, sessionId, store, too
           ...(conversationPresentation ? { conversationPresentation } : {}),
           ...(providerRecoveryPolicy ? { providerRecoveryPolicy } : {}),
           ...(toolExecutionPolicy ? { toolExecutionPolicy } : {}),
+          ...(toolAdmissionPolicy && bound.toolDiscoveryPolicy ? { toolAdmissionPolicy } : {}),
           ...(childPlanPolicy ? { childPlanPolicy } : {}),
           ...(childTaskPolicy ? { childTaskPolicy } : {}),
           ...(childAllocationPolicy ? { childAllocationPolicy } : {}),

@@ -22,6 +22,12 @@ callbacks; the component never resolves execution roots or performs I/O. These
 are current workspace observations, separate from immutable tool receipts and
 task acceptance. Failed or canceled reads must not fall back to a parent file.
 
+`./host/native-approval-actions` adds a Host-owned Session grant action to an
+existing one-call approval card. Lost replies may retry the same offer; an
+explicit stale-offer refusal disables that offer and directs the user to the
+original one-call approval. A later Host offer remains independently usable.
+The component never renews an offer or approves a call without its exact receipt.
+
 ## Design
 
 ```

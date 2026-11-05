@@ -42,6 +42,36 @@ test('a lost grant reply retries its original offer and never turns an unconfirm
   assert.deepEqual(f.answered, ['allowed-once']); f.dispose();
 });
 
+test('a Host-rejected stale offer directs the user to one-call approval instead of repeating an invalid grant', async () => {
+  for (const code of ['session_tool_approval_offer_stale', 'studio_native_session_approval_stale']) {
+    const f = mount(() => { throw Object.assign(Error('stale offer'), { code }); });
+    await f.render().children[0].props.onClick();
+    const view = f.render();
+    assert.equal(view.children[0].props.disabled, true);
+    assert.equal(view.children[0].children[0], '会话授权已失效');
+    assert.match(view.children[1].children[0], /允许一次/);
+    await view.children[0].props.onClick();
+    assert.equal(f.sent.length, 1); assert.deepEqual(f.answered, []);
+    assert.equal(f.pending.answerable, true); f.dispose();
+  }
+});
+
+test('a stale offer cannot disable or approve a later Host-owned offer on the same component', async () => {
+  const f = mount(request => {
+    if (request.offerId === 'offer') throw Object.assign(Error('expired'), { code: 'session_tool_approval_offer_stale' });
+    return { status: 'accepted', offerId: request.offerId, requestId: request.requestId };
+  });
+  const old = f.render().children[0]; await old.props.onClick();
+  f.pending.sessionGrant = { ...offer(), offerId: 'new-host-offer', requestId: 'new-pending-approval' };
+  const current = f.render();
+  assert.equal(current.children[0].props.disabled, false);
+  assert.equal(current.children[1], null);
+  await old.props.onClick(); assert.equal(f.sent.length, 1);
+  await current.children[0].props.onClick();
+  assert.equal(f.sent[1].offerId, 'new-host-offer');
+  assert.deepEqual(f.answered, ['allowed-once']); f.dispose();
+});
+
 test('a stale or foreign grant receipt never answers the pending permission', async () => {
   for (const receipt of [{ status: 'accepted', offerId: 'foreign', requestId: 'pending-approval' },
     { status: 'accepted', offerId: 'offer', requestId: 'foreign' }, { status: 'unavailable' }]) {

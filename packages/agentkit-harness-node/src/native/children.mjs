@@ -124,9 +124,9 @@ export async function createNativeChildren({ roles, scope, sessionId, store, too
   invariant(toolAdmissionPolicy === undefined || toolAdmissionPolicy === 'discover-before-retry/v1', 'studio_native_child_admission_policy_invalid');
   invariant(toolExecutionPolicy === undefined || toolExecutionPolicy === 'owner-execution/v1', 'studio_native_child_execution_policy_invalid');
   invariant(providerRecoveryPolicy === undefined || providerRecoveryPolicy === 'provider-recovery/v2', 'native_child_provider_recovery_policy_invalid');
-  invariant(outputRecoveryPolicy === undefined || outputRecoveryPolicy === 'response-boundary/v2', 'studio_native_child_output_policy_invalid');
+  invariant(outputRecoveryPolicy === undefined || ['response-boundary/v2', 'response-boundary/v3'].includes(outputRecoveryPolicy), 'studio_native_child_output_policy_invalid');
   invariant(outputRestartPolicy === undefined || ['per-response/v1', 'per-response/v2'].includes(outputRestartPolicy)
-    && outputRecoveryPolicy === 'response-boundary/v2', 'native_child_output_restart_policy_invalid');
+    && ['response-boundary/v2', 'response-boundary/v3'].includes(outputRecoveryPolicy), 'native_child_output_restart_policy_invalid');
   invariant(approvalOutcomePolicy === undefined || approvalOutcomePolicy === 'owner-outcome/v1', 'native_child_approval_outcome_policy_invalid');
   if (conversationPresentation !== undefined) validateConversationPresentation(conversationPresentation);
   invariant(childTaskPolicy === undefined || childTaskPolicy === CHILD_TASK_POLICY, 'studio_native_child_task_policy_invalid');

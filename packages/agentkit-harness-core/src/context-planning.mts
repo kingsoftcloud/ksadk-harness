@@ -11,7 +11,7 @@ import { sourceWorkingSetGroup } from './source-working-set-group.mjs';
 import { sourceReuseProjector } from './context-source-reuse.mjs';
 import { defaultToolPruningThreshold, projectOldToolResults, toolPruningIdleElapsed } from './context-microcompact.mjs';
 import { summaryContinuityInstructions, validSummaryContinuity } from './summary-continuity.mjs';
-import { responseContinuationPairs } from './response-continuation.mjs';
+import { responseBoundaryRecovery, responseContinuationPairs } from './response-continuation.mjs';
 import { verificationModelView } from './model-surface.mjs';
 import { currentInstructionContribution } from './context-contributions.mjs';
 
@@ -118,7 +118,7 @@ function groupsOf(messages: Message[], indexes: number[]): number[][] {
 }
 function mandatoryIndexes(snapshot: RunSnapshot, groups: number[][], config: RunConfiguration): Set<number> {
   const mandatory = new Set<number>(), messages = snapshot.messages;
-  if (config.outputRecoveryPolicy === 'response-boundary/v2')
+  if (responseBoundaryRecovery(config))
     for (const pair of responseContinuationPairs(messages)) for (const index of pair) mandatory.add(index);
   // The next inference must observe the just-completed batch, but that must
   // not exempt all older history from its soft budget on every tool turn.

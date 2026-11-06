@@ -8,10 +8,67 @@ import { NativeKernel, MemoryRunStore, emptyUsage, completeContinuation, reduceM
 import { SqliteRunStore } from '@kingsoftcloud/agentkit-harness-node/native/sqlite-store';
 import { createNativeModelPort } from '@kingsoftcloud/agentkit-harness-node/native/model-port';
 import { fixture, digest, tool, scope, acceptance, verificationReport } from './fixtures.mjs';
+import { outputRecoveryMode } from '../dist/output-recovery.mjs';
 
 const response = (text, kind = 'final_candidate', extra = {}) => ({ kind, text, toolCalls: [], usage: emptyUsage(), ...extra });
 const configuration = overrides => ({ outputRecoveryPolicy: 'task-or-delivery/v1', tools: [tool()], ...overrides });
 const limitedText = text => response(text, 'output_limit', { textCommitVersion: 'provider-finished-text/v1', outputBoundary: 'assistant-text/v1' });
+
+test('v3 treats visible truncated text as unfinished work while preserving an explicitly sealed suffix chain', () => {
+  const { config, snapshot } = fixture({ outputRecoveryPolicy: 'response-boundary/v3', tools: [tool()] });
+  assert.equal(outputRecoveryMode(snapshot, config, true, limitedText('Let me now modify core.py.')), 'task_resume');
+  assert.equal(outputRecoveryMode(snapshot, config, false, limitedText('Delivery prefix')), 'suffix');
+  snapshot.messages.push({ role: 'assistant', kind: 'continuation_fragment', content: 'Delivery prefix', continuationResponseId: 'delivery' },
+    { role: 'user', kind: 'continuation_observation', content: 'Continue', continuationMode: 'suffix',
+      continuationPolicy: 'response-boundary/v2', continuationResponseId: 'delivery', continuationFragmentDigest: digest('Delivery prefix') });
+  assert.equal(outputRecoveryMode(snapshot, config, true, limitedText('Delivery prefix')), 'suffix');
+});
+
+for (const sqlite of [false, true]) test(`v3 ${sqlite ? 'sqlite' : 'memory'}: a delivery-only admission retains exact text joining`, async t => {
+  let calls = 0;
+  const run = setup(t, { sqlite, options: { outputRecoveryPolicy: 'response-boundary/v3', tools: [] }, model: async request => {
+    assert.deepEqual(request.tools, []);
+    if (++calls === 1) return limitedText('Report line\nFinal incomplete');
+    assert.equal(request.messages.at(-1).continuationMode, 'suffix');
+    assert.equal(request.messages.at(-1).continuationPolicy, 'response-boundary/v2');
+    return response('Final incomplete line.');
+  } });
+  const result = await run.kernel().runUntilIdle(scope, 'run');
+  assert.equal(result.phase, 'completed'); assert.equal(result.finalText, 'Report line\nFinal incomplete line.');
+  assert.equal(result.usage.toolCalls, 0); assert.equal(calls, 2);
+});
+
+test('v3 cold reopen retains unfinished work, tools and the original single-effect ownership', async t => {
+  let calls = 0, writes = 0;
+  const run = setup(t, { sqlite: true, options: { outputRecoveryPolicy: 'response-boundary/v3',
+    tools: [tool({ name: 'write', readOnly: false, concurrentSafe: false })] },
+    model: async request => {
+      if (++calls === 1) return limitedText('I have read the files. Let me now write the implementation.');
+      assert.ok(request.tools.some(tool => tool.name === 'write'));
+      return response('', 'tool_calls', { toolCalls: [{ callId: 'write-after-reopen', name: 'write', arguments: {} }] });
+    }, tools: async () => { writes++; writeFileSync(join(run.root, 'cold-result.txt'), 'one effect'); return { status: 'ok', content: 'written' }; } });
+  const first = run.kernel({ onCheckpoint: async state => {
+    if (state.phase === 'preparing_context' && state.messages.at(-1)?.continuationMode === 'task_resume')
+      first.submit(scope, 'run', { commandId: 'pause-interrupted-work', kind: 'pause', payload: {} });
+  } });
+  assert.equal((await first.runUntilIdle(scope, 'run')).phase, 'paused');
+  assert.equal(writes, 0); assert.equal(calls, 1);
+  run.reopen();
+  let resumed = 0;
+  run.ports.model.generate = async request => {
+    if (++resumed === 1) {
+      assert.equal(request.messages.at(-1).continuationMode, 'task_resume');
+      assert.ok(request.tools.some(tool => tool.name === 'write'));
+      return response('', 'tool_calls', { toolCalls: [{ callId: 'write-after-reopen', name: 'write', arguments: {} }] });
+    }
+    assert.equal(readFileSync(join(run.root, 'cold-result.txt'), 'utf8'), 'one effect');
+    return response('The implementation was written after recovery.');
+  };
+  run.kernel().submit(scope, 'run', { commandId: 'resume-interrupted-work', kind: 'resume', payload: {} });
+  const result = await run.kernel().runUntilIdle(scope, 'run');
+  assert.equal(result.phase, 'completed'); assert.equal(writes, 1); assert.equal(resumed, 2);
+  assert.equal(result.finalText, 'The implementation was written after recovery.');
+});
 
 for (const sqlite of [false, true]) test(`response recovery v2 ${sqlite ? 'sqlite' : 'memory'}: empty reasoning exhaustion pauses, preserves effects and requires explicit resume`, async t => {
   let calls = 0, writes = 0, recovered = false, recoveredCalls = 0;
@@ -260,12 +317,13 @@ function setup(t, { sqlite = false, options = {}, model, tools, verification } =
 }
 
 for (const sqlite of [false, true]) {
-  test(`${sqlite ? 'sqlite' : 'memory'}: interrupted work executes the real tool once and delivers a fresh verified answer`, async t => {
+  for (const outputRecoveryPolicy of ['task-or-delivery/v1', 'response-boundary/v3'])
+  test(`${sqlite ? 'sqlite' : 'memory'} ${outputRecoveryPolicy}: interrupted work executes the real tool once and delivers a fresh verified answer`, async t => {
     let calls = 0, writes = 0;
-    const run = setup(t, { sqlite, options: configuration({ tools: [tool({ name: 'write', readOnly: false, concurrentSafe: false })],
+    const run = setup(t, { sqlite, options: configuration({ outputRecoveryPolicy, tools: [tool({ name: 'write', readOnly: false, concurrentSafe: false })],
       contract: { objective: 'Write and verify', acceptance: [acceptance()] } }), model: async request => {
       calls++;
-      if (calls === 1) return response('Unfinished implementation plan', 'output_limit');
+      if (calls === 1) return limitedText('Unfinished implementation plan: let me now write result.txt.');
       if (calls === 2) {
         assert.equal(request.messages.at(-1).continuationMode, 'task_resume');
         assert.doesNotMatch(request.messages.at(-1).content, /only the exact missing suffix/);

@@ -309,7 +309,7 @@ export interface RunConfiguration {
   stopHookContinuationLimit: number; delegationDepth: number;
   modelRecoveryPolicy: 'manual' | 'pure-inference/v1';
   guidancePolicy?: 'boundary-guide/v1' | null;
-  outputRecoveryPolicy?: 'task-or-delivery/v1' | 'response-boundary/v2' | null;
+  outputRecoveryPolicy?: 'task-or-delivery/v1' | 'response-boundary/v2' | 'response-boundary/v3' | null;
   /** Restart allowance belongs to one interrupted response chain. v2 pauses
    * exhausted chains for explicit resume instead of terminating the Run.
    * Legacy Runs retain their frozen accounting and exhaustion behavior. */

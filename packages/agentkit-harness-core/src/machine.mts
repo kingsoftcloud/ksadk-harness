@@ -17,7 +17,7 @@ import { admittedToolBudget, outstandingChildCalls, reduceChildBudget } from './
 import { prepareChildLifecycle, unsettledChildren } from './child-runtime.mjs';
 import { toolResourceUsage, toolUsageIncomplete } from './tool-resource-usage.mjs';
 import { completeContinuation, outputRecoveryMode, restartContinuation } from './output-recovery.mjs';
-import { responseContinuationPending, responseScopedOutputRestarts } from './response-continuation.mjs';
+import { responseBoundaryRecovery, responseContinuationPending, responseScopedOutputRestarts } from './response-continuation.mjs';
 import { advanceDiagnosticRecovery, advanceObservedProgress, advanceToolErrorStreak, guardedToolErrorAction,
   refuseUndiagnosedToolAction, reserveDiagnosticTrial, toolErrorRecoveryBoundary, toolErrorRecoveryEnabled,
   toolErrorStreakExhausted } from './tool-error-recovery.mjs';
@@ -421,12 +421,12 @@ export function reduceModel(snapshot: RunSnapshot, input: ModelResult, config: R
         const messages: Message[] = [...snapshot.messages,
           ...(result.text ? [{ ...message, kind: 'continuation_fragment', continuationResponseId: responseId }] : []),
           { role: 'user', kind: 'continuation_observation', continuationMode: mode, continuationResponseId: responseId,
-            ...(config.outputRecoveryPolicy === 'response-boundary/v2' && config.contract.finalOutputFormat === 'text' && mode === 'suffix'
+            ...(responseBoundaryRecovery(config) && config.contract.finalOutputFormat === 'text' && mode === 'suffix'
               ? { continuationPolicy: 'response-boundary/v2' as const } : {}),
             continuationFragmentDigest: digest(result.text), content: mode === 'task_resume'
               ? 'The previous output was interrupted while task tools remain available. It is work in progress, not a completed delivery. Continue from the last committed state using the available tools as needed; break remaining work into smaller actions. Incomplete tool calls were not executed. Give a fresh final answer only after the task is complete.'
               : result.text ? 'The last response hit its output limit. Return only the exact missing suffix of that response. '
-                + (config.outputRecoveryPolicy === 'response-boundary/v2' ? 'You may replay the final incomplete line verbatim before continuing; the Host joins this exact overlap. Do not replay any complete line. ' : '')
+                + (responseBoundaryRecovery(config) ? 'You may replay the final incomplete line verbatim before continuing; the Host joins this exact overlap. Do not replay any complete line. ' : '')
                 + 'Incomplete tool calls were not executed.'
                 : 'The last response hit its output limit without visible content or a committed tool call. Continue the task from the last committed state; take the next useful action or answer only if the task is complete.' }];
         return { mode, messages };

@@ -159,9 +159,9 @@ export function configure(input: ConfigurationInput): RunConfiguration {
     && typeof config.hostRecoveryBinding === 'object' && !Array.isArray(config.hostRecoveryBinding), 'invalid_host_recovery_binding');
   invariant(config.guidancePolicy == null || config.guidancePolicy === 'boundary-guide/v1', 'invalid_guidance_policy');
   invariant(config.inputPolicy === undefined || config.inputPolicy === 'before-first-model/v1', 'invalid_input_policy');
-  invariant(config.outputRecoveryPolicy == null || ['task-or-delivery/v1', 'response-boundary/v2'].includes(config.outputRecoveryPolicy), 'invalid_output_recovery_policy');
+  invariant(config.outputRecoveryPolicy == null || ['task-or-delivery/v1', 'response-boundary/v2', 'response-boundary/v3'].includes(config.outputRecoveryPolicy), 'invalid_output_recovery_policy');
   invariant(config.outputRestartPolicy === undefined || ['per-response/v1', 'per-response/v2'].includes(config.outputRestartPolicy)
-    && config.outputRecoveryPolicy === 'response-boundary/v2', 'invalid_output_restart_policy');
+    && ['response-boundary/v2', 'response-boundary/v3'].includes(config.outputRecoveryPolicy ?? ''), 'invalid_output_restart_policy');
   invariant(config.approvalOutcomePolicy === undefined || config.approvalOutcomePolicy === 'owner-outcome/v1', 'invalid_approval_outcome_policy');
   invariant(config.providerRecoveryPolicy == null || config.providerRecoveryPolicy === 'provider-recovery/v2', 'invalid_provider_recovery_policy');
   invariant(config.toolExecutionPolicy === undefined || config.toolExecutionPolicy === 'owner-execution/v1', 'invalid_tool_execution_policy');

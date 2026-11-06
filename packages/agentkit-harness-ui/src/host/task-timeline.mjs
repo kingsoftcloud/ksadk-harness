@@ -22,6 +22,7 @@ const labels = { result: '执行结果', thought: '思考', running: '执行中'
   toolDetails: '工具详情', close: '关闭', state: '状态', arguments: '调用参数', noSettledResult: '尚无已确认的结果', appliedChanges: '实际文件变更',
   diffTruncated: '差异预览已截断', diffUnavailable: '无可用差异预览', diffFilesOmitted: '个文件预览已省略', plan: '计划',
   writePending: '请求写入', editPending: '请求修改',
+  requestedArguments: '请求参数（非执行结果）',
   subagent: '子智能体', openSubagent: '在右侧打开', childSyncing: '同步中', childOmitted: '当前显示过程窗口，较早内容或较长字段已省略。',
   toolPreparing: '正在生成工具参数', previewStopped: '工具参数生成已中断' };
 

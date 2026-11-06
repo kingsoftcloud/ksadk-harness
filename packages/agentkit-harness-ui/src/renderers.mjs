@@ -18,7 +18,7 @@
 
 import { h, terminalIcon, fileTextIcon, searchIcon, pencilIcon, wrenchIcon, chevronIcon, skillIcon, globeIcon } from "./view.mjs";
 import { ToolStatus } from "./protocol.mjs";
-import { toolTitle, toolDetailLines, workspaceRelative, redactError } from "./tool-detail.mjs";
+import { toolTitle, toolDetailLines, toolInputPreview, workspaceRelative, redactError } from "./tool-detail.mjs";
 import { truncateText, latestNonEmptyLine, redactValue, boundedDetailLines } from "./summary.mjs";
 import { parseDiffHunks, countChangeStat, inferOperationKind } from "./diff.mjs";
 import { extractCommand, extractOutput } from "./terminal.mjs";
@@ -448,9 +448,9 @@ function editRenderer(item, opts) {
   // Never infer a write succeeded: the diff/count come from the result display
   // only. While running (no result), show the intent + file chips, no diff.
   const opKind = files.length ? inferOperationKind(files[0].operationKind, null, files[0].patch) : "edit";
-  const pending = item.kind === 'tool-preview' || files.some(file => file.pending);
-  const title = pending ? /write|Write/.test(item.name) ? opts.labels.writePending || 'Write requested'
-    : opts.labels.editPending || 'Edit requested' : editKindLabel(opKind, running, opts) || toolTitle(item.name, item.input) || item.name;
+  const pending = item.kind === 'tool-preview' || !['file_edit', 'file_diff'].includes(item.display?.kind);
+  const title = pending ? /write|Write/.test(item.name) ? opts.labels?.writePending || 'Write requested'
+    : opts.labels?.editPending || 'Edit requested' : editKindLabel(opKind, running, opts) || toolTitle(item.name, item.input) || item.name;
   const summary = [h("span", {
     className: running
       ? "harness-tool-title harness-tool-title-streaming"
@@ -485,10 +485,18 @@ function editRenderer(item, opts) {
       else if (f.truncated) nodes.push(h("p", { className: "harness-diff-truncated", "data-testid": "edit-diff-truncated" }, opts.labels.diffUnavailable || "Diff preview omitted because of its size"));
     }
     if (item.display?.omittedFiles) nodes.push(h("p", { className: "harness-diff-truncated", "data-testid": "edit-diff-omitted" }, `${item.display.omittedFiles} ${opts.labels.diffFilesOmitted || "file previews omitted"}`));
+    // A committed request awaiting approval has no result diff. Keep its
+    // disclosure useful without representing proposed content as applied code.
+    if (!nodes.length && pending && item.kind !== 'tool-preview') {
+      const preview = toolInputPreview(item.input);
+      if (preview) nodes.push(h('section', { 'data-testid': 'edit-request-preview' },
+        h('p', null, opts.labels?.requestedArguments || 'Requested arguments (not an execution result)'),
+        h('pre', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: '24rem', overflow: 'auto' } }, preview)));
+    }
     return nodes;
   };
   return toolShell(item, opts, { icon: pencilIcon("harness-tool-kind-icon"), summary, body, canToggle: true,
-    defaultOpen: running && !files.some(f => f.patch) ? true : (files.length > 1 ? false : running) });
+    defaultOpen: !pending && files.length === 1 && running });
 }
 
 function editFiles(item) {

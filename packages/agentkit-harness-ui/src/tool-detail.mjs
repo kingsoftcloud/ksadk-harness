@@ -90,6 +90,16 @@ export function toolDetailLines(name, input = {}, opts = {}) {
   return boundedDetailLines(input, { maxLines, maxChars });
 }
 
+/** Read-only argument inspection shared by the timeline and inspector.
+ * This is a bounded, redacted request preview, never evidence of execution.
+ */
+export function toolInputPreview(input) {
+  let raw;
+  try { raw = JSON.stringify(input ?? {}, (key, value) => redactValue(key, value), 2); }
+  catch { return ''; }
+  return truncateText(redactDiagnosticText(raw, 8192), { maxLines: 80, maxChars: 240 });
+}
+
 function knownToolDetail(tool, input, workspaceRoot, maxLines, maxChars) {
   const pushBounded = (rows, key, value) => {
     if (rows.length >= maxLines) return rows;

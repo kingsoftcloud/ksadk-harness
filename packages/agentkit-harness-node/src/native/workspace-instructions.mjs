@@ -13,6 +13,13 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 const missing = error => ['ENOENT', 'ENOTDIR'].includes(error.code);
 const sameFile = (a, b) => ['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].every(key => a[key] === b[key]);
 
+/** New admissions get bounded read recovery; cold restoration retains the exact source policy. */
+export function nativeWorkspaceInstructionTimeoutRecovery(configuration) {
+  return configuration === undefined
+    ? { contract: 'context-source-timeout/v1', maxRetries: 2, retryDelayMs: 100 }
+    : structuredClone(configuration.contextSources.find(source => source.sourceId === 'native.workspace-instructions')?.timeoutRecovery);
+}
+
 /** Stable bounded reads, using the physical file identity both before and after
  * open. A concurrent replacement causes a retryable source failure, not stale
  * guidance or a partially read instruction file. */
@@ -45,13 +52,21 @@ async function readFile(root, path, signal) {
 
 /** Node-owned live source. Only discovery directories are durable; file bodies
  * and deletion state never depend on a summary or a process-local cache. */
-export function createNativeWorkspaceInstructions(binding) {
+export function createNativeWorkspaceInstructions(binding, { timeoutRecovery } = {}) {
   validateNativeWorkspaceContext(binding);
   invariant(binding.instructionSource?.contract === CONTRACT, 'workspace_instruction_source_unbound');
+  invariant(timeoutRecovery === undefined || timeoutRecovery && !Array.isArray(timeoutRecovery)
+    && Object.keys(timeoutRecovery).sort().join(',') === 'contract,maxRetries,retryDelayMs'
+    && timeoutRecovery.contract === 'context-source-timeout/v1'
+    && Number.isSafeInteger(timeoutRecovery.maxRetries) && timeoutRecovery.maxRetries >= 0 && timeoutRecovery.maxRetries <= 3
+    && Number.isSafeInteger(timeoutRecovery.retryDelayMs) && timeoutRecovery.retryDelayMs >= 0 && timeoutRecovery.retryDelayMs <= 60000,
+  'invalid_context_source_timeout_recovery');
   const root = binding.workspaceRoot, roots = structuredClone(binding.instructionSource.globalRoots);
   const source = Object.freeze({ contract: 'agentkit.native-context-source/v1', sourceId: 'native.workspace-instructions',
-    bindingDigest: hash(canonical({ contract: CONTRACT, root, roots, candidates: CANDIDATES, MAX_FILE_BYTES, MAX_TOTAL_BYTES })),
-    instructionPolicy: 'current-files/v1', priority: 1000, required: true, timeoutMs: 5000, maxTokens: 32768, maxBytes: 131072 });
+    bindingDigest: hash(canonical({ contract: CONTRACT, root, roots, candidates: CANDIDATES, MAX_FILE_BYTES, MAX_TOTAL_BYTES,
+      ...(timeoutRecovery ? { timeoutRecovery } : {}) })),
+    instructionPolicy: 'current-files/v1', priority: 1000, required: true, timeoutMs: 5000, maxTokens: 32768, maxBytes: 131072,
+    ...(timeoutRecovery ? { timeoutRecovery: structuredClone(timeoutRecovery) } : {}) });
   const initialScopes = () => ({ contract: INSTRUCTION_SCOPES, sourceId: source.sourceId,
     bindingDigest: source.bindingDigest, directories: [''] });
   const scopesOf = state => state === undefined ? initialScopes() : validateInstructionScopes(state, { contextSources: [source] });

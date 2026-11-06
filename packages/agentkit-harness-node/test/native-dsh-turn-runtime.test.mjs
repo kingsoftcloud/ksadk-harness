@@ -50,6 +50,26 @@ function setup(t, sqlite, overrides = {}) {
 }
 for (const sqlite of [false, true]) {
   const backend = sqlite ? 'SQLite' : 'memory';
+  test(`${backend}: Session approval authority stays a live Host capability, outside frozen model configuration`, async t => {
+    const authority = Object.freeze({ offer: () => 'private-offer', grant: () => 'private-grant' });
+    let activeAuthority, idleAuthority;
+    const host = setup(t, sqlite, {
+      onActive: (_payload, active) => { activeAuthority = active.sessionApproval; },
+      onIdle: async (_payload, snapshot, options) => {
+        idleAuthority = options.sessionApproval;
+        return { commandId: 'approved-once', kind: 'submit_interaction', payload: {
+          interactionId: snapshot.pendingInteraction.interactionId, decision: 'allow' } };
+      },
+    });
+    host.binding.sessionApproval = authority;
+    host.binding.ports.tools.execute = async request => {
+      if (!request.interaction) return { status: 'approval_required', content: null, interactionId: 'permission' };
+      host.calls.write++; return { status: 'ok', content: 'Written' };
+    };
+    await host.execute(host.payload);
+    assert.equal(activeAuthority, authority); assert.equal(idleAuthority, authority); assert.equal(host.calls.write, 1);
+    assert.doesNotMatch(JSON.stringify(host.store.load(scope, host.head().runId)), /sessionApproval|private-offer|private-grant/);
+  });
   test(`${backend}: an isolated private browser failure stays unknown in Session history while the same turn continues`, async t => {
     const host = setup(t, sqlite);
     const browser = tool({ name: 'browser', observationRole: 'browser', readOnly: false, concurrentSafe: false,

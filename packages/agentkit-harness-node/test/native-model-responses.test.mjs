@@ -812,18 +812,18 @@ test('responses: a protocol terminal seals the attempt without waiting for socke
 
 test('responses: buffered 2xx completed final candidate parses', async () => {
   const handler = () => ({ status: 200, headers: JSON_HEADERS,
-    body: JSON.stringify({ id: 'resp-1', status: 'completed', output: [{ type: 'message', id: 'm1', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'buffered' }] }], usage: { input_tokens: 3, output_tokens: 2 } }) });
+    body: JSON.stringify({ id: 'resp-1', status: 'completed', error: null, output: [{ type: 'message', id: 'm1', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'buffered' }] }], usage: { input_tokens: 3, output_tokens: 2 } }) });
   const { result } = await collect(handler, makeRequest());
   assert.equal(result.kind, 'final_candidate');
   assert.equal(result.text, 'buffered');
   assert.equal(result.usage.inputTokens, 3);
 });
 
-test('responses: buffered 2xx failed status is terminal invalid_response', async () => {
+test('responses: buffered failed status retains a known server error as retryable', async () => {
   const handler = () => ({ status: 200, headers: JSON_HEADERS, body: JSON.stringify({ status: 'failed', error: { code: 'server_error' } }) });
   const { result } = await collect(handler, makeRequest());
-  assert.equal(result.kind, 'provider_terminal_error');
-  assert.equal(result.failureKind, 'invalid_response');
+  assert.equal(result.kind, 'provider_retryable_error');
+  assert.equal(result.failureKind, 'server_error');
 });
 
 test('responses: buffered output_text convenience must match canonical output', async () => {
@@ -991,4 +991,13 @@ test('responses: indexed reasoning summary does not require an optional reasonin
       (providerThinkingDisplay ?? providerReplayMode !== 'none') ? 'PRIVATE' : '');
     assert.equal(result.providerReplay?.reasoningContent, providerReplayMode === 'none' ? undefined : 'PRIVATE');
   }
+});
+
+test('responses: a transient error after an observed refusal cannot reopen it as a retry', async () => {
+  const { result } = await collect(() => ({ headers: SSE_HEADERS, body: [
+    sse(rcreated()),
+    sse({ type: 'response.output_item.done', output_index: 0, item: { type: 'message', id: 'msg-1', role: 'assistant', status: 'completed', content: [{ type: 'refusal', refusal: 'I cannot' }] } }),
+    sse(rerr({ type: 'server_error' })),
+  ] }), makeRequest());
+  assert.equal(result.kind, 'policy_abort'); assert.deepEqual(result.toolCalls, []);
 });

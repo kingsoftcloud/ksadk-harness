@@ -1,5 +1,15 @@
 import type { Message, RunConfiguration, RunSnapshot } from './contracts.mjs';
 
+/** The output recovery strategy is versioned separately from the sealed v2
+ * text-fragment protocol. A v3 task may still own an explicit suffix chain. */
+export function responseBoundaryRecovery(config: Pick<RunConfiguration, 'outputRecoveryPolicy'>): boolean {
+  return config.outputRecoveryPolicy === 'response-boundary/v2' || config.outputRecoveryPolicy === 'response-boundary/v3';
+}
+
+export function responseScopedOutputRestarts(config: Pick<RunConfiguration, 'outputRestartPolicy'>): boolean {
+  return config.outputRestartPolicy === 'per-response/v1' || config.outputRestartPolicy === 'per-response/v2';
+}
+
 /** Journaled Host controls may be staged between response fragments. Actual
  * user input, tool observations and new assistant messages end the chain. */
 function hostControl(message: Message): boolean {
@@ -26,7 +36,7 @@ export function responseContinuationPairs(messages: Message[], digest?: (value: 
 
 /** This only narrows admission. Digest validation is required for assembly. */
 export function responseContinuationPending(snapshot: RunSnapshot, config: RunConfiguration): boolean {
-  return config.outputRecoveryPolicy === 'response-boundary/v2' && responseContinuationPairs(snapshot.messages).length > 0;
+  return responseBoundaryRecovery(config) && responseContinuationPairs(snapshot.messages).length > 0;
 }
 
 /** The v2 wire contract permits replay of exactly the unfinished final line.

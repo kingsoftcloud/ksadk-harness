@@ -36,9 +36,12 @@ export interface ConfigurationInput {
   inputPolicy?: RunConfiguration['inputPolicy'];
   sourceReadPolicy?: RunConfiguration['sourceReadPolicy'];
   outputRecoveryPolicy?: RunConfiguration['outputRecoveryPolicy'];
+  outputRestartPolicy?: RunConfiguration['outputRestartPolicy'];
+  approvalOutcomePolicy?: RunConfiguration['approvalOutcomePolicy'];
   providerRecoveryPolicy?: RunConfiguration['providerRecoveryPolicy'];
   toolErrorRecoveryPolicy?: RunConfiguration['toolErrorRecoveryPolicy'];
   toolDiscoveryPolicy?: RunConfiguration['toolDiscoveryPolicy'];
+  toolAdmissionPolicy?: RunConfiguration['toolAdmissionPolicy'];
   todoPolicy?: RunConfiguration['todoPolicy'];
   toolExecutionPolicy?: RunConfiguration['toolExecutionPolicy'];
   childTaskPolicy?: RunConfiguration['childTaskPolicy'];
@@ -96,9 +99,12 @@ export function configure(input: ConfigurationInput): RunConfiguration {
     ...(input.inputPolicy === undefined ? {} : { inputPolicy: input.inputPolicy }),
     ...(input.sourceReadPolicy === undefined ? {} : { sourceReadPolicy: input.sourceReadPolicy }),
     ...(input.outputRecoveryPolicy === undefined ? {} : { outputRecoveryPolicy: input.outputRecoveryPolicy }),
+    ...(input.outputRestartPolicy === undefined ? {} : { outputRestartPolicy: input.outputRestartPolicy }),
+    ...(input.approvalOutcomePolicy === undefined ? {} : { approvalOutcomePolicy: input.approvalOutcomePolicy }),
     ...(input.providerRecoveryPolicy === undefined ? {} : { providerRecoveryPolicy: input.providerRecoveryPolicy }),
     ...(input.toolErrorRecoveryPolicy === undefined ? {} : { toolErrorRecoveryPolicy: input.toolErrorRecoveryPolicy }),
     ...(input.toolDiscoveryPolicy === undefined ? {} : { toolDiscoveryPolicy: input.toolDiscoveryPolicy }),
+    ...(input.toolAdmissionPolicy === undefined ? {} : { toolAdmissionPolicy: input.toolAdmissionPolicy }),
     ...(input.todoPolicy === undefined ? {} : { todoPolicy: input.todoPolicy }),
     ...(input.toolExecutionPolicy === undefined ? {} : { toolExecutionPolicy: input.toolExecutionPolicy }),
     ...(input.childTaskPolicy === undefined ? {} : { childTaskPolicy: input.childTaskPolicy }),
@@ -106,7 +112,9 @@ export function configure(input: ConfigurationInput): RunConfiguration {
     ...(input.planModePolicy === undefined ? {} : { planModePolicy: input.planModePolicy }),
     ...(input.planModeInitialActive === undefined ? {} : { planModeInitialActive: input.planModeInitialActive }),
     ...(input.childPlanPolicy === undefined ? {} : { childPlanPolicy: input.childPlanPolicy }),
-    ...(input.toolErrorRecoveryModelCalls === undefined ? {} : { toolErrorRecoveryModelCalls: input.toolErrorRecoveryModelCalls }),
+    ...(input.toolErrorRecoveryModelCalls === undefined
+      ? input.toolErrorRecoveryPolicy === 'diagnose-before-repeat/v2' ? { toolErrorRecoveryModelCalls: 10 } : {}
+      : { toolErrorRecoveryModelCalls: input.toolErrorRecoveryModelCalls }),
     ...(input.deliveryReviewPolicy === undefined ? {} : { deliveryReviewPolicy: input.deliveryReviewPolicy === null ? null : normalizeDeliveryReviewPolicy(input.deliveryReviewPolicy) }),
     ...(input.hostRecoveryBinding === undefined ? {} : { hostRecoveryBinding: input.hostRecoveryBinding }),
     ...(input.backgroundSessionBindingDigest === undefined ? {} : { backgroundSessionBindingDigest: input.backgroundSessionBindingDigest }),
@@ -151,10 +159,15 @@ export function configure(input: ConfigurationInput): RunConfiguration {
     && typeof config.hostRecoveryBinding === 'object' && !Array.isArray(config.hostRecoveryBinding), 'invalid_host_recovery_binding');
   invariant(config.guidancePolicy == null || config.guidancePolicy === 'boundary-guide/v1', 'invalid_guidance_policy');
   invariant(config.inputPolicy === undefined || config.inputPolicy === 'before-first-model/v1', 'invalid_input_policy');
-  invariant(config.outputRecoveryPolicy == null || ['task-or-delivery/v1', 'response-boundary/v2'].includes(config.outputRecoveryPolicy), 'invalid_output_recovery_policy');
+  invariant(config.outputRecoveryPolicy == null || ['task-or-delivery/v1', 'response-boundary/v2', 'response-boundary/v3'].includes(config.outputRecoveryPolicy), 'invalid_output_recovery_policy');
+  invariant(config.outputRestartPolicy === undefined || ['per-response/v1', 'per-response/v2'].includes(config.outputRestartPolicy)
+    && ['response-boundary/v2', 'response-boundary/v3'].includes(config.outputRecoveryPolicy ?? ''), 'invalid_output_restart_policy');
+  invariant(config.approvalOutcomePolicy === undefined || config.approvalOutcomePolicy === 'owner-outcome/v1', 'invalid_approval_outcome_policy');
   invariant(config.providerRecoveryPolicy == null || config.providerRecoveryPolicy === 'provider-recovery/v2', 'invalid_provider_recovery_policy');
   invariant(config.toolExecutionPolicy === undefined || config.toolExecutionPolicy === 'owner-execution/v1', 'invalid_tool_execution_policy');
-  invariant(config.toolErrorRecoveryPolicy == null || config.toolErrorRecoveryPolicy === 'diagnose-before-repeat/v1', 'invalid_tool_error_recovery_policy');
+  invariant(config.toolErrorRecoveryPolicy == null || ['diagnose-before-repeat/v1', 'diagnose-before-repeat/v2'].includes(config.toolErrorRecoveryPolicy), 'invalid_tool_error_recovery_policy');
+  invariant(config.toolErrorRecoveryPolicy !== 'diagnose-before-repeat/v2' || config.toolErrorRecoveryModelCalls !== undefined,
+    'missing_tool_error_recovery_model_calls');
   invariant(config.toolErrorRecoveryModelCalls == null || Number.isSafeInteger(config.toolErrorRecoveryModelCalls)
     && config.toolErrorRecoveryModelCalls >= 1 && config.toolErrorRecoveryModelCalls <= 10, 'invalid_tool_error_recovery_model_calls');
   invariant(config.deliveryReviewPolicy == null || !config.tools.some(tool => tool.name === REVIEW_SUBMISSION_TOOL), 'reserved_delivery_review_tool');
@@ -236,7 +249,7 @@ export function configure(input: ConfigurationInput): RunConfiguration {
     const policy = profile.providerCompatibilityPolicy;
     invariant(policy !== null && typeof policy === 'object' && !Array.isArray(policy)
       && Object.keys(policy).every(key => ['contract', 'rule'].includes(key))
-      && ['provider-compat/v1', 'provider-compat/v2', 'provider-compat/v3'].includes(policy.contract)
+      && ['provider-compat/v1', 'provider-compat/v2', 'provider-compat/v3', 'provider-compat/v4'].includes(policy.contract)
       && ['auto', 'permissive', 'openai', 'strict-openai', 'cerebras', 'groq', 'deepseek',
         'zai', 'kspmas-gateway', 'moonshot', 'mimo'].includes(policy.rule), 'invalid_provider_compatibility_policy');
   }

@@ -16,6 +16,11 @@ export function validateNativeRecoveryStatus(value, { agentId, sessionId, runId 
   '运行错误记录无法识别，请刷新核对。');
   if (value.outcome != null) check(['verified', 'unverified', 'partial', 'blocked', 'failed', 'budget_exhausted'].includes(value.outcome), '任务结果状态无法识别，请刷新核对。');
   if (value.verificationRequired !== undefined) check(typeof value.verificationRequired === 'boolean', '任务验证要求无法识别，请刷新核对。');
+  if (value.modelRetryWait !== undefined) check(value.modelRetryWait?.contract === 'agentkit.native-model-retry-wait/v1'
+    && Object.keys(value.modelRetryWait).sort().join(',') === 'contract,notBefore'
+    && Number.isFinite(value.modelRetryWait.notBefore) && value.modelRetryWait.notBefore > 0
+    && value.state === 'recovering' && ['preparing_context', 'compacting'].includes(value.phase),
+  '模型重试等待状态与原运行不一致，请刷新核对。');
   if (value.canRetireResources !== undefined) check(typeof value.canRetireResources === 'boolean'
     && (!value.canRetireResources || !value.managed && value.phase === 'interrupted'
       && Number.isSafeInteger(value.resourceRetirementEventSeq) && value.resourceRetirementEventSeq >= 0),

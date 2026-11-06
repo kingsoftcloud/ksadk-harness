@@ -22,6 +22,7 @@ export function visibleItems(state, { includeInternal = false } = {}) {
   const visible = [];
   for (const item of timeline) {
     if (['tool', 'tool-preview'].includes(item.kind) && !toolConversationVisible(item)) continue;
+    if (item.kind === 'text' && !String(item.text ?? '').trim()) continue;
     if (item.kind === 'thought' && !String(item.text ?? '').trim()) continue;
     const previous = visible.at(-1);
     if (item.kind === 'thought' && previous?.kind === 'thought') {

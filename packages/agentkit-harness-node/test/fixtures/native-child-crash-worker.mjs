@@ -6,6 +6,7 @@ import { SqliteRunStore } from '../../src/native/sqlite-store.mjs';
 import { createNativeChildOwner } from '../../src/native/child-owner.mjs';
 
 const dir = process.argv[2], store = new SqliteRunStore(join(dir, 'runs.sqlite'));
+const pausedCollection = process.argv[3] === 'paused-collection';
 const childScope = { ...scope, agentId: 'child-agent' };
 const definition = tool({ name: 'native_start_child', readOnly: false, concurrentSafe: false, childBudgetPolicy: 'start/v1' });
 const childTool = tool({ name: 'write_proof', readOnly: false, concurrentSafe: false });
@@ -22,8 +23,14 @@ const batch = prepareEffect(executing, 'tool', 'executing_tools', { calls: [call
 store.commit(scope, 'run', lease, 21, 1, batch); store.claim(scope, 'run', lease, 22, batch.snapshot.pendingIntent);
 const parent = store.load(scope, 'run').snapshot;
 const owner = createNativeChildOwner({ scope, childScopes: [childScope], store, now: () => 22, resolveChild: async () => ({ scope: childScope,
-  configuration: configure({ profile: config.profile, contract: { objective: call.arguments.task }, tools: [childTool], hostBindingDigest: 'child-process-fixture' }),
-  ports: { model: { generate: async request => ({ kind: request.messages.some(message => message.role === 'tool') ? 'final_candidate' : 'tool_calls',
+  configuration: configure({ profile: { ...config.profile, ...(pausedCollection ? { maxContinuations: 0 } : {}) },
+    ...(pausedCollection ? { outputRecoveryPolicy: 'response-boundary/v2', outputRestartPolicy: 'per-response/v2',
+      limits: { maxOutputRestarts: 0, maxModelCalls: 4, maxToolCalls: 2 } } : {}),
+    contract: { objective: call.arguments.task }, tools: [childTool], hostBindingDigest: 'child-process-fixture' }),
+  ports: { model: { generate: async request => pausedCollection && request.messages.some(message => message.role === 'tool')
+    ? { kind: 'output_limit', text: '', toolCalls: [], usage: emptyUsage(),
+      textCommitVersion: 'provider-finished-text/v1', outputBoundary: 'no-visible-output/v1' }
+    : ({ kind: request.messages.some(message => message.role === 'tool') ? 'final_candidate' : 'tool_calls',
     text: request.messages.some(message => message.role === 'tool') ? 'Child evidence' : '', usage: emptyUsage(),
     toolCalls: request.messages.some(message => message.role === 'tool') ? [] : [{ callId: 'child-write', name: childTool.name, arguments: {} }] }) },
   tools: { execute: async () => { writeFileSync(join(dir, 'proof.txt'), 'one write'); return { status: 'ok', content: 'Written' }; } } },
@@ -33,8 +40,8 @@ const receipt = await owner.start({ ...Object.fromEntries(['scope', 'runId', 'se
 const childId = receipt.childBudgetReservation.childRunId;
 for (let tries = 0; tries < 500; tries++) {
   const child = store.load(childScope, childId).snapshot;
-  if (child.phase === 'completed') {
-    if (process.argv[3] === 'collection') {
+  if (child.phase === 'completed' || pausedCollection && child.phase === 'paused' && store.load(childScope, childId).lease === null) {
+    if (process.argv[3] === 'collection' || pausedCollection) {
       const committed = store.commit(scope, 'run', lease, 23, parent.revision, settle(parent, batch.intents[0], {
         operationKey: parent.pendingIntent, status: 'committed', result: { results: [receipt] },
       }, reduceTools(parent, [receipt], [call], batch.intents[0], config, digest), 0));

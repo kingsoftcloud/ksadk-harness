@@ -1,4 +1,5 @@
 import { redactValue, truncateText } from './summary.mjs';
+import { toolInputPreview } from './tool-detail.mjs';
 
 const bounded = value => {
   let parsed = value;
@@ -27,7 +28,7 @@ export function createToolInspector(React) {
     h('header', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
       h('strong', null, item.name), h('button', { type: 'button', onClick: onClose, autoFocus: true }, labels.close || 'Close')),
     h('p', null, `${labels.state || 'State'}: ${item.status}`),
-    h('h4', null, labels.arguments || 'Arguments'), h('pre', null, bounded(item.input ?? {})),
+    h('h4', null, labels.arguments || 'Arguments'), h('pre', null, toolInputPreview(item.input)),
     h('h4', null, labels.result || 'Result'),
     h('pre', null, item.error ? bounded(item.error) : item.result != null ? bounded(item.result)
       : labels.noSettledResult || 'No settled result is available'),

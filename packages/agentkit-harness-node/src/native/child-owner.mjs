@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { NativeKernel, NativeError, isNativeError, CHILD_OWNER_CONTRACT, canonical, copy, configure,
   addUsage, admittedToolBudget, childLifecycleRequest, childReadyProbe, scopeKey, terminal,
-  CHILD_TASK_POLICY, COORDINATOR_RESPONSE_POLICY, activePlanMode, isPlanChildCall, planModeWriteDenial,
+  CHILD_TASK_POLICY, COORDINATOR_RESPONSE_POLICY, activePlanMode, isPlanChildCall, planModeWriteDenial, childResumeAllowed,
   CHILD_PLAN_POLICY, CHILD_PLAN_MODE_POLICY, defaultPolicyBindings } from '@kingsoftcloud/agentkit-harness-core';
 import { loadSessionChild, accountedChildDelivery, hasUnsafeChildReceipt, childNeedsApproval } from './owned-child.mjs';
 import { CHILD_ALLOCATION_POLICY, CHILD_ALLOCATION_DEFAULTS, LEGACY_CALL_DEFAULTS,
@@ -222,23 +222,23 @@ export function createNativeChildOwner({ scope, childScopes = [scope], store, re
       request.signal.throwIfAborted();
       toolInvocation(request);
       if (entry && !terminal(record.snapshot.phase)) drive(entry);
-      while (!terminal(record.snapshot.phase) && !childNeedsApproval(record)) {
+      while (!terminal(record.snapshot.phase) && record.snapshot.phase !== 'paused' && !childNeedsApproval(record)) {
         request.signal.throwIfAborted(); const parent = toolInvocation(request);
-        if (parent.commands.some(row => !row.consumed && ['pause', 'promote_child', 'message_child', 'cancel_child'].includes(row.command.kind))
+        if (parent.commands.some(row => !row.consumed && ['pause', 'promote_child', 'message_child', 'cancel_child', 'resume_child'].includes(row.command.kind))
           || entry?.error && entry.error.code !== 'lease_busy') return startup();
         await observeWhileLive(new Promise(resolve => setTimeout(resolve, 25)), request.signal);
         record = ownedChild(request, reservation);
         if (entry?.error?.code === 'lease_busy') drive(entry);
       }
       request.signal.throwIfAborted(); toolInvocation(request);
-      if (childNeedsApproval(record) || record.snapshot.phase === 'interrupted' || unsafeReceipt(record)) return startup();
+      if (childNeedsApproval(record) || record.snapshot.phase === 'paused' || record.snapshot.phase === 'interrupted' || unsafeReceipt(record)) return startup();
       return { ...terminalReceipt(record, reservation), childBudgetReservation: copy(reservation) };
     } finally { request.signal.removeEventListener('abort', cancel); }
   };
   const projection = (record, reservation) => ({ runId: record.snapshot.runId, sessionId: record.snapshot.sessionId,
     operationKey: reservation.parentOperationKey, callId: reservation.parentToolCallId,
     state: unsafeReceipt(record) && !canWaitForReceipt?.(record) ? 'interrupted' : record.snapshot.phase === 'created' ? 'prepared' : childNeedsApproval(record) ? 'awaiting_interaction'
-      : terminal(record.snapshot.phase) ? record.snapshot.phase : 'running',
+      : record.snapshot.phase === 'paused' || terminal(record.snapshot.phase) ? record.snapshot.phase : 'running',
     reservedModelCalls: reservation.maxModelCalls, reservedToolCalls: reservation.maxToolCalls,
     usage: addUsage(record.snapshot.usage, record.snapshot.descendantUsage), notified: false, metadata: {} });
 
@@ -283,7 +283,10 @@ export function createNativeChildOwner({ scope, childScopes = [scope], store, re
           && !terminal(child.phase) && (!unsafeReceipt(record) || canWaitForReceipt?.(record)) && reservation.settledUsageDigest === null;
         rows.push({ childRunId: child.runId, sessionId: child.sessionId, role: binding.role, phase: child.phase, goalRevision: child.goalRevision, delivery,
           canPromote: live && delivery === 'foreground' && effective(parent).childPromotionPolicy === 'owned-child-promotion/v1',
-          canCancel: live, canSendInput: live });
+          canCancel: live, canSendInput: live,
+          ...(child.phase === 'paused' || record.configuration.outputRestartPolicy === 'per-response/v2'
+            || record.configuration.providerRecoveryPolicy === 'provider-recovery/v2'
+            ? { canResume: live && childResumeAllowed(record.snapshot) } : {}) });
       }
       return rows;
     },
@@ -476,7 +479,11 @@ export function createNativeChildOwner({ scope, childScopes = [scope], store, re
           const expected = request.childApproval;
           check(request.interaction.interactionId === `native-child-${hash(expected)}`
             && request.interaction.callId === expected.toolCall.callId && ['allow', 'deny'].includes(request.interaction.decision), 'child_approval_identity_conflict');
-          const commandId = `parent-approval-${hash({ parent: identity(request), approval: expected, decision: request.interaction.decision })}`;
+          const reply = { interactionId: expected.interactionId, decision: request.interaction.decision,
+            ...(record.configuration.approvalOutcomePolicy === 'owner-outcome/v1'
+              && Object.hasOwn(request.interaction, 'approvalOutcome') ? { approvalOutcome: request.interaction.approvalOutcome } : {}) };
+          const commandId = `parent-approval-${hash({ parent: identity(request), approval: expected,
+            decision: Object.hasOwn(reply, 'approvalOutcome') ? reply : request.interaction.decision })}`;
           // A promotion may detach this observer after the decision was
           // durably delivered. Accept only that same saved decision; never
           // infer approval from a child's phase or ask for it a second time.
@@ -485,11 +492,10 @@ export function createNativeChildOwner({ scope, childScopes = [scope], store, re
             `parent-approval-${hash({ parent: item.operationKey, approval: expected, decision: request.interaction.decision })}`);
           const delivered = record.commands.some(row => row.command.kind === 'submit_interaction'
             && [commandId, ...previousIds].includes(row.command.commandId)
-            && same(row.command.payload, { interactionId: expected.interactionId, decision: request.interaction.decision }));
+            && same(row.command.payload, reply));
           if (!delivered) {
             check(same(childApproval(record, reservation), expected), 'child_approval_identity_conflict');
-            submit(entry, { commandId, kind: 'submit_interaction',
-              payload: { interactionId: expected.interactionId, decision: request.interaction.decision } });
+            submit(entry, { commandId, kind: 'submit_interaction', payload: reply });
           }
         }
         if (!childNeedsApproval(record) || request.action === 'cancel' || request.childApproval?.childRunId === entry.runId) {
@@ -570,10 +576,13 @@ export function createNativeChildOwner({ scope, childScopes = [scope], store, re
       // Reconcile observes ledgers only. A proven original receipt wait may
       // remain pending after the parent collector died; it is not a failed
       // collection and grants no authority to query/send/drive that child.
+      // A known pause with no outstanding effect is also a ledger fact. It
+      // can restore the parent's join without resuming the child implicitly.
       // Rebinding and execution happen later in a fresh fenced collect.
       if (records.some(record => terminal(record.snapshot.phase)
         ? record.snapshot.phase === 'interrupted' || unsafeReceipt(record)
-        : request.action === 'cancel' || !canWaitForReceipt?.(record))) return null;
+        : request.action === 'cancel' || !canWaitForReceipt?.(record)
+          && !(childResumeAllowed(record.snapshot) && !unsafeReceipt(record)))) return null;
       return { operationKey: request.operationKey,
         results: records.flatMap((record, index) => terminal(record.snapshot.phase) ? [terminalReceipt(record, request.reservations[index], false)] : []),
         ...(request.responseCursors === undefined ? {} : { responses: records.flatMap(record => responses(record, request.responseCursors)) }),
@@ -601,6 +610,32 @@ export function createNativeChildOwner({ scope, childScopes = [scope], store, re
           && record.snapshot.phase !== 'interrupted' && !unsafeReceipt(record)
           ? { ...terminalReceipt(record, reservation), childBudgetReservation: copy(reservation) }
           : startupReceipt(reservation, record.configuration.childOwnerBinding.role) }];
+    },
+    // Host disposal is not an operator cancellation. Only detach settled idle
+    // workers: their identity, pending decision and join stay in the ledger for
+    // a replacement Host. A busy worker requires an explicit stop/recovery
+    // path; do not drop its owner or infer that its effect never ran.
+    detachRun(request) {
+      check(same(request.scope, parentScope), 'child_parent_scope_mismatch');
+      const parent = store.load(parentScope, request.runId);
+      check(['paused', 'awaiting_interaction'].includes(parent.snapshot.phase), 'child_detach_parent_not_idle');
+      const owned = [...entries.values()].filter(entry => entry.configuration.childOwnerBinding.parent.runId === request.runId);
+      for (const entry of owned) {
+        const record = store.load(entry.scope, entry.runId);
+        check(!entry.promise && !entry.idle && !record.lease
+          && record.snapshot.pendingIntent === null && !unsafeReceipt(record)
+          && (terminal(record.snapshot.phase) || ['paused', 'awaiting_interaction'].includes(record.snapshot.phase)),
+        'child_detach_worker_not_idle');
+      }
+      for (const entry of owned) entries.delete(entry.runId);
+    },
+    async closeRun(request) {
+      check(same(request.scope, parentScope), 'child_parent_scope_mismatch');
+      const parent = store.load(parentScope, request.runId);
+      // Terminal cleanup owns cancellation of descendants. Host shutdown does
+      // not grant that authority while the durable parent is still resumable.
+      if (terminal(parent.snapshot.phase)) return this.releaseRun(request);
+      return this.detachRun(request);
     },
     async releaseRun(request) {
       check(same(request.scope, parentScope), 'child_parent_scope_mismatch');

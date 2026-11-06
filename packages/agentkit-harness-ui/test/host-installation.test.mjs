@@ -9,7 +9,8 @@ import { installNativeChildPane } from '../src/host/native-child-pane.mjs';
 import { createNativeChildPanel } from '../src/host/native-run-panel.mjs';
 
 function host() {
-  const slots = new Map(), tabs = new Map(), cleanups = [], opened = [], eventSource = {};
+  const slots = new Map(), tabs = new Map(), cleanups = [], opened = [], eventSource = { getSnapshot: () => eventWindow, subscribe: () => () => {} };
+  const eventWindow = { revision: 0, entries: [], change: { kind: 'replace', entries: [] } };
   const context = { theme: { getTheme: () => ({ active: { colorScheme: 'dark' } }) },
     on: () => () => {}, sessions: { binding: () => ({ eventSource }) },
     effect: install => { const cleanup = install(); if (typeof cleanup === 'function') cleanups.push(cleanup); },
@@ -29,7 +30,10 @@ test('the npm installer binds the host event source and releases the primary sea
   installTaskTimeline(h.context, { ui: { React, ReactDOM }, hostRemote: {}, resolveAgentFromPreset: () => 'agent' });
   const seat = h.slots.get('conversation.chat.presentation:primary');
   assert.equal(typeof seat.component, 'function');
-  assert.equal(seat.definition.inject('session').hooks.harnessEvents, h.eventSource);
+  const feed = seat.definition.inject('session').hooks.harnessEvents;
+  assert.equal(feed.getSnapshot(), h.eventSource.getSnapshot());
+  const unsubscribe = feed.subscribe(() => {});
+  assert.equal(typeof unsubscribe, 'function'); unsubscribe();
   h.close(); assert.equal(h.slots.size, 0); assert.equal(h.tabs.size, 0);
 });
 

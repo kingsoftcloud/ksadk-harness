@@ -40,6 +40,8 @@ export interface ChildTaskControlState {
   childRunId: string; sessionId: string; role: string; phase: string;
   goalRevision: number;
   delivery: 'foreground' | 'background'; canPromote: boolean; canCancel: boolean; canSendInput: boolean;
+  /** Explicit Host control, not a model tool or implicit side effect of guidance. */
+  canResume?: boolean;
 }
 export interface ChildControlTarget {
   scope: RunScope; runId: string; configurationDigest: string; parentOperationKey: string; parentToolCallId: string;

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm, symlink, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createNativeWorkspaceInstructions } from '../src/native/workspace-instructions.mjs';
+import { createNativeWorkspaceInstructions, nativeWorkspaceInstructionTimeoutRecovery } from '../src/native/workspace-instructions.mjs';
 import { nativeWorkspaceContextBinding } from '../src/native/workspace-context.mjs';
 import { collectContextContributions, canonical, projectWorkspaceTouchEvidence, NativeKernel, emptyUsage } from '@kingsoftcloud/agentkit-harness-core';
 import { SqliteRunStore } from '../src/native/sqlite-store.mjs';
@@ -21,6 +21,27 @@ async function setup(t) {
   const read = state => source.readSource({ source: source.source, snapshot: { context: { instructionScopes: state } }, signal });
   return { parent, root, global, binding, source, signal, read };
 }
+
+test('instruction timeout recovery is frozen per source and legacy reconstruction retains its absence', async t => {
+  const f = await setup(t), recovery = nativeWorkspaceInstructionTimeoutRecovery();
+  const reader = createNativeWorkspaceInstructions(f.binding, { timeoutRecovery: recovery });
+  const config = { contextSources: [reader.source] };
+  const restored = createNativeWorkspaceInstructions(f.binding,
+    { timeoutRecovery: nativeWorkspaceInstructionTimeoutRecovery(config) });
+  assert.deepEqual(restored.source, reader.source);
+  assert.notEqual(reader.source.bindingDigest, f.source.source.bindingDigest);
+  recovery.maxRetries = 0; assert.equal(reader.source.timeoutRecovery.maxRetries, 2);
+  const old = createNativeWorkspaceInstructions(f.binding,
+    { timeoutRecovery: nativeWorkspaceInstructionTimeoutRecovery({ contextSources: [f.source.source] }) });
+  assert.deepEqual(old.source, f.source.source); assert.equal(Object.hasOwn(old.source, 'timeoutRecovery'), false);
+  await writeFile(join(f.root, 'AGENTS.md'), 'CURRENT_WITH_RECOVERY');
+  const value = await restored.readSource({ source: restored.source, snapshot: { context: {} }, signal: f.signal });
+  assert.equal(value.items[0].files[0].content, 'CURRENT_WITH_RECOVERY');
+  await assert.rejects(restored.readSource({ source: f.source.source, snapshot: { context: {} }, signal: f.signal }),
+    /workspace_instruction_source_changed/);
+  assert.throws(() => createNativeWorkspaceInstructions(f.binding,
+    { timeoutRecovery: { ...reader.source.timeoutRecovery, maxRetries: 4 } }), /invalid_context_source_timeout_recovery/);
+});
 
 test('root, global and discovered scoped rules are fresh after replacement/deletion and reader reconstruction', async t => {
   const f = await setup(t);

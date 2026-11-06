@@ -27,6 +27,7 @@ import {
   normalizeResponse, sealUsage, ProtocolError, resolveUrl, boundOutputTokens,
   emptyUsage,
 } from './model-normalize.mjs';
+import { classifyOpenAIProviderError } from './model-provider-error.mjs';
 import { sealModelReplay } from './model-replay.mjs';
 import { validateMediaBlock, MediaError } from './model-media.mjs';
 // parseModelJson is the kernel's strict finite JSON parser (rejects duplicate
@@ -57,24 +58,6 @@ const HOSTED_ITEM_TYPES = new Set([
   'web_search_call', 'web_search_preview_call', 'file_search_call',
   'code_interpreter_call', 'computer_use_call', 'image_generation_call',
   'mcp_call', 'local_shell_call',
-]);
-
-// In-stream error code/type → retryable/terminal classification. A 2xx stream
-// that emits an error/response.failed event is a provider rejection, never a
-// final; unknown codes stay terminal so a foreign payload cannot become a
-// silent retry or final. Mirrors the Anthropic stream classifier and the
-// Python provider_error code map.
-const RETRYABLE_ERROR_CODES = new Set([
-  'rate_limit_error', 'rate_limit_exceeded', 'overloaded_error', 'server_error',
-  'api_error', 'service_unavailable_error', 'server_is_overloaded', 'timeout_error',
-  'MODEL_PROVIDER_RATE_LIMIT', 'MODEL_PROVIDER_UNAVAILABLE',
-]);
-const TERMINAL_ERROR_CODES = new Set([
-  'invalid_request_error', 'invalid_api_key', 'authentication_error',
-  'permission_error', 'not_found_error', 'request_too_large', 'billing_error',
-  'insufficient_quota', 'MODEL_PROVIDER_AUTHENTICATION', 'MODEL_PROVIDER_PERMISSION',
-  'MODEL_PROVIDER_INVALID_REQUEST', 'MODEL_PROVIDER_NOT_FOUND',
-  'MODEL_PROVIDER_QUOTA_EXHAUSTED',
 ]);
 
 function securityHeaders() {
@@ -449,18 +432,21 @@ function partsText(value, types) {
 
 // Parse a buffered 2xx Responses body into a sealed result. Used when a 2xx
 // response is not SSE (rare for stream:true); also the basis for envelope
-// validation. Throws ProtocolError on a malformed envelope or a failed/error
-// status (a 2xx body that claims failure is a protocol conflict, terminal).
+// validation. Known provider error envelopes retain their classification;
+// contradictory success/error envelopes are terminal protocol conflicts.
 export function parseResponsesBuffered(bodyText, request, { captureReplay = false, onThinking } = {}) {
   let payload;
   try { payload = strictParseJson(bodyText); } catch { throw new ProtocolError('invalid response json', 'json_invalid'); }
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     throw new ProtocolError('invalid response envelope', 'envelope_invalid');
   }
+  if (payload.error != null || payload.status === 'failed') {
+    if (payload.status != null && payload.status !== 'failed') throw new ProtocolError('conflicting response envelope', 'envelope_invalid');
+    throw Object.assign(new ProtocolError('provider rejected generation', 'provider_error'), {
+      streamError: classifyOpenAIProviderError(payload.error),
+    });
+  }
   const status = identityOf(payload.status);
-  // A 2xx body that carries an error alongside a purported successful answer,
-  // or an explicit failed status, is a protocol conflict, never a final.
-  if (payload.error != null) throw new ProtocolError('invalid response envelope', 'envelope_invalid');
   if (status === 'failed') throw new ProtocolError('invalid response envelope', 'envelope_invalid');
   validateBufferedIdentity(payload);
   const reportedUsage = parseResponsesUsage(payload.usage);
@@ -1036,20 +1022,7 @@ export function createResponsesStreamState(profile) {
       }
       const usage = parseResponsesUsage(failedBody.usage);
       if (usage != null) this.usage = usage;
-      const errorObj = failedBody.error != null && typeof failedBody.error === 'object' ? failedBody.error : {};
-      const code = String(errorObj.code || errorObj.type || '');
-      let kind; let failureKind;
-      if (RETRYABLE_ERROR_CODES.has(code)) {
-        kind = 'provider_retryable_error';
-        failureKind = code === 'rate_limit_error' || code === 'rate_limit_exceeded' ? 'rate_limit' : 'server_error';
-      } else if (TERMINAL_ERROR_CODES.has(code)) {
-        kind = 'provider_terminal_error';
-        failureKind = 'client_error';
-      } else {
-        kind = 'provider_terminal_error';
-        failureKind = 'invalid_response';
-      }
-      this.streamError = { kind, failureKind };
+      this.streamError = classifyOpenAIProviderError(failedBody.error);
     },
 
     handleTerminal(event, { text: drainText, reasoning: drainReasoning }, emit) {
@@ -1142,6 +1115,11 @@ export function createResponsesStreamState(profile) {
       // An in-stream error or a transport error during the attempt seals the
       // observed text with no tools; usage is preserved when reported.
       if (this.streamError) {
+        // A provider refusal is an observed stop decision, not permission to
+        // reopen generation because a later stream error is transient.
+        if (this.streamError.kind === 'provider_retryable_error' && (this.refused || this.finish === 'content_filter')) {
+          return { kind: 'policy_abort', text: this.text, toolCalls: [], usage, usageReported };
+        }
         return {
           kind: this.streamError.kind, text: this.text, toolCalls: [], usage, usageReported,
           ...(this.streamError.failureKind ? { failureKind: this.streamError.failureKind } : {}),

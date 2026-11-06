@@ -7,11 +7,56 @@ import { mkdtemp, mkdir, realpath, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { nativeWorkspaceContextBinding } from '../src/native/workspace-context.mjs';
+import { nativeWorkspaceInstructionTimeoutRecovery } from '../src/native/workspace-instructions.mjs';
 import { createStudioNativeChildWorkspaces } from '../src/native/child-workspace-binding.mjs';
 import { fixture, scope, digest, verificationReport } from '../../agentkit-harness-core/test/fixtures.mjs';
 import { createNativeChildren, nativeChildRoles } from '../src/native/children.mjs';
 
-for (const isolated of [false, true]) test(`child models use current root and discovered scoped guidance in their ${isolated ? 'isolated write' : 'shared read'} workspace`, { timeout: 10000 }, async t => {
+for (const deferred of [false, true]) test(`child-owned catalog freezes admission policy only with discovery (${deferred})`, async t => {
+  const store = new MemoryRunStore(), roles = nativeChildRoles({ subAgents: [{ name: 'reader',
+    instructions: 'Read scoped evidence.', tools: ['read_workspace_file'], maxTurns: 4 }] });
+  const read = workspaceToolDefinitions().find(tool => tool.name === 'read_workspace_file');
+  const tools = [{ ...read, ...(deferred ? { discovery: { deferred: true } } : {}) }];
+  let models = 0, executions = 0;
+  const children = await createNativeChildren({ roles, scope, sessionId: 'session', store, tools,
+    hasSkills: false, hasMcp: false, toolAdmissionPolicy: 'discover-before-retry/v1',
+    resolveModel: async () => ({ profile: fixture().config.profile, supportsImages: false,
+      model: { generate: async request => {
+        models++;
+        if (models === 1 || deferred && models === 2) {
+          assert.equal(request.tools.some(tool => tool.name === read.name), !deferred || models === 2);
+          assert.equal(executions, 0);
+          return { kind: 'tool_calls', text: '', usage: emptyUsage(), toolCalls: [{ callId: 'read-' + models,
+            name: read.name, arguments: { path: 'evidence.txt' } }] };
+        }
+        return { kind: 'final_candidate', text: 'Scoped evidence read.', toolCalls: [], usage: emptyUsage() };
+      } } }),
+    bindTools: () => ({ tools: { execute: async request => {
+      assert.equal(request.call.callId, 'read-' + (deferred ? 2 : 1)); executions++;
+      return { status: 'ok', content: 'evidence' };
+    } } }),
+    verificationFactory: async () => ({ verify: async request => verificationReport(request, { checks: [] }) }),
+  });
+  t.after(() => children.owner.releaseRun({ scope, runId: 'run' }));
+  const start = nativeChildToolDefinitions(['reader'])[0]; let parentModels = 0;
+  const { config, snapshot } = fixture({ tools: [start], childLifecyclePolicy: 'owned-background/v2',
+    limits: { effectTimeoutMs: 130000 } });
+  const kernel = new NativeKernel({ store, digest, owner: 'parent-admission', ports: { children: children.owner,
+    tools: { execute: request => children.execute(request) }, model: { generate: async () => ++parentModels === 1
+      ? { kind: 'tool_calls', text: '', usage: emptyUsage(), toolCalls: [{ callId: 'start', name: start.name,
+        arguments: { role: 'reader', task: 'Read evidence.txt.', background: false } }] }
+      : { kind: 'final_candidate', text: 'Delivered.', toolCalls: [], usage: emptyUsage() } } } });
+  kernel.start(snapshot, config); const done = await kernel.runUntilIdle(scope, 'run');
+  assert.equal(done.phase, 'completed'); assert.equal(executions, 1); assert.equal(models, deferred ? 3 : 2);
+  const childScope = { ...scope, agentId: scope.agentId + ':child:reader' };
+  const child = store.load(childScope, store.list(childScope)[0].runId);
+  assert.equal(child.configuration.toolAdmissionPolicy, deferred ? 'discover-before-retry/v1' : undefined);
+  assert.equal(child.snapshot.phase, 'completed');
+  assert.equal(Object.hasOwn(config, 'toolAdmissionPolicy'), false, 'child policy must not mutate the parent');
+  if (deferred) assert.deepEqual(child.snapshot.toolDiscovery.promoted, [read.name]);
+});
+
+for (const recovery of [false, true]) for (const isolated of [false, true]) test(`child models use current root and discovered scoped guidance in their ${isolated ? 'isolated write' : 'shared read'} workspace (${recovery ? 'timeout recovery' : 'legacy'})`, { timeout: 10000 }, async t => {
   const directory = await mkdtemp(join(await realpath(tmpdir()), 'child-current-instructions-'));
   const root = join(directory, 'workspace'); await mkdir(join(root, 'pkg'), { recursive: true });
   await writeFile(join(root, 'AGENTS.md'), 'CHILD_ROOT_RULE');
@@ -26,6 +71,7 @@ for (const isolated of [false, true]) test(`child models use current root and di
   const children = await createNativeChildren({ roles, scope, sessionId: 'session', store, tools: workspaceToolDefinitions(),
     providerRecoveryPolicy: isolated ? 'provider-recovery/v2' : undefined,
     workspaceContext: nativeWorkspaceContextBinding(root, { instructionRoots: [] }),
+    instructionTimeoutRecovery: recovery ? nativeWorkspaceInstructionTimeoutRecovery() : undefined,
     fileWorkspaces: createStudioNativeChildWorkspaces({ workspaceRoot: root, stateDir: join(directory, 'isolated') }),
     resolveModel: async () => ({ profile: fixture().config.profile, supportsImages: false, contextPolicy,
       context: { tokens: { tokenizerId: 'child', tokenizerDigest: 'child/v1',
@@ -65,17 +111,22 @@ for (const isolated of [false, true]) test(`child models use current root and di
   assert.equal(child.snapshot.phase, 'completed');
   assert.equal(child.configuration.providerRecoveryPolicy, isolated ? 'provider-recovery/v2' : undefined);
   assert.equal(child.configuration.hostRecoveryBinding.workspaceContext.workspaceRoot, childRoot);
+  assert.deepEqual(child.configuration.contextSources[0].timeoutRecovery,
+    recovery ? nativeWorkspaceInstructionTimeoutRecovery() : undefined);
   assert.deepEqual(child.snapshot.context.instructionScopes.directories, ['', 'pkg']);
   assert.doesNotMatch(canonical(child.snapshot.messages), /CHILD_ROOT_RULE|CHILD_NESTED_RULE/);
 });
 
-for (const toolExecutionPolicy of [undefined,'owner-execution/v1']) test(`two standalone child admissions freeze parent execution policy (${toolExecutionPolicy??'legacy'}) and child-owned model facts`, { timeout: 10000 }, async t => {
+for (const toolExecutionPolicy of [undefined,'owner-execution/v1']) for (const outputRestartPolicy of [undefined, 'per-response/v1', 'per-response/v2']) test(`two standalone child admissions freeze parent execution policy (${toolExecutionPolicy??'legacy'}, ${outputRestartPolicy??'legacy output'}) and child-owned model facts`, { timeout: 10000 }, async t => {
   const policy = 'parent-shared/v1', store = new MemoryRunStore();
+  const approvalOutcomePolicy = outputRestartPolicy === 'per-response/v2' ? 'owner-outcome/v1' : undefined;
   const roles = nativeChildRoles({ subAgents: [{ name: 'reader', instructions: 'Inspect assigned evidence.',
     tools: ['read_workspace_file'] }] }, { childAllocationPolicy: policy });
   let release; const gate = new Promise(resolve => { release = resolve; });
   const children = await createNativeChildren({ roles, scope, sessionId: 'session', store,
-    childAllocationPolicy: policy, toolExecutionPolicy, tools: workspaceToolDefinitions(), hasSkills: false, hasMcp: false,
+    childAllocationPolicy: policy, toolExecutionPolicy, outputRestartPolicy, approvalOutcomePolicy,
+    outputRecoveryPolicy: outputRestartPolicy ? 'response-boundary/v2' : undefined,
+    tools: workspaceToolDefinitions(), hasSkills: false, hasMcp: false,
     modelSurface: { contract: 'bound-model-surface/v1', environment: { workspaceRoot: '/bound/work', cwd: '/bound/work',
       platform: 'linux', date: '2026-10-28', commandBackend: 'none', supportsImages: true } },
     resolveModel: async () => ({ profile: { ...fixture().config.profile, supportsImages: false, requestTimeoutMs: 60000 }, supportsImages: false,
@@ -111,6 +162,9 @@ for (const toolExecutionPolicy of [undefined,'owner-execution/v1']) test(`two st
     assert.equal(reservation.settledUsageDigest, null);
     const child = store.load(reservation.childScope, reservation.childRunId);
     assert.equal(child.configuration.toolExecutionPolicy,toolExecutionPolicy);
+    assert.equal(child.configuration.outputRestartPolicy, outputRestartPolicy);
+    assert.equal(child.configuration.approvalOutcomePolicy, approvalOutcomePolicy);
+    assert.equal(child.configuration.outputRecoveryPolicy, outputRestartPolicy ? 'response-boundary/v2' : undefined);
     assert.equal(child.configuration.childOwnerBinding.childAllocationPolicy, policy);
     assert.equal(child.configuration.modelSurface.environment.cwd, '/bound/work');
     assert.equal(child.configuration.modelSurface.environment.supportsImages, false);

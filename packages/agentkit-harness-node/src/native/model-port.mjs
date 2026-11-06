@@ -182,9 +182,9 @@ async function streamResponse(response, request, binding, emit, internal, maxByt
   // body read rejects cleanly instead of leaving an orphaned read to cancel.
   const abort = (reason) => internal.abort(reason);
   let frameIndex = -1;
-  const failed = (result, code) => withFailure(result, binding, 'stream', code,
+  const failed = (result, code, fields = {}) => withFailure(result, binding, 'stream', code,
     { ...(frameIndex < 0 ? {} : { frameIndex }),
-      ...(code === 'usage_conflict' && state.usageConflict ? { usageConflict: state.usageConflict } : {}) });
+      ...(code === 'usage_conflict' && state.usageConflict ? { usageConflict: state.usageConflict } : {}), ...fields });
   try {
     for await (const frame of readModelSse(response.body, { maxBytes, idleTimeoutMs, abort, observeBytes: observation.bytes })) {
       if (idlePolicy && !frame.data.trim()) continue;
@@ -203,9 +203,10 @@ async function streamResponse(response, request, binding, emit, internal, maxByt
       return failed(state.finalize({ errorKind: 'provider_terminal_error', failureKind: 'invalid_response' }), protocolCode(error));
     }
     if (error instanceof ProtocolError) {
-      // An Anthropic in-stream `error` event carries its own classification.
+      // Typed provider error envelopes carry a closed, credential-free classification.
       if (error.streamError) {
-        return failed(state.finalize({ errorKind: error.streamError.kind, failureKind: error.streamError.failureKind }), 'provider_error');
+        return failed(state.finalize({ errorKind: error.streamError.kind, failureKind: error.streamError.failureKind }), 'provider_error',
+          error.streamError.diagnostic ? { providerError: error.streamError.diagnostic } : {});
       }
       return failed(state.finalize({ errorKind: 'provider_terminal_error', failureKind: 'invalid_response' }), protocolCode(error));
     }
@@ -218,7 +219,8 @@ async function streamResponse(response, request, binding, emit, internal, maxByt
   }
   const result = state.finalize();
   return failed(result, state.streamError ? 'provider_error' : result.kind === 'malformed_tool_call' ? 'tool_payload_invalid'
-    : result.failureKind === 'incomplete_response' ? 'stream_incomplete' : 'protocol_invalid');
+    : result.failureKind === 'incomplete_response' ? 'stream_incomplete' : 'protocol_invalid',
+  state.streamError?.diagnostic ? { providerError: state.streamError.diagnostic } : {});
 }
 
 async function bufferedResponse(response, request, binding, maxBytes, emit, observation) {
@@ -237,6 +239,11 @@ async function bufferedResponse(response, request, binding, maxBytes, emit, obse
     }
     return withFailure(parseOpenAIBuffered(bodyText, request, { captureReplay, binding, onThinking }), binding, 'buffered', 'protocol_invalid');
   } catch (error) {
+    if (error instanceof ProtocolError && error.streamError) {
+      const result = { ...terminalResult(error.streamError.failureKind), kind: error.streamError.kind };
+      return withFailure(result, binding, 'buffered', 'provider_error',
+        error.streamError.diagnostic ? { providerError: error.streamError.diagnostic } : {});
+    }
     return withFailure(terminalResult('invalid_response'), binding, 'buffered', protocolCode(error));
   }
 }
@@ -291,7 +298,7 @@ function protocolCode(error) {
 function withFailure(result, binding, phase, code, fields = {}) {
   if (!['provider_terminal_error', 'provider_retryable_error', 'policy_abort', 'malformed_tool_call'].includes(result.kind)) return result;
   const protocol = ['openai-chat', 'openai-responses', 'anthropic-messages'].includes(binding?.protocol) ? binding.protocol : 'unknown';
-  return { ...result, failureDiagnostic: { contract: fields.usageConflict
+  return { ...result, failureDiagnostic: { contract: fields.providerError ? 'model-failure-diagnostic/v3' : fields.usageConflict
     ? 'model-failure-diagnostic/v2' : 'model-failure-diagnostic/v1', protocol, phase, code, ...fields } };
 }
 

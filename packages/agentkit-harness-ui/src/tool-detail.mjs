@@ -94,8 +94,10 @@ export function toolDetailLines(name, input = {}, opts = {}) {
  * This is a bounded, redacted request preview, never evidence of execution.
  */
 export function toolInputPreview(input) {
+  let value = input;
+  if (typeof value === 'string') { try { value = JSON.parse(value); } catch { /* plain argument text */ } }
   let raw;
-  try { raw = JSON.stringify(input ?? {}, (key, value) => redactValue(key, value), 2); }
+  try { raw = typeof value === 'string' ? value : JSON.stringify(value ?? {}, (key, value) => redactValue(key, value), 2); }
   catch { return ''; }
   return truncateText(redactDiagnosticText(raw, 8192), { maxLines: 80, maxChars: 240 });
 }

@@ -1,6 +1,8 @@
 // Shared OpenAI-compatible provider error classification for JSON and SSE.
 // HTTP transport status is handled separately. Never infer retries from raw
 // messages or retain provider bytes; unknown/malformed envelopes fail closed.
+import { createHash } from 'node:crypto';
+import { canonical, MODEL_PROVIDER_ERROR_CODES, MODEL_PROVIDER_ERROR_TYPES } from '@kingsoftcloud/agentkit-harness-core';
 const RETRYABLE_ERROR_CODES = new Set([
   'rate_limit_error', 'rate_limit_exceeded', 'overloaded_error', 'server_error',
   'api_error', 'service_unavailable_error', 'server_is_overloaded', 'timeout_error',
@@ -15,6 +17,22 @@ const TERMINAL_ERROR_CODES = new Set([
 ]);
 
 export function classifyOpenAIProviderError(error) {
+  const decision = classifyError(error);
+  // Classification and evidence are separate: evidence never authorizes a retry.
+  // Unknown message/code/type bytes remain outside the durable result. Their
+  // fingerprint supports grouping repeated failures without copying credentials.
+  let fingerprint;
+  try { fingerprint = `sha256:${createHash('sha256').update(canonical(error)).digest('hex')}`; }
+  catch { return decision; }
+  const object = error && typeof error === 'object' && !Array.isArray(error) ? error : {};
+  return { ...decision, diagnostic: { category: decision.failureKind, fingerprint,
+    ...(MODEL_PROVIDER_ERROR_CODES.includes(object.code) ? { code: object.code } : {}),
+    ...(MODEL_PROVIDER_ERROR_TYPES.includes(object.type) ? { type: object.type } : {}),
+    ...(Number.isInteger(object.code) && object.code >= 400 && object.code <= 599 ? { status: object.code } : {}),
+  } };
+}
+
+function classifyError(error) {
   const invalid = { kind: 'provider_terminal_error', failureKind: 'invalid_response' };
   if (!error || typeof error !== 'object' || Array.isArray(error)) return invalid;
   if (error.type != null && typeof error.type !== 'string') return invalid;

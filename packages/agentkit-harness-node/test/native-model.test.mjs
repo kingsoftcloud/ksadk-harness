@@ -214,12 +214,83 @@ test('failure diagnostic HTTP: protocol failures retain typed provenance without
     const { result, requests } = await collect(null, 'openai-chat', () => ({ headers: SSE_HEADERS, body }), makeRequest());
     assert.equal(result.kind, 'provider_terminal_error', code);
     assert.deepEqual(result.toolCalls, [], code);assert.equal(requests.length, 1);
-    assert.deepEqual(result.failureDiagnostic, { contract: code === 'usage_conflict'
+    assert.deepEqual(result.failureDiagnostic, { contract: code === 'provider_error' ? 'model-failure-diagnostic/v3' : code === 'usage_conflict'
       ? 'model-failure-diagnostic/v2' : 'model-failure-diagnostic/v1', protocol: 'openai-chat', phase: 'stream', code, frameIndex,
+      ...(code === 'provider_error' ? { providerError: result.failureDiagnostic.providerError } : {}),
       ...(code === 'usage_conflict' ? { usageConflict: { previousFrameIndex: 0,
         previous: { inputTokens: 9, outputTokens: 1 }, reported: { inputTokens: 9, outputTokens: 2 } } } : {}) });
+    if (code === 'provider_error') {
+      assert.deepEqual(Object.keys(result.failureDiagnostic.providerError).sort(), ['category', 'fingerprint']);
+      assert.equal(result.failureDiagnostic.providerError.category, 'invalid_response');
+      assert.match(result.failureDiagnostic.providerError.fingerprint, /^sha256:[0-9a-f]{64}$/);
+    }
     assert.doesNotMatch(JSON.stringify(result), /PRIVATE_PROVIDER_BYTES|fake-key|private-code|other-private-completion/);
   }
+});
+
+for (const protocol of ['openai-chat', 'openai-responses']) for (const streaming of [false, true]) {
+  test(`provider diagnostic HTTP: ${protocol}, streaming=${streaming} retains safe evidence for known and unknown envelopes`, async () => {
+    const observed = [];
+    for (const error of [
+      { code: 503, type: 'ServiceUnavailableError', message: 'Authorization: Bearer PRIVATE_PROVIDER_BYTES',
+        headers: { authorization: 'fake-key' }, context: { secret: 'PRIVATE_NESTED_BYTES' } },
+      { code: 'PRIVATE_UNKNOWN_CODE', type: 'PRIVATE_UNKNOWN_TYPE', message: 'PRIVATE_PROVIDER_BYTES' },
+      { message: 'PRIVATE_PROVIDER_BYTES', type: 'PRIVATE_UNKNOWN_TYPE', code: 'PRIVATE_UNKNOWN_CODE' },
+      { code: 'PRIVATE_UNKNOWN_CODE', type: 'PRIVATE_UNKNOWN_TYPE', message: 'DIFFERENT_PRIVATE_BYTES' },
+      { code: 'insufficient_quota', type: 'rate_limit_error', message: 'PRIVATE_PROVIDER_BYTES' },
+    ]) {
+      const payload = protocol === 'openai-chat' ? { error } : { status: 'failed', error };
+      const frame = sse(protocol === 'openai-chat' ? payload : { type: 'response.failed', response: payload });
+      const { result, requests } = await collect(0, protocol, () => streaming
+        ? { headers: SSE_HEADERS, body: [frame] }
+        : { headers: JSON_HEADERS, body: JSON.stringify(payload) }, makeRequest({ profile: makeProfile({ streaming }) }));
+      assert.equal(requests.length, 1); assert.deepEqual(result.toolCalls, []);
+      assert.equal(result.failureDiagnostic.contract, 'model-failure-diagnostic/v3');
+      assert.equal(result.failureDiagnostic.phase, streaming ? 'stream' : 'buffered');
+      const evidence = result.failureDiagnostic.providerError;
+      assert.match(evidence.fingerprint, /^sha256:[0-9a-f]{64}$/);
+      assert.doesNotMatch(JSON.stringify(result), /PRIVATE_|fake-key|Authorization|authorization/);
+      if (observed.length === 0) {
+        assert.equal(result.kind, 'provider_retryable_error');
+        assert.deepEqual({ ...evidence, fingerprint: null }, { category: 'server_error', fingerprint: null,
+          status: 503, type: 'ServiceUnavailableError' });
+      } else if (error.code === 'insufficient_quota') {
+        assert.equal(result.kind, 'provider_terminal_error');
+        assert.deepEqual({ ...evidence, fingerprint: null }, { category: 'client_error', fingerprint: null,
+          code: 'insufficient_quota', type: 'rate_limit_error' });
+      } else {
+        assert.equal(result.kind, 'provider_terminal_error');
+        assert.deepEqual(Object.keys(evidence).sort(), ['category', 'fingerprint']);
+      }
+      observed.push(evidence);
+    }
+    assert.equal(observed[1].fingerprint, observed[2].fingerprint, 'JSON field order does not change provenance');
+    assert.notEqual(observed[2].fingerprint, observed[3].fingerprint, 'Different unseen provider content remains distinguishable');
+  });
+}
+
+test('provider diagnostic HTTP: SQLite cold reopen preserves safe provenance after retries exhaust', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'native-provider-diagnostic-'));
+  const filename = join(directory, 'runs.sqlite'); let store;
+  try {
+    await withServer(() => ({ headers: SSE_HEADERS, body: sse({ error: { code: 503,
+      type: 'ServiceUnavailableError', message: 'PRIVATE_PROVIDER_BYTES fake-key' } }) }), async server => {
+      const { config, snapshot } = coreFixture({ profile: makeProfile({ compatibilityDigest: 'provider-evidence/v1',
+        requestTimeoutMs: 2000, maxProviderRetries: 0 }) });
+      store = new SqliteRunStore(filename); store.create(config, snapshot);
+      const kernel = new NativeKernel({ store, digest: coreDigest, owner: 'provider-evidence-owner',
+        ports: { model: makePort({ port: server.port, protocol: 'openai-chat' }) } });
+      const done = await kernel.runUntilIdle(coreScope, 'run');
+      assert.equal(done.phase, 'failed'); assert.equal(server.requests.length, 1);
+      const original = store.load(coreScope, 'run');
+      const evidence = original.events.find(event => event.kind === 'run.terminal').payload.modelFailure;
+      assert.equal(evidence.contract, 'model-failure-diagnostic/v3');
+      assert.equal(evidence.providerError.status, 503);
+      store.close(); store = new SqliteRunStore(filename);
+      assert.deepEqual(store.load(coreScope, 'run'), original);
+      assert.doesNotMatch(JSON.stringify(original), /PRIVATE_PROVIDER_BYTES|fake-key/);
+    });
+  } finally { store?.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
 test('usage conflict HTTP: retain only the two validated counter snapshots and their frame positions', async () => {

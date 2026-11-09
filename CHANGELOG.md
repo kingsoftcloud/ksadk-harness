@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.0.15 - 2026-11-09
+
+- Preserve scoped approval outcomes across tool dispatch and keep denied or
+  cancelled effects suspended until the Host explicitly resumes the Run.
+- Restore paused child joins and keep durable work intact when an idle child
+  owner detaches.
+- Bound provider diagnostics and preserve task tools across gateway compaction
+  and truncated commentary. Guide deferred calls through admitted schemas.
+- Show pending file arguments in the task timeline using the same redaction
+  rules as settled tools, and stop retrying stale approval offers.
+
 ## 0.0.14 - 2026-11-04
 
 - Add opt-in diagnose-before-repeat/v2 admission with a default ten-inference

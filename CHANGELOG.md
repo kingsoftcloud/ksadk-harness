@@ -10,6 +10,8 @@
   and truncated commentary. Guide deferred calls through admitted schemas.
 - Show pending file arguments in the task timeline using the same redaction
   rules as settled tools, and stop retrying stale approval offers.
+- Resolve an interrupted workspace mutation as unstarted when its original Run
+  journal proves publication never began. Keep uncertain writes suspended.
 
 ## 0.0.14 - 2026-11-04
 

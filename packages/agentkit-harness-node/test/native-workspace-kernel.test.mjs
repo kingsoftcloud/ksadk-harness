@@ -8,6 +8,7 @@ import { NativeKernel, configure, initialSnapshot, canonical, emptyUsage, prepar
 import { createNativeWorkspaceTools } from '../src/native/workspace-tools.mjs';
 import { sessionKeyFor } from '../src/native/workspace-state.mjs';
 import { SqliteRunStore } from '../src/native/sqlite-store.mjs';
+import { createNativeToolReceiptAuthority } from '../src/native/tool-authority.mjs';
 
 const scope = { tenantId: 'tenant', workspaceId: 'workspace', userId: 'user', agentId: 'agent' };
 const identity = { scope, runId: 'run', sessionId: 'session', turnId: 'turn', buildId: 'build', parentRunId: null, taskChainId: 'chain' };
@@ -90,6 +91,64 @@ function setup(t) {
   };
   return { base, workspaceRoot, stateDir, configFor, create, generate };
 }
+
+test('a lost write before its checkpoint is observed without executing it again', async t => {
+  const { base, workspaceRoot, stateDir, configFor } = setup(t);
+  const create = () => createNativeWorkspaceTools({ workspaceRoot, stateDir, sessionId: identity.sessionId,
+    authorize: async () => 'allow', enableRewind: true });
+  let tools = create();
+  const definition = tools.definitions.find(item => item.name === 'write_workspace_file');
+  const signal = new AbortController().signal;
+  const prior = { ...identity, definition, signal, executionFence: 1, operationKey: 'previous',
+    call: { name: definition.name, callId: 'previous', arguments: { path: 'previous.txt', content: 'committed\n' } } };
+  assert.equal((await tools.execute(prior, { assertCurrent: () => true })).status, 'ok');
+  const receiptQuery = { ...prior, contract: 'agentkit.tool-receipt-observation/v1', originalOperationKey: prior.operationKey,
+    originalClaimedFence: prior.executionFence, operationKey: 'observation', executionFence: 2 };
+  // The earlier write published but has no final Host receipt. It remains unknown.
+  assert.equal((await tools.observeReceipt(receiptQuery, { assertCurrent: () => true })).result, null);
+  assert.equal((await tools.observeReceipt({ ...receiptQuery, originalClaimedFence: 999 }, { assertCurrent: () => true })).result, null);
+  assert.equal((await tools.observeReceipt({ ...receiptQuery, runId: 'another', originalOperationKey: 'absent' },
+    { assertCurrent: () => true })).result, null);
+  await assert.rejects(tools.observeReceipt(receiptQuery, { assertCurrent: () => false }),
+    { code: 'checkpoint_receipt_authority_changed' });
+
+  const filename = join(base, 'write-recovery.sqlite');
+  let store = new SqliteRunStore(filename); t.after(() => store.close());
+  const config = configFor(tools), snapshot = initialSnapshot(identity, config, digest(config));
+  store.create(config, snapshot);
+  const beforeCrash = Date.now() - 1000;
+  const lease = store.acquire(scope, 'run', 'lost', beforeCrash, 2);
+  const calls = [{ callId: 'write', name: definition.name, arguments: { path: 'README.md', content: 'result\n' } }];
+  const batch = prepareEffect(snapshot, 'tool', 'executing_tools', { calls, interaction: null }, {
+    pendingTools: calls, messages: [...snapshot.messages, { role: 'assistant', content: '', toolCalls: calls }],
+  });
+  store.commit(scope, 'run', lease, beforeCrash, 0, batch);
+  const operationKey = batch.snapshot.pendingIntent;
+  store.claim(scope, 'run', lease, beforeCrash, operationKey);
+  store.close(); store = new SqliteRunStore(filename); tools = create();
+  const assertCurrent = createNativeToolReceiptAuthority({ scope, sessionId: identity.sessionId, store });
+  const model = { generate: async request => {
+    assert.deepEqual(JSON.parse(request.messages.at(-1).content), { code: 'workspace_mutation_not_started', executed: false });
+    return { kind: 'final_candidate', text: 'The original write did not start.', toolCalls: [], usage: emptyUsage() };
+  } };
+  const kernel = new NativeKernel({ store, owner: 'replacement', digest,
+    ports: { model, workspace: tools, tools: {
+      execute: () => assert.fail('The original write cannot run again'),
+      observeReceipt: request => tools.observeReceipt(request, { assertCurrent }),
+    } } });
+  const waiting = await kernel.runUntilIdle(scope, 'run');
+  assert.equal(waiting.phase, 'awaiting_reconciliation');
+  assert.equal(waiting.toolReconciliation.operationKey, operationKey);
+  kernel.reconcileTool(scope, 'run', operationKey, 'observe-original');
+  const result = await kernel.runUntilIdle(scope, 'run');
+  assert.equal(result.phase, 'completed');
+  assert.equal(result.runId, identity.runId);
+  assert.deepEqual(result.workspaceModifiedPaths, []);
+  assert.deepEqual(readdirSync(workspaceRoot).sort(), ['file.txt', 'previous.txt']);
+  const record = store.load(scope, 'run');
+  assert.equal(record.receipts.find(receipt => receipt.operationKey === operationKey).status, 'uncertain');
+  assert.equal(record.events.filter(event => event.kind === 'tool.receipt_reconciled').length, 1);
+});
 
 test('actual Native kernel and workspace port resume an approval after SQLite and port reopen', async t => {
   const { base, workspaceRoot, configFor, create, generate } = setup(t), filename = join(base, 'ledger.sqlite');

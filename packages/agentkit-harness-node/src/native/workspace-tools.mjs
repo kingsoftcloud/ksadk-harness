@@ -1442,7 +1442,8 @@ export function createNativeWorkspaceTools({
     const signal = request.signal, sealed = canonical({ ...request, signal: null });
     const check = () => {
       checkRootBoundary(); signal?.throwIfAborted();
-      if (request.sessionId !== store.sessionId || request.signal !== signal || canonical({ ...request, signal: null }) !== sealed
+      if (!enableRewind || !MUTATING.has(request.call?.name) || request.sessionId !== store.sessionId
+        || request.signal !== signal || canonical({ ...request, signal: null }) !== sealed
         || request.contract !== 'agentkit.tool-receipt-observation/v1' || request.definition?.workspaceCheckpointPolicy !== WORKSPACE_CHECKPOINT_POLICY
         || request.definition?.recoveryPolicy !== 'receipt-observation/v1' || typeof assertCurrent !== 'function' || assertCurrent(request) !== true)
         throw Object.assign(Error('checkpoint_receipt_authority_changed'), { code: 'checkpoint_receipt_authority_changed' });

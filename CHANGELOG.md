@@ -12,6 +12,8 @@
   rules as settled tools, and stop retrying stale approval offers.
 - Resolve an interrupted workspace mutation as unstarted when its original Run
   journal proves publication never began. Keep uncertain writes suspended.
+- Preserve durable pending approvals when the DSH Host disposes the idle
+  driver during shutdown, so restarting does not turn them into cancellation.
 
 ## 0.0.14 - 2026-11-04
 

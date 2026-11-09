@@ -227,6 +227,41 @@ for (const sqlite of [false, true]) {
     assert.equal(host.store.list(scope).length, 1); assert.deepEqual(host.calls, { model: 0, write: 0 });
   });
 
+  test(`${backend}: SDK disposal while idle preserves the owned approval without canceling or dispatching it`, async t => {
+    const host = setup(t, sqlite), entered = gate();
+    let pending;
+    host.binding.ports.tools.execute = async request => {
+      if (request.interaction?.decision !== 'allow') return {
+        status: 'approval_required', content: null, interactionId: 'approval-1',
+      };
+      host.calls.write++;
+      return { status: 'ok', content: 'Written once' };
+    };
+    const execute = host.executor({ onIdle: async (_payload, snapshot) => {
+      pending = snapshot;
+      entered.resolve();
+      await new Promise(() => {});
+    } });
+    const running = execute(host.payload);
+    await entered.promise;
+    assert.equal(pending.phase, 'awaiting_interaction');
+    const before = host.store.load(scope, pending.runId);
+    host.controller.abort({ kind: 'disposed' });
+    await assert.rejects(running, { code: 'NATIVE_TURN_SUSPENDED' });
+    const detached = host.store.load(scope, pending.runId);
+    assert.equal(detached.snapshot.phase, 'awaiting_interaction');
+    assert.deepEqual(detached.snapshot.pendingInteraction, before.snapshot.pendingInteraction);
+    assert.equal(detached.commands.some(row => row.command.kind === 'cancel'), false);
+    assert.equal(host.calls.write, 0);
+    const resumed = host.executor({ onIdle: (_payload, snapshot) => ({
+      commandId: 'approve-after-reattach', kind: 'submit_interaction',
+      payload: { interactionId: snapshot.pendingInteraction.interactionId, decision: 'allow' },
+    }) });
+    assert.deepEqual(await resumed.resume({ agent: host.consumer.agent }), { reason: { kind: 'completed' } });
+    assert.equal(host.store.load(scope, pending.runId).snapshot.phase, 'completed');
+    assert.deepEqual(host.calls, { model: 2, write: 1 });
+  });
+
   test(`${backend}: checkpoint recovery continues the original Run without repeating its committed model`, async t => {
     const host = setup(t, sqlite); let stopped = false;
     await assert.rejects(host.executor({ onCheckpoint: async (_, snapshot) => {

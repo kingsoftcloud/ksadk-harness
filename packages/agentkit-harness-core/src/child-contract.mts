@@ -61,7 +61,9 @@ export interface ChildLifecyclePort {
   /** Read already sealed child facts after a lost parent claim. Never starts, approves or cancels execution. */
   reconcile?(request: ChildLifecycleRequest): Promise<ChildLifecycleResult | null>;
   readyChildren?(request: ChildReadyRequest & { signal: AbortSignal }): Promise<{ childRunIds: string[] }>;
-  /** Host teardown is independent of a parent's write lease. */
+  /** Dispose Host ownership without canceling an idle, resumable parent or its children. */
+  closeRun?(request: { scope: RunScope; runId: string }): Promise<void>;
+  /** Release terminal or explicitly canceled work, canceling any live descendants. */
   releaseRun?(request: { scope: RunScope; runId: string }): Promise<void>;
   interruptedReceipts?(request: { scope: RunScope; runId: string; parentOperationKey: string }): Promise<{
     parentOperationKey: string; parentToolCallId: string; result: ToolResult;

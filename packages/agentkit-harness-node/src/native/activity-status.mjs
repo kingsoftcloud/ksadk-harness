@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { canonical } from '@kingsoftcloud/agentkit-harness-core';
+import { canonical, projectBackgroundCommands } from '@kingsoftcloud/agentkit-harness-core';
 
 const settledCommandStates = new Set(['completed', 'failed', 'canceled', 'timed_out', 'output_limit']);
 
@@ -44,9 +44,11 @@ export function nativeActivityStatus(record, { driving = false } = {}) {
   const observations = new Map();
   for (const event of record.events ?? []) if (event.kind === 'background.commands_observed')
     for (const command of event.payload.commands ?? []) observations.set(command.taskId, command);
-  const terminals = (snapshot.backgroundCommands ?? []).slice(-128).map(({ ref }) => {
+  const commands = snapshot.backgroundCommands ?? [];
+  const intents = new Map(record.intents.map(intent => [intent.operationKey, intent]));
+  const terminals = projectBackgroundCommands(commands, 128).map(({ ref }) => {
     const observed = observations.get(ref.taskId);
-    const intent = record.intents.find(row => row.operationKey === ref.operationKey);
+    const intent = intents.get(ref.operationKey);
     const calls = intent?.payload.calls ?? [];
     const call = calls.length === 1 ? calls[0] : null;
     return { id: ref.taskId, runId: snapshot.runId,
@@ -57,5 +59,5 @@ export function nativeActivityStatus(record, { driving = false } = {}) {
     isRunning: driving, plan: todos.length ? { items,
       completedCount: todos.filter(todo => todo.status === 'completed').length, totalCount: todos.length,
       omittedItems: Math.max(0, todos.length - items.length) } : null,
-    terminals, omittedTerminals: Math.max(0, (snapshot.backgroundCommands ?? []).length - terminals.length) };
+    terminals, omittedTerminals: commands.length - terminals.length };
 }

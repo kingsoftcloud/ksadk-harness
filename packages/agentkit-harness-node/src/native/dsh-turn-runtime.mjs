@@ -280,10 +280,14 @@ export function createNativeDshTurnExecutor({ store, resolveTurn, resolveRecover
         taskChainId: binding.taskChainId ?? sessionId };
       const start = () => background ? store.load(scope, runId).snapshot : kernel.start({ ...identity, parentRunId: null }, configuration,
         durableOwnership || binding.taskContractFactory ? { expectedParentRunId: parentRunId } : {});
-      let idleApproval = null;
       // The SDK disposes the owner on graceful Host shutdown. A persisted
-      // approval wait has no live effect to cancel and may be rebound later.
-      const detachingApproval = () => durableOwnership && idleApproval && cancelReason(signal.reason)?.kind === 'disposed';
+      // approval wait has no live effect to cancel and may be rebound later,
+      // including shutdown between its commit and the idle driver registering.
+      const detachingApproval = () => {
+        if (!durableOwnership || cancelReason(signal.reason)?.kind !== 'disposed') return null;
+        const { snapshot } = store.load(scope, runId);
+        return snapshot.phase === 'awaiting_interaction' && snapshot.pendingIntent === null ? snapshot : null;
+      };
       const persistCancel = () => {
         if (detachingApproval()) return;
         const commandId = `${runId}:dsh-turn-cancel`;
@@ -329,14 +333,17 @@ export function createNativeDshTurnExecutor({ store, resolveTurn, resolveRecover
         }
       }
       let snapshot;
+      // The durable DSH listener above owns cancellation and interrupts the
+      // worker by submitting its command. A second generic Kernel listener
+      // would enqueue an unconditional cancel at the approval checkpoint.
+      const driveOptions = durableOwnership ? undefined : { signal };
       try {
-        snapshot = await kernel.runUntilIdle(scope, runId, { signal });
+        snapshot = await kernel.runUntilIdle(scope, runId, driveOptions);
         while (!terminal(snapshot.phase)) {
           signal.throwIfAborted();
           if (!onIdle) throw failure('NATIVE_TURN_SUSPENDED', snapshot);
           const idle = new AbortController(), idlePayload = { ...payload, signal: AbortSignal.any([signal, idle.signal]) };
           let command, woken = false;
-          idleApproval = snapshot.phase === 'awaiting_interaction' ? snapshot : null;
           wakeIdle = () => { woken = true; idle.abort(new NativeError('native_idle_woken')); };
           try {
             if (store.load(scope, runId).commands.some(row => !row.consumed)) wakeIdle();
@@ -346,22 +353,21 @@ export function createNativeDshTurnExecutor({ store, resolveTurn, resolveRecover
             }), idlePayload);
           } catch (error) {
             if (!woken || signal.aborted) throw error;
-            idleApproval = null;
-            snapshot = await kernel.runUntilIdle(scope, runId, { signal });
+            snapshot = await kernel.runUntilIdle(scope, runId, driveOptions);
             continue;
           } finally { wakeIdle = () => {}; idle.abort(); }
           if (!command) throw failure('NATIVE_TURN_SUSPENDED', snapshot);
           signal.throwIfAborted();
-          idleApproval = null;
           const revision = snapshot.revision;
           const receipt = kernel.submit(scope, runId, command);
           invariant(receipt.status !== 'rejected', 'native_dsh_command_rejected');
-          snapshot = await kernel.runUntilIdle(scope, runId, { signal });
+          snapshot = await kernel.runUntilIdle(scope, runId, driveOptions);
           invariant(terminal(snapshot.phase) || snapshot.revision > revision, 'native_dsh_command_made_no_progress');
         }
         signal.throwIfAborted();
       } catch (error) {
-        if (detachingApproval()) throw failure('NATIVE_TURN_SUSPENDED', idleApproval);
+        const approval = detachingApproval();
+        if (approval) throw failure('NATIVE_TURN_SUSPENDED', approval);
         if (signal.aborted && !terminal(store.load(scope, runId).snapshot.phase)) {
           // A turn can be canceled while no kernel worker is active (approval
           // or host checkpoint). Persist first, then drain without allowing a
@@ -501,7 +507,9 @@ export function createNativeDshTurnExecutor({ store, resolveTurn, resolveRecover
           // it can only validate the existing notice and enqueue its cancel.
           verified ??= await verifyNativeDshBackgroundOwnership(ownership, { ...facts, signal: new AbortController().signal });
           const { identity } = verified.admission, record = store.load(identity.scope, identity.runId);
-          if (!['completed', 'failed', 'canceled'].includes(record.snapshot.phase)) {
+          if (!['completed', 'failed', 'canceled'].includes(record.snapshot.phase)
+            && !(cancelReason(payload.signal.reason)?.kind === 'disposed' && record.snapshot.phase === 'awaiting_interaction'
+              && record.snapshot.pendingIntent === null)) {
             const commandId = `${identity.runId}:dsh-turn-cancel`;
             const previous = record.commands.find(row => row.command.commandId === commandId)?.command;
             new NativeKernel({ store, digest: hash, owner, ports: {} }).submit(identity.scope, identity.runId,

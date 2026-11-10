@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.0.16 - 2026-11-10
+
+- Expose child-owner shutdown through `ChildLifecyclePort.closeRun` and preserve
+  committed approval waits even when the Host disposes at the approval checkpoint.
+  Explicit cancellation still cancels the Run and its live descendants.
+- Bound command history in model context and the activity view, giving priority
+  to unaccounted completions while retaining durable output ownership.
+- Clear the required context source error when its paused Run resumes.
+
 ## 0.0.15 - 2026-11-09
 
 - Preserve scoped approval outcomes across tool dispatch and keep denied or

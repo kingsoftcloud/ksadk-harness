@@ -5,6 +5,19 @@ const record = () => ({snapshot:{runId:'run',revision:1,todos:{items:[
   {content:'Read actual evidence',status:'completed'}, {content:'Publish findings',status:'in_progress'},
 ]},backgroundCommands:[{ref:{taskId:'task',operationKey:'op'}}]},intents:[{operationKey:'op',payload:{calls:[{arguments:{command:'node report.mjs'}}]}}],events:[]});
 
+test('activity keeps an older unresolved command visible after more than 128 later completions', () => {
+  const r = record();
+  r.snapshot.backgroundCommands.push(...Array.from({ length: 150 }, (_, i) => ({
+    ref: { taskId: `completed-${i}`, operationKey: `completed-op-${i}` }, notified: true,
+  })));
+  const status = nativeActivityStatus(r);
+  assert.equal(status.terminals.length, 128);
+  assert.equal(status.terminals[0].id, 'task');
+  assert.equal(status.terminals.at(-1).id, 'completed-149');
+  assert.equal(status.omittedTerminals, 23);
+  assert.equal(r.snapshot.backgroundCommands.length, 151);
+});
+
 test('model retry display uses an active owner and an unexpired committed deadline without changing the snapshot', () => {
   const snapshot = { phase: 'preparing_context', pendingIntent: null, retryNotBefore: 1200.5 };
   const before = structuredClone(snapshot);

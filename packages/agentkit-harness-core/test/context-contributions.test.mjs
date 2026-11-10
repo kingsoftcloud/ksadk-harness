@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CONTEXT_SOURCE_CONTRACT, NativeKernel, MemoryRunStore, emptyUsage, canonical,
-  collectContextContributions, validateContextSource, NativeError } from '../dist/index.mjs';
+  collectContextContributions, contextContinuity, validateContextSource, NativeError } from '../dist/index.mjs';
 import { SqliteRunStore } from '@kingsoftcloud/agentkit-harness-node/native/sqlite-store';
 import { fixture, scope, digest, tool } from './fixtures.mjs';
 import { refreshContextSources } from '../dist/context-source-refresh.mjs';
@@ -13,6 +13,23 @@ const source = extra => ({ contract: CONTEXT_SOURCE_CONTRACT, sourceId: 'memory'
   priority: 0, timeoutMs: 1000, maxTokens: 2000, maxBytes: 131072, required: false, ...extra });
 const final = text => ({ kind: 'final_candidate', text, toolCalls: [], usage: emptyUsage() });
 const count = messages => Math.ceil(canonical(messages).length / 4);
+test('model continuity bounds command history without losing an older outstanding command', () => {
+  const { config, snapshot } = fixture();
+  snapshot.backgroundCommands = Array.from({ length: 180 }, (_, i) => ({
+    ref: { taskId: i.toString(16).padStart(64, '0'), sourceRunId: 'run', operationKey: `op-${i}` },
+    notified: i !== 0,
+  }));
+  const before = structuredClone(snapshot.backgroundCommands);
+  const projection = contextContinuity(snapshot, config);
+  assert.deepEqual(projection.backgroundCommands.map(row => row.operationKey),
+    ['op-0', ...Array.from({ length: 8 }, (_, i) => `op-${172 + i}`)]);
+  assert.equal(projection.omittedBackgroundCommands, 171);
+  assert.deepEqual(snapshot.backgroundCommands, before);
+  snapshot.backgroundCommands.forEach(row => { row.notified = false; });
+  const outstanding = contextContinuity(snapshot, config);
+  assert.equal(outstanding.backgroundCommands.length, 32);
+  assert.equal(outstanding.omittedBackgroundCommands, 148);
+});
 function setup(t, sqlite = false, overrides = {}) {
   const root = mkdtempSync(join(tmpdir(), 'context-sources-')), filename = join(root, 'runs.sqlite');
   let store = sqlite ? new SqliteRunStore(filename) : new MemoryRunStore();
@@ -183,9 +200,14 @@ for (const sqlite of [false, true]) {
     assert.equal(reads, 3); assert.equal(models, 0); assert.equal(paused.usage.modelCalls, 0);
     if (sqlite) run.reopen();
     run.ports.context.readSource = async () => { reads++; return { items: [{ version: 2 }] }; };
-    const worker = run.worker(); worker.submit(scope, 'run', { commandId: 'resume-source', kind: 'resume', payload: {} });
+    const checkpoints = [];
+    const worker = run.worker({ onCheckpoint: snapshot => { checkpoints.push(snapshot); } });
+    worker.submit(scope, 'run', { commandId: 'resume-source', kind: 'resume', payload: {} });
     const recovered = await worker.runUntilIdle(scope, 'run');
-    assert.equal(recovered.phase, 'completed'); assert.equal(reads, 4); assert.equal(models, 1);
+    assert.equal(recovered.phase, 'completed');
+    const resumed = checkpoints.find(snapshot => snapshot.phase === 'preparing_context');
+    assert.ok(resumed); assert.equal(resumed.reason, null);
+    assert.equal(reads, 4); assert.equal(models, 1);
     assert.equal(recovered.goal, paused.goal); assert.equal(recovered.configDigest, paused.configDigest);
     assert.equal(recovered.usage.toolCalls, 0);
     assert.equal(run.store.events(scope, 'run').filter(event => event.kind === 'context.source_unavailable').length, 1);

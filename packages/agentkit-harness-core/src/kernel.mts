@@ -1035,6 +1035,7 @@ export class NativeKernel {
     const review = intent.payload.purpose === 'delivery_review';
     const beforeCall = { ...snapshot, usage: { ...snapshot.usage, modelCalls: snapshot.usage.modelCalls - 1 } };
     return { ...context, profile: copy(configuration.profile), ...(review ? { purpose: 'delivery_review' as const } : {}),
+      ...(!review && snapshot.usage.toolCalls === 0 ? { beforeFirstTool: true as const } : {}),
       messages: review ? snapshot.preparedContext ? modelContextMessages(snapshot, this.digest) : this.policies.forRun(configuration).review.deliveryReviewMessages(snapshot)
         : configuration.profile.operatorGuidancePolicy === 'journaled-system/v1' ? modelContextMessages(snapshot, this.digest)
           : deliveryTaskMessages(beforeCall, configuration, browserTaskMessages(beforeCall, configuration, modelContextMessages(snapshot, this.digest))),

@@ -38,8 +38,10 @@ function App() {
     };
     window.addEventListener("message", onMessage);
     post({ type: "ready", version: VERSION });
-    const observer = new ResizeObserver(() => post({ type: "height", height: Math.ceil(document.documentElement.scrollHeight) }));
-    observer.observe(document.body);
+    // Measure the content, not the document: the document is never shorter than the iframe, so it could only grow.
+    const root = document.getElementById("root");
+    const observer = new ResizeObserver(() => post({ type: "height", height: Math.ceil(root.getBoundingClientRect().height) }));
+    observer.observe(root);
     return () => { window.removeEventListener("message", onMessage); observer.disconnect(); };
   }, []);
   return React.createElement(HarnessTimeline, { state: view.state, theme: view.theme, autoFollow: false });

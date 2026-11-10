@@ -105,7 +105,7 @@ export interface ModelProfile {
   /** Absent on older Runs; projection policy is frozen at admission. */
   inlineReasoningPolicy?: { contract: 'profiled-content/v1' | 'profiled-content/v2'; rule: 'auto' | 'permissive' | 'openai'
     | 'strict-openai' | 'cerebras' | 'groq' | 'deepseek' | 'zai' | 'kspmas-gateway' | 'moonshot' | 'mimo' };
-  providerCompatibilityPolicy?: { contract: 'provider-compat/v1' | 'provider-compat/v2' | 'provider-compat/v3'; rule: NonNullable<ModelProfile['inlineReasoningPolicy']>['rule'] };
+  providerCompatibilityPolicy?: { contract: 'provider-compat/v1' | 'provider-compat/v2' | 'provider-compat/v3' | 'provider-compat/v4'; rule: NonNullable<ModelProfile['inlineReasoningPolicy']>['rule'] };
   streaming?: boolean; outputTokenParameter?: 'max_tokens' | 'max_completion_tokens';
   streamTimeoutPolicy?: 'idle/v1'; providerThinkingDisplay?: boolean;
   /** Absent on historical Runs, whose OpenAI usage reports required equality. */
@@ -257,6 +257,8 @@ export interface ContextSourceDefinition {
   priority: number; timeoutMs: number; required: boolean; maxTokens: number; maxBytes: number;
   /** Current file guidance is refreshed before inference, never substituted by a historical summary. */
   instructionPolicy?: 'current-files/v1';
+  /** Retry only a timed-out read; required sources pause after exhaustion. Absence keeps the frozen legacy behavior. */
+  timeoutRecovery?: { contract: 'context-source-timeout/v1'; maxRetries: number; retryDelayMs: number };
 }
 /** A frozen transcript import, never a parent Run or an execution checkpoint. */
 export interface ConversationSeed {
@@ -288,6 +290,8 @@ export interface RunConfiguration {
   planModeInitialActive?: boolean;
   childPlanPolicy?: 'inherit-plan/v1';
   toolDiscoveryPolicy?: 'local-tool-search/v1';
+  /** A premature call may load an already authorized schema, but never dispatch its operation. */
+  toolAdmissionPolicy?: 'discover-before-retry/v1';
   artifactPolicy?: 'runtime-artifacts/v1' | null;
   /** The execution owner must prepare Host context before the first inference. */
   inputPolicy?: 'before-first-model/v1';
@@ -305,10 +309,19 @@ export interface RunConfiguration {
   stopHookContinuationLimit: number; delegationDepth: number;
   modelRecoveryPolicy: 'manual' | 'pure-inference/v1';
   guidancePolicy?: 'boundary-guide/v1' | null;
-  outputRecoveryPolicy?: 'task-or-delivery/v1' | 'response-boundary/v2' | null;
+  outputRecoveryPolicy?: 'task-or-delivery/v1' | 'response-boundary/v2' | 'response-boundary/v3' | null;
+  /** Restart allowance belongs to one interrupted response chain. v2 pauses
+   * exhausted chains for explicit resume instead of terminating the Run.
+   * Legacy Runs retain their frozen accounting and exhaustion behavior. */
+  outputRestartPolicy?: 'per-response/v1' | 'per-response/v2';
+  /** The interactive owner preserves typed Host outcomes and pauses on a
+   * non-grant. Children retain the outcome without duplicating that pause. */
+  approvalOutcomePolicy?: 'owner-outcome/v1';
   /** v2 counts consecutive provider failures and pauses (resumable) instead of failing when they run out. */
   providerRecoveryPolicy?: 'provider-recovery/v2' | null;
-  toolErrorRecoveryPolicy?: 'diagnose-before-repeat/v1' | null;
+  /** v2 admits a ten-inference diagnostic allowance unless explicitly configured.
+   * Frozen v1 configurations retain their original unbounded/default semantics. */
+  toolErrorRecoveryPolicy?: 'diagnose-before-repeat/v1' | 'diagnose-before-repeat/v2' | null;
   toolErrorRecoveryModelCalls?: number | null;
   deliveryReviewPolicy?: DeliveryReviewPolicy | null;
   /** Opaque, Host-owned recovery locator. The core never interprets it as authority. */
@@ -410,7 +423,7 @@ export interface CompletionCandidate {
 }
 export interface ChildState {
   runId: string; sessionId: string; operationKey: string; callId: string;
-  state: 'prepared' | 'running' | 'awaiting_interaction' | 'completed' | 'failed' | 'canceled' | 'interrupted';
+  state: 'prepared' | 'running' | 'paused' | 'awaiting_interaction' | 'completed' | 'failed' | 'canceled' | 'interrupted';
   reservedModelCalls: number | null; reservedToolCalls: number | null; usage: Usage;
   notified: boolean; metadata: ObjectValue;
 }
@@ -520,7 +533,7 @@ export type EffectKind = 'workspace' | 'model' | 'tool' | 'verify' | 'context' |
 export interface EffectIntent { operationKey: string; kind: EffectKind; payload: ObjectValue; status: 'prepared' | 'running'; claimedAtMs?: number; claimedFence?: number }
 export interface EffectReceipt { operationKey: string; status: 'committed' | 'failed' | 'uncertain' | 'not_dispatched'; result: ObjectValue }
 export type CommandKind = 'cancel' | 'policy_revoked' | 'pause' | 'resume' | 'submit_interaction'
-  | 'reconcile_tool' | 'repair_workspace' | 'steer' | 'guide' | 'promote_child' | 'message_child' | 'cancel_child';
+  | 'reconcile_tool' | 'repair_workspace' | 'steer' | 'guide' | 'promote_child' | 'message_child' | 'cancel_child' | 'resume_child';
 export interface RunCommand { commandId: string; kind: CommandKind; payload: ObjectValue }
 export interface CommandReceipt { commandId: string; status: 'accepted' | 'duplicate' | 'rejected'; reason: string | null }
 export interface Lease { owner: string; fence: number; expiresAt: number }
@@ -729,5 +742,5 @@ export const terminal = (phase: Phase): boolean => ['completed', 'failed', 'canc
 export const emptyUsage = (): Usage => ({ inputTokens: 0, outputTokens: 0, modelCalls: 0, toolCalls: 0, cost: 0 });
 export const commandPriority: Record<CommandKind, number> = {
   cancel: 100, policy_revoked: 95, submit_interaction: 90, cancel_child: 85,
-  pause: 80, resume: 80, reconcile_tool: 75, repair_workspace: 75, promote_child: 70, message_child: 70, steer: 60, guide: 60,
+  pause: 80, resume: 80, reconcile_tool: 75, repair_workspace: 75, promote_child: 70, message_child: 70, resume_child: 70, steer: 60, guide: 60,
 };

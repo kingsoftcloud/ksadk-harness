@@ -38,12 +38,14 @@ test('legacy child schemas remain unchanged, explicit capability generation requ
   }
 });
 
-for (const admitted of [false, true]) test(`actual child owner ${admitted ? 'admits a matching role and freezes response continuation' : 'refuses missing capability without a child, reservation or model effect'}`, { timeout: 10000 }, async t => {
+for (const outputRecoveryPolicy of ['response-boundary/v2', 'response-boundary/v3'])
+for (const admitted of [false, true]) test(`actual child owner ${outputRecoveryPolicy} ${admitted ? 'admits a matching role and freezes response continuation' : 'refuses missing capability without a child, reservation or model effect'}`, { timeout: 10000 }, async t => {
   const store = new MemoryRunStore(), roles = nativeChildRoles({ subAgents: [{ name: 'reader', instructions: 'Read assigned evidence.', tools: ['read_workspace_file'] }] });
   let childRequests = 0, bindCalls = 0, release;
   const gate = new Promise(resolve => { release = resolve; });
   const children = await createNativeChildren({ roles, scope, sessionId: 'session', store, tools: workspaceToolDefinitions(),
-    hasSkills: false, hasMcp: false, childCapabilityPolicy: policy, outputRecoveryPolicy: 'response-boundary/v2',
+    hasSkills: false, hasMcp: false, childCapabilityPolicy: policy, outputRecoveryPolicy, outputRestartPolicy: 'per-response/v1',
+    conversationPresentation: { contract: 'agentkit.conversation-presentation/v1', language: 'zh-CN' },
     resolveModel: async () => ({ profile: fixture().config.profile, model: { generate: async request => {
       childRequests++; await gate; request.signal.throwIfAborted();
       return { kind: 'final_candidate', text: 'Read result.', toolCalls: [], usage: emptyUsage() };
@@ -80,7 +82,10 @@ for (const admitted of [false, true]) test(`actual child owner ${admitted ? 'adm
   } else {
     assert.equal(result.status, 'ok'); assert.equal(held.childBudgetReservations.length, 1);
     const reservation = held.childBudgetReservations[0], child = store.load(reservation.childScope, reservation.childRunId);
-    assert.equal(child.configuration.outputRecoveryPolicy, 'response-boundary/v2');
+    assert.equal(child.configuration.outputRecoveryPolicy, outputRecoveryPolicy);
+    assert.equal(child.configuration.outputRestartPolicy, 'per-response/v1');
+    assert.match(child.configuration.instructions, /会话展示语言：简体中文/);
+    assert.match(child.configuration.instructions, /Read assigned evidence/);
     assert.equal(bindCalls, 1);
   }
 });

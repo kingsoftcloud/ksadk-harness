@@ -1,8 +1,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  toolTitle, toolDetailLines, workspaceRelative, fileDiffPreview, redactError, MAX_TOOL_DETAIL_LINES,
+  toolTitle, toolDetailLines, toolInputPreview, workspaceRelative, fileDiffPreview, redactError, MAX_TOOL_DETAIL_LINES,
 } from "../src/tool-detail.mjs";
+
+test('argument inspection handles object and serialized inputs without exposing nested secrets or changing the input', () => {
+  const input = { files: [{ path: 'src/a.js', password: 'PRIVATE_PASSWORD', content: 'export const ok = true;' }],
+    env: { MODEL_API_KEY: 'PRIVATE_ENV' }, authorization: 'PRIVATE_AUTH' };
+  const before = structuredClone(input);
+  for (const value of [input, JSON.stringify(input)]) {
+    const preview = toolInputPreview(value);
+    assert.match(preview, /src\/a.js/); assert.match(preview, /export const ok/);
+    assert.match(preview, /redacted/); assert.doesNotMatch(preview, /PRIVATE_PASSWORD|PRIVATE_ENV|PRIVATE_AUTH/);
+  }
+  assert.deepEqual(input, before);
+  assert.doesNotMatch(toolInputPreview('Authorization: Bearer PRIVATE_PLAIN'), /PRIVATE_PLAIN/);
+});
 
 test("Bash detail block shows command and cwd without an extra Tool prefix", () => {
   const rows = toolDetailLines("Bash", { command: "npm test", cwd: "packages/tui", timeout: 30000 });

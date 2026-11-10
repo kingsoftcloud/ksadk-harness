@@ -4,16 +4,26 @@ import { terminal } from './contracts.mjs';
 import { CHILD_OWNER_CONTRACT } from './child-contract.mjs';
 import { canonical, copy, invariant } from './values.mjs';
 
+/** An explicit control resumes a known pause, not an uncertain effect. This
+ * applies to output, provider and context pauses without changing their
+ * frozen policies, total budgets or required permission decisions. */
+export function childResumeAllowed(snapshot: RunSnapshot): boolean {
+  return snapshot.phase === 'paused' && snapshot.pendingIntent === null
+    && snapshot.toolReconciliation == null && snapshot.resumePhase !== 'awaiting_reconciliation'
+    && !['effect_outcome_unknown', 'recovery_retry_exhausted', 'browser_session_unavailable'].includes(snapshot.reason ?? '');
+}
+
 export function childControlDelivery(parent: RunSnapshot, command: RunCommand, target: ChildControlTarget): ChildControlDelivery {
   const send = command.kind === 'message_child', input = command.payload;
-  invariant(['message_child', 'cancel_child'].includes(command.kind)
+  invariant(['message_child', 'cancel_child', 'resume_child'].includes(command.kind)
     && typeof input.childRunId === 'string' && input.childRunId.trim() && input.childRunId.length <= 256
     && Object.keys(input).every(key => (send ? ['childRunId', 'text', 'expectedGoalRevision'] : ['childRunId']).includes(key))
     && (!send || typeof input.text === 'string' && input.text.trim() && input.text.length <= 32768
       && Number.isSafeInteger(input.expectedGoalRevision) && (input.expectedGoalRevision as number) >= 0), 'invalid_child_control');
   return { target: copy(target), command: {
     commandId: `child-control:${canonical([parent.scope, parent.runId, command.commandId])}`,
-    kind: send ? 'guide' : 'cancel', payload: send ? { text: input.text!, expectedGoalRevision: input.expectedGoalRevision! } : {},
+    kind: send ? 'guide' : command.kind === 'resume_child' ? 'resume' : 'cancel',
+    payload: send ? { text: input.text!, expectedGoalRevision: input.expectedGoalRevision! } : {},
   } };
 }
 
@@ -52,6 +62,10 @@ export function validateChildControlDelivery(parent: StoredRun, child: StoredRun
   'child_control_result_unknown');
   const preempts = (record: StoredRun, kinds: string[]) => record.commands.some(row => !row.consumed && kinds.includes(row.command.kind));
   invariant(!preempts(parent, ['cancel', 'policy_revoked', 'steer']), 'parent_control_preempts_child_control');
+  if (command.kind === 'resume_child') {
+    invariant(childResumeAllowed(c)
+      && !preempts(child, ['cancel', 'policy_revoked', 'steer', 'resume']), 'child_control_unavailable');
+  }
   if (command.kind === 'message_child') {
     invariant(!preempts(child, ['cancel', 'policy_revoked', 'steer']), 'child_control_preempts_input');
     invariant(command.payload.expectedGoalRevision === c.goalRevision, 'stale_child_goal_revision');

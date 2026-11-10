@@ -40,6 +40,8 @@ export interface ChildTaskControlState {
   childRunId: string; sessionId: string; role: string; phase: string;
   goalRevision: number;
   delivery: 'foreground' | 'background'; canPromote: boolean; canCancel: boolean; canSendInput: boolean;
+  /** Explicit Host control, not a model tool or implicit side effect of guidance. */
+  canResume?: boolean;
 }
 export interface ChildControlTarget {
   scope: RunScope; runId: string; configurationDigest: string; parentOperationKey: string; parentToolCallId: string;
@@ -59,7 +61,9 @@ export interface ChildLifecyclePort {
   /** Read already sealed child facts after a lost parent claim. Never starts, approves or cancels execution. */
   reconcile?(request: ChildLifecycleRequest): Promise<ChildLifecycleResult | null>;
   readyChildren?(request: ChildReadyRequest & { signal: AbortSignal }): Promise<{ childRunIds: string[] }>;
-  /** Host teardown is independent of a parent's write lease. */
+  /** Dispose Host ownership without canceling an idle, resumable parent or its children. */
+  closeRun?(request: { scope: RunScope; runId: string }): Promise<void>;
+  /** Release terminal or explicitly canceled work, canceling any live descendants. */
   releaseRun?(request: { scope: RunScope; runId: string }): Promise<void>;
   interruptedReceipts?(request: { scope: RunScope; runId: string; parentOperationKey: string }): Promise<{
     parentOperationKey: string; parentToolCallId: string; result: ToolResult;

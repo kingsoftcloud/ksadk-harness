@@ -1,5 +1,92 @@
 # Changelog
 
+## 0.0.16 - 2026-11-10
+
+- Expose child-owner shutdown through `ChildLifecyclePort.closeRun` and preserve
+  committed approval waits even when the Host disposes at the approval checkpoint.
+  Explicit cancellation still cancels the Run and its live descendants.
+- Bound command history in model context and the activity view, giving priority
+  to unaccounted completions while retaining durable output ownership.
+- Clear the required context source error when its paused Run resumes.
+
+## 0.0.15 - 2026-11-09
+
+- Preserve scoped approval outcomes across tool dispatch and keep denied or
+  cancelled effects suspended until the Host explicitly resumes the Run.
+- Restore paused child joins and keep durable work intact when an idle child
+  owner detaches.
+- Bound provider diagnostics and preserve task tools across gateway compaction
+  and truncated commentary. Guide deferred calls through admitted schemas.
+- Show pending file arguments in the task timeline using the same redaction
+  rules as settled tools, and stop retrying stale approval offers.
+- Resolve an interrupted workspace mutation as unstarted when its original Run
+  journal proves publication never began. Keep uncertain writes suspended.
+- Preserve durable pending approvals when the DSH Host disposes the idle
+  driver during shutdown, so restarting does not turn them into cancellation.
+
+## 0.0.14 - 2026-11-04
+
+- Add opt-in diagnose-before-repeat/v2 admission with a default ten-inference
+  tool-diagnosis allowance, independent of unlimited task budgets. Smaller
+  configured allowances and explicit null remain supported. Frozen v1 Runs
+  retain their original settings; refused actions never dispatch a tool.
+- Use one strict Python grammar boundary for command inspection and workspace
+  syntax checks. Long Unicode documentation no longer enters Ruff's unsafe
+  comment debug renderer; invalid grammar and restricted calls stay guarded.
+- Expose committed retry deadlines to the read-only status projection and
+  distinguish Host-confirmed model backoff from active context preparation.
+  Expired deadlines and inactive owners do not claim a running retry.
+- Expose an atomic, read-only SQLite trace view containing compact Run status
+  and a cursor-bounded event suffix. Observability consumers no longer need
+  to hydrate execution receipts or transcripts to refresh a trace. The view
+  does not grant execution authority or change conversation delivery.
+- Return scoped discovery guidance when a model calls a deferred tool before
+  loading its definition. Rejected calls remain unexecuted, mixed batches do
+  not partly dispatch, and unavailable tools never gain a discovery route.
+  Feedback follows the admitted direct or wrapper calling convention and
+  keeps the existing bounded repair budget.
+- Add opt-in response-scoped output restart accounting. An admitted complete
+  tool step ends the prior truncation streak; an unbroken truncated response
+  remains bounded. Existing Runs retain their frozen accounting policy.
+- Freeze the user-facing language preference and propagate it to child owners
+  without changing tool permissions or exposing private reasoning.
+- Coalesce transient timeline notifications without dropping authoritative
+  events. Reuse completed tool rows and mount file diff bodies only when open.
+- Hide whitespace-only model rows, retain write identity while arguments stream,
+  and use readable task-panel line spacing.
+- Fold contiguous file edits into a distinct-file summary, retaining every
+  operation and failure in the expandable details. Collapsed edit groups do
+  not mount their child rows or diff trees.
+- Keep task-list previews within the viewport with usable scroll height and
+  make the first click open the preview reliably.
+- Commit ownership for persisted foreground command output so its advertised
+  task ID can be paged through the normal authorized reader, including after
+  a cold restore. Settled foreground commands do not emit a second completion
+  notification, and cursor reads never relaunch the process.
+- Project confirmed foreground completion from its exact committed launch
+  receipt instead of showing an unknown terminal. Rebuild older display caches
+  once; unknown or incomplete execution evidence remains unknown.
+
+- Classify known provider error envelopes consistently across Chat, Responses
+  and Anthropic JSON/SSE entries. Transient failures use the existing kernel
+  retry budget; permanent or unknown failures remain terminal, and partial tool
+  arguments never execute. An observed refusal cannot be reopened by a later
+  transient error. Provider message bodies are not persisted.
+- Add a frozen, opt-in timeout recovery recipe for read-only context sources.
+  Retry a timed-out read within the admitted effect budget, discard late data,
+  and pause after required-source exhaustion so the same Run can resume with
+  fresh context. Permanent binding errors and caller cancellation do not retry;
+  source recipes without this policy retain their historical behavior. Workspace
+  instruction readers and child restoration bind the same explicit recipe.
+
+## 0.0.13 - 2026-11-04
+
+- Publish the aligned 0.0.13 version across Core, Node and UI. All three
+  registry packages identify source commit
+  `3687a3bd9f0854d5b7106dc18d9e1c0f24cf47da`.
+- This is the published baseline for 0.0.14 and retains the model and runtime
+  integration described below.
+
 ## 0.0.12 - 2026-11-04
 
 - Integrate the 0.0.10 model compatibility, consecutive retry recovery,

@@ -10,7 +10,7 @@ import { NativeKernel, emptyUsage } from '../dist/index.mjs';
 import { SqliteRunStore } from '@kingsoftcloud/agentkit-harness-node/native/sqlite-store';
 import { digest, scope } from './fixtures.mjs';
 
-for (const boundary of ['task_resume', 'suffix', 'restart', 'cancel']) test(`actual SIGKILL at ${boundary} restores original output contract without replaying effects`, { timeout: 15000 }, async t => {
+for (const boundary of ['task_resume', 'suffix', 'restart', 'cancel', 'exhausted']) test(`actual SIGKILL at ${boundary} restores original output contract without replaying effects`, { timeout: 15000 }, async t => {
   const root = mkdtempSync(join(tmpdir(), 'native-output-kill-')), filename = join(root, 'run.sqlite'), artifact = join(root, 'result.txt');
   const child = spawn(process.execPath, [fileURLToPath(new URL('./fixtures/output-recovery-worker.mjs', import.meta.url)), filename,
     boundary === 'cancel' ? 'task_resume' : boundary], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'], env: { ...process.env, PATH: '/nonexistent-native-output-test' } });
@@ -23,6 +23,7 @@ for (const boundary of ['task_resume', 'suffix', 'restart', 'cancel']) test(`act
   assert.equal(ready.kind, 'ready'); assert.equal(ready.pid, child.pid); assert.notEqual(child.pid, process.pid);
   if (boundary === 'restart') { assert.equal(ready.outputRestarts, 1); assert.equal(ready.modelCalls, 2); }
   else assert.equal(ready.mode, 'task_resume' === boundary || boundary === 'cancel' ? 'task_resume' : 'suffix');
+  if (boundary === 'exhausted') assert.equal(ready.reason, 'output_budget_exhausted');
   const exited = once(child, 'exit'); child.kill('SIGKILL');
   const [code, signal] = await exited; assert.equal(code, null); assert.equal(signal, 'SIGKILL');
   assert.throws(() => process.kill(child.pid, 0), { code: 'ESRCH' });
@@ -32,7 +33,10 @@ for (const boundary of ['task_resume', 'suffix', 'restart', 'cancel']) test(`act
   const worker = new NativeKernel({ store, digest, owner: 'replacement-output-owner', now: () => Date.now() + 60000, ports: {
     model: { generate: async request => {
       models++;
-      if (boundary === 'suffix') return { kind: 'final_candidate', text: 'answer.', toolCalls: [], usage: emptyUsage() };
+      if (boundary === 'suffix' || boundary === 'exhausted') {
+        if (boundary === 'exhausted') assert.deepEqual(request.tools, []);
+        return { kind: 'final_candidate', text: 'answer.', toolCalls: [], usage: emptyUsage() };
+      }
       if (models === 1) {
         assert.equal(request.messages.at(-1).kind, boundary === 'restart' ? 'output_limit_restart_observation' : 'continuation_observation');
         return { kind: 'tool_calls', text: '', toolCalls: [{ callId: 'after-kill', name: 'write', arguments: {} }], usage: emptyUsage() };
@@ -41,10 +45,15 @@ for (const boundary of ['task_resume', 'suffix', 'restart', 'cancel']) test(`act
     } }, tools: { execute: async () => { writes++; writeFileSync(artifact, 'correct'); return { status: 'ok', content: 'written' }; } },
   } });
   worker.attach(scope, 'run', original.configuration);
+  if (boundary === 'exhausted') {
+    const held = await worker.runUntilIdle(scope, 'run');
+    assert.equal(held.phase, 'paused'); assert.equal(models, 0); assert.equal(writes, 0);
+    worker.submit(scope, 'run', { commandId: 'resume-output-after-kill', kind: 'resume', payload: {} });
+  }
   if (boundary === 'cancel') worker.submit(scope, 'run', { commandId: 'cancel-before-recovery', kind: 'cancel', payload: {} });
   const result = await worker.runUntilIdle(scope, 'run');
   if (boundary === 'cancel') { assert.equal(result.phase, 'canceled'); assert.equal(models, 0); assert.equal(writes, 0); assert.equal(existsSync(artifact), false); }
-  else if (boundary === 'suffix') { assert.equal(result.finalText, 'Unfinished original answer.'); assert.equal(models, 1); assert.equal(writes, 0); }
+  else if (boundary === 'suffix' || boundary === 'exhausted') { assert.equal(result.finalText, 'Unfinished original answer.'); assert.equal(models, 1); assert.equal(writes, 0); }
   else { assert.equal(result.finalText, 'Actual file delivered.'); assert.equal(models, 2); assert.equal(writes, 1); assert.equal(readFileSync(artifact, 'utf8'), 'correct'); }
   assert.deepEqual(store.load(scope, 'run').receipts.slice(0, original.receipts.length), original.receipts);
 });

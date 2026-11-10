@@ -32,6 +32,12 @@ test('AST parsing preserves compile-time-only failures rather than adding lint p
     'match item:\n    case first:\n        pass\n    case second:\n        pass\n'])
     assert.deepEqual(await checkPythonSyntax(source), [], source);
 });
+test('long Unicode docstrings and comments retain grammar diagnostics without formatter debug rendering', async () => {
+  const documentation = `#!/usr/bin/env python3\n\"\"\"真实异常终止（SIGKILL）后继续的验收脚本（单进程内自驱动）。\n\"\"\"\n# ${'注释😀'.repeat(50)}\n`;
+  assert.deepEqual(await checkPythonSyntax(`${documentation}print('safe')\n`), []);
+  const [issue] = await checkPythonSyntax(`${documentation}value =\n`);
+  assert.equal(issue.severity, 'error'); assert.equal(issue.line, 5);
+});
 
 test('invalid syntax cannot be suppressed and newer syntax cannot override the pinned target', async () => {
   for (const source of ['def broken(:\n    pass\n', 'if True:\npass\n', 'value = "unterminated',

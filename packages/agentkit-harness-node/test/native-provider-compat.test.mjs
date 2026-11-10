@@ -8,7 +8,7 @@ const oracle = JSON.parse(await readFile(new URL('./fixtures/native-provider-com
 for (const item of oracle.cases) test(`provider compatibility oracle: ${item.id}`, () => {
   const payload = structuredClone(item.payload);
   const result = applyProviderChatCompatibility(payload,
-    // This oracle records the v2 wire contract. New admissions now use v3;
+    // This oracle records the v2 wire contract. New admissions now use v4;
     // changing that default must not silently upgrade the restored v2 cases.
     { purpose: item.purpose, profile: { ...item.profile, providerCompatibilityPolicy: {
       ...admitProviderCompatibilityPolicy(item.rule), contract: 'provider-compat/v2' } } },
@@ -46,4 +46,29 @@ test('provider compatibility admission: final submission is forced and Kimi proj
     assert.deepEqual(payload.tool_choice, model.startsWith('kimi') ? 'auto'
       : { type: 'function', function: { name: 'submit_final_output' } });
   }
+});
+
+test('new gateway compaction requests retain a usable summary budget through the supported non-thinking mode', () => {
+  const binding = { model: 'deepseek-v4.1-flash' };
+  const payload = { model: binding.model, max_tokens: 8192, stream: true, messages: [] };
+  const policy = admitProviderCompatibilityPolicy('kspmas-gateway');
+  const request = profile => ({ purpose: 'compaction', profile: { providerCompatibilityPolicy: policy, ...profile } });
+  const summary = applyProviderChatCompatibility(payload, request({}), binding);
+  assert.deepEqual(summary.thinking, { type: 'disabled' });
+  assert.equal(summary.max_tokens, 8192, 'do not override an explicit smaller request limit');
+  assert.equal(applyProviderChatCompatibility(payload, { ...request({}), purpose: 'task' }, binding).thinking, undefined);
+  assert.equal(applyProviderChatCompatibility(payload, request({ reasoningEffort: 'high' }), binding).thinking, undefined);
+  assert.deepEqual(applyProviderChatCompatibility(payload, request({ thinkingMode: 'enabled' }), binding).thinking, { type: 'enabled' });
+  assert.deepEqual(applyProviderChatCompatibility({ ...payload, thinking: { type: 'enabled' } }, request({}), binding).thinking, { type: 'enabled' });
+  for (const contract of ['provider-compat/v1', 'provider-compat/v2', 'provider-compat/v3']) {
+    const old = applyProviderChatCompatibility(payload, { purpose: 'compaction', profile: {
+      providerCompatibilityPolicy: { contract, rule: 'kspmas-gateway' },
+    } }, binding);
+    assert.equal(old.thinking, undefined, `${contract} must keep its original frozen request behavior`);
+  }
+  for (const model of ['glm-5.3-flash', 'kimi-k2.7-code', 'claude-opus-5-5']) {
+    const result = applyProviderChatCompatibility({ ...payload, model }, request({}), { model });
+    assert.notEqual(result.thinking?.type, 'disabled', `${model} does not admit this non-thinking default`);
+  }
+  assert.deepEqual(payload, { model: binding.model, max_tokens: 8192, stream: true, messages: [] });
 });

@@ -220,7 +220,7 @@ export function nativeTaskState(state, status, running) {
       && !['completed', 'failed'].includes(item.status) && previews.has(item.callId)
       ? { ...item, status: 'running', display: previews.get(item.callId).display,
         progress: previews.get(item.callId).truncated ? '运行中的输出预览已截断' : null } : item.kind === 'tool' && toolStates.has(item.callId)
-      ? { ...item, status: toolStates.get(item.callId) } : item.kind === 'tool-preview' && taskState !== 'running'
+      ? item.status === toolStates.get(item.callId) ? item : { ...item, status: toolStates.get(item.callId) } : item.kind === 'tool-preview' && taskState !== 'running'
       ? { ...item, streaming: false } : item.kind === 'tool' && ['scheduled', 'running'].includes(item.status)
       && ['interrupted', 'waiting', 'paused', 'cancelled', 'failed', 'unverified', 'completed'].includes(taskState)
       ? { ...item, status: taskState === 'waiting' ? 'waiting' : 'interrupted' } : item),

@@ -9,15 +9,25 @@ export function parseModelJson(text: string): Json { return decodeJson(text, fal
 export function parseNativeJson(text: string): Json { return decodeJson(text, true, 1024); }
 function decodeJson(text: string, plainObjects: boolean, maxDepth: number): Json {
   let position = 0;
-  function space(): void { while (/[\u0009\u000a\u000d\u0020]/.test(text[position] ?? '\0')) position++; }
-  function string(): string {
-    const start = position++;
+  // The strict structural decoder still owns duplicate keys, exact integers
+  // and depth. Scan text spans in the engine rather than visiting each code
+  // unit in JS: persisted code/log strings dominate long-session reads.
+  const stringToken = /"[^"\\]*(?:\\[\s\S][^"\\]*)*"/y;
+  const numberToken = /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/y;
+  function space(): void {
     while (position < text.length) {
-      const character = text[position++];
-      if (character === '\\') position++;
-      else if (character === '"') return JSON.parse(text.slice(start, position)) as string;
+      const code = text.charCodeAt(position);
+      if (code !== 9 && code !== 10 && code !== 13 && code !== 32) break;
+      position++;
     }
-    invariant(false, 'invalid_model_json');
+  }
+  function string(): string {
+    stringToken.lastIndex = position;
+    const token = stringToken.exec(text);
+    invariant(token, 'invalid_model_json');
+    position = stringToken.lastIndex;
+    // Native decoding validates escapes and rejects raw control characters.
+    return JSON.parse(token[0]) as string;
   }
   function value(depth: number): Json {
     invariant(depth <= maxDepth, 'model_json_nesting_exceeded'); space();
@@ -48,8 +58,9 @@ function decodeJson(text: string, plainObjects: boolean, maxDepth: number): Json
     for (const [literal, result] of [['null', null], ['true', true], ['false', false]] as const) {
       if (text.startsWith(literal, position)) { position += literal.length; return result; }
     }
-    const number = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/.exec(text.slice(position));
-    invariant(number, 'invalid_model_json'); position += number[0].length;
+    numberToken.lastIndex = position;
+    const number = numberToken.exec(text);
+    invariant(number, 'invalid_model_json'); position = numberToken.lastIndex;
     const lexeme = number[0], result = Number(lexeme);
     if (!/[.eE]/.test(lexeme) && !Number.isSafeInteger(result)) {
       // Python's JSON decoder uses arbitrary precision int, with its default

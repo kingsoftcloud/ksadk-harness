@@ -475,6 +475,30 @@ export class SqliteRunStore extends TransactionalRunStore {
         } catch (error) { db.exec('ROLLBACK'); throw error; }
       },
     });
+    /** Read-only observability state and an append-only event suffix from one
+     * SQLite snapshot. Execution receipts, transcripts and configuration are
+     * deliberately excluded; this view cannot authorize execution. */
+    this.traceView = (scope, runId, after = 0) => {
+      open();
+      invariant(Number.isSafeInteger(after) && after >= 0, 'invalid_trace_cursor');
+      const key = runKey(scope, runId);
+      db.exec('BEGIN');
+      try {
+        const row = db.prepare(`SELECT json_object(
+          'scope',json_extract(data,'$.snapshot.scope'), 'runId',json_extract(data,'$.snapshot.runId'),
+          'sessionId',json_extract(data,'$.snapshot.sessionId'), 'phase',json_extract(data,'$.snapshot.phase'),
+          'revision',json_extract(data,'$.snapshot.revision'), 'eventSeq',json_extract(data,'$.snapshot.eventSeq'),
+          'usage',json_extract(data,'$.snapshot.usage'), 'outcome',json_extract(data,'$.snapshot.outcome')) AS snapshot
+          FROM native_runs WHERE key=?`).get(key);
+        invariant(row, 'run_not_found');
+        const snapshot = parseNativeJson(row.snapshot);
+        invariant(snapshot.runId === runId && canonical(snapshot.scope) === canonical(scope), 'native_trace_identity_mismatch');
+        const events = db.prepare('SELECT data FROM native_events WHERE run_key=? AND seq>? AND seq<=? ORDER BY seq')
+          .all(key, after, snapshot.eventSeq).map(row => parseNativeJson(row.data));
+        db.exec('COMMIT');
+        return { contract: 'agentkit.native-trace-view/v1', snapshot, events };
+      } catch (error) { db.exec('ROLLBACK'); throw error; }
+    };
     /** A presentation-only read: current transcript, display events and exact
      * unresolved closures. Historical raw tool bodies never enter this view. */
     this.sessionDeliveryState = (scope, runId) => {

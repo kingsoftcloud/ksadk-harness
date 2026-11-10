@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { NativeKernel, MemoryRunStore, emptyUsage, toolDiscoveryDefinitions, modelToolCatalog,
-  resolveDiscoveredCalls, executeToolDiscovery, validateModelResult, discoveryAfterCleanup } from '../dist/index.mjs';
+  resolveDiscoveredCalls, executeToolDiscovery, validateModelResult, discoveryAfterCleanup, toolAdmissionRejection } from '../dist/index.mjs';
 import { SqliteRunStore } from '@kingsoftcloud/agentkit-harness-node/native/sqlite-store';
 import { fixture, scope, digest, tool } from './fixtures.mjs';
 
@@ -17,6 +17,41 @@ const result = (calls = [], overrides = {}) => ({ kind: calls.length ? 'tool_cal
 const search = { callId: 'search', name: 'ToolSearch', arguments: { query: 'select:publish' } };
 const invoke = { callId: 'invoke', name: 'DeferredToolCall', arguments: { name: 'mcp__files__publish', input: { id: 9007199254740993n } } };
 const configuration = overrides => fixture({ toolDiscoveryPolicy: 'local-tool-search/v1', tools: [...controls, hidden()], ...overrides });
+
+for (const sqlite of [false, true]) for (const direct of [false, true]) test(`${sqlite ? 'sqlite' : 'memory'}: a rejected deferred call explains discovery without executing the proposed action (${direct ? 'direct' : 'wrapper'})`, async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'native-discovery-repair-'));
+  const store = sqlite ? new SqliteRunStore(join(directory, 'run.sqlite')) : new MemoryRunStore();
+  t.after(() => { store.close?.(); rmSync(directory, { recursive: true, force: true }); });
+  const { config, snapshot } = configuration({ tools: [...controls, hidden({ readOnly: true })],
+    profile: { ...fixture().config.profile, ...(direct ? { discoveredToolExposure: 'direct-after-search/v1' } : {}) } });
+  let models = 0, effects = 0;
+  const kernel = new NativeKernel({ store, digest, owner: 'discovery-repair', ports: {
+    model: { generate: async request => {
+      models++;
+      if (models === 1) return result([{ callId: 'premature', name: hidden().name, arguments: { id: 9007199254740993n } }]);
+      if (models === 2) {
+        const failure = JSON.parse(request.messages.at(-1).content);
+        assert.equal(failure.code, 'tool_not_advertised'); assert.equal(failure.executed, false);
+        assert.equal(failure.reason, 'definition_not_loaded'); assert.equal(effects, 0);
+        assert.deepEqual(failure.recovery, { name: 'ToolSearch', arguments: { query: 'select:' + hidden().name },
+          call_after_discovery: direct ? 'direct' : 'DeferredToolCall' });
+        return result([{ callId: 'repair-search', name: failure.recovery.name, arguments: failure.recovery.arguments }]);
+      }
+      if (models === 3) return result([direct
+        ? { callId: 'authorized', name: hidden().name, arguments: { id: 9007199254740993n } } : invoke]);
+      return result();
+    } }, tools: { execute: async request => {
+      effects++; assert.equal(request.call.callId, direct ? 'authorized' : 'invoke');
+      assert.deepEqual(request.call.arguments, { id: 9007199254740993n });
+      return { status: 'ok', content: 'read' };
+    } },
+  } });
+  kernel.start(snapshot, config);
+  assert.equal((await kernel.runUntilIdle(scope, 'run')).phase, 'completed');
+  assert.equal(models, 4); assert.equal(effects, 1);
+  assert.equal(store.load(scope, 'run').intents.some(intent => intent.kind === 'tool'
+    && intent.payload.calls.some(call => call.callId === 'premature')), false);
+});
 
 for (const sqlite of [false, true]) test(`${sqlite ? 'sqlite' : 'memory'}: search loads exact definitions, target owns authority, approval and durable identity`, async t => {
   const directory = mkdtempSync(join(tmpdir(), 'native-tool-discovery-'));
@@ -59,6 +94,43 @@ for (const sqlite of [false, true]) test(`${sqlite ? 'sqlite' : 'memory'}: searc
   assert.ok(actual.some(call => call.name === hidden().name && call.modelCallWrapper === 'DeferredToolCall'));
   assert.equal(actual.some(call => call.name === 'DeferredToolCall'), false);
   assert.deepEqual(store.load(scope, 'run').configuration, config);
+});
+
+test('tool admission feedback cannot reveal forbidden tools or invent an unavailable discovery path', () => {
+  const restricted = configuration({ contract: { objective: 'Scoped', allowedToolNames: controls.map(tool => tool.name) } });
+  const call = { callId: 'denied', name: hidden().name, arguments: {} };
+  const denied = toolAdmissionRejection(restricted.snapshot, restricted.config, call, controls);
+  assert.equal(denied.executed, false); assert.equal(denied.reason, 'tool_unavailable');
+  assert.equal(denied.recovery, undefined); assert.doesNotMatch(JSON.stringify(denied), /mcp__files__publish/);
+  const { config, snapshot } = configuration();
+  const noSearch = toolAdmissionRejection(snapshot, config, call, [hidden()]);
+  assert.equal(noSearch.recovery, undefined); assert.deepEqual(noSearch.available_tool_names, []);
+  for (const name of ['x'.repeat(2048), 'one,two', ' leading']) {
+    const special = hidden({ name });
+    const { config, snapshot } = configuration({ tools: [...controls, special] });
+    const feedback = toolAdmissionRejection(snapshot, config, { ...call, name }, config.tools);
+    assert.equal(feedback.recovery, undefined, 'never suggest an invalid or ambiguous select query');
+    assert.ok(Buffer.byteLength(JSON.stringify(feedback)) <= 1024);
+  }
+});
+
+test('a mixed batch is not partly dispatched and tells resident calls why they did not run', async () => {
+  const resident = tool({ name: 'read_resident' });
+  const { config, snapshot } = configuration({ tools: [...controls, hidden(), resident] });
+  let models = 0, effects = 0;
+  const store = new MemoryRunStore(), kernel = new NativeKernel({ store, digest, owner: 'mixed-repair', ports: {
+    model: { generate: async request => {
+      if (++models === 1) return result([{ callId: 'bad', name: hidden().name, arguments: {} },
+        { callId: 'good', name: resident.name, arguments: {} }]);
+      const feedback = JSON.parse(request.messages.at(-1).content);
+      assert.equal(feedback.code, 'tool_not_advertised'); assert.equal(feedback.executed, false);
+      assert.equal(feedback.reason, 'batch_not_executed'); assert.equal(feedback.recovery, undefined);
+      assert.ok(feedback.available_tool_names.includes(resident.name));
+      return result();
+    } }, tools: { execute: async () => { effects++; return { status: 'ok', content: '' }; } },
+  } });
+  kernel.start(snapshot, config);
+  assert.equal((await kernel.runUntilIdle(scope, 'run')).phase, 'completed'); assert.equal(effects, 0);
 });
 
 test('hidden direct calls are rejected with a bounded retry; unsearched wrappers never reach external tools', async () => {

@@ -1,5 +1,5 @@
 import type { CommitBatch, Message, ModelResult, ObjectValue, RunConfiguration, RunSnapshot, StoredRun } from './contracts.mjs';
-import { responseContinuationPairs, responseContinuationPending, joinResponseContinuation } from './response-continuation.mjs';
+import { responseBoundaryRecovery, responseContinuationPairs, responseContinuationPending, joinResponseContinuation } from './response-continuation.mjs';
 import { canonical, copy, invariant } from './values.mjs';
 import { contextMessageRef } from './context-planning.mjs';
 
@@ -7,7 +7,11 @@ type Digest = (value: unknown) => string;
 
 /** Select from actual admission after the completed model claim, never the catalog. */
 export function outputRecoveryMode(snapshot: RunSnapshot, config: RunConfiguration, toolsAvailable: boolean, result?: ModelResult): 'suffix' | 'task_resume' {
-  if (config.outputRecoveryPolicy === 'response-boundary/v2' && config.contract.finalOutputFormat === 'text') {
+  if (responseBoundaryRecovery(config) && config.contract.finalOutputFormat === 'text') {
+    // A provider length boundary identifies truncated text, not task completion.
+    // Preserve explicit sealed delivery, otherwise retain the admitted tools.
+    if (config.outputRecoveryPolicy === 'response-boundary/v3')
+      return responseContinuationPending(snapshot, config) || !toolsAvailable ? 'suffix' : 'task_resume';
     if (responseContinuationPending(snapshot, config)
       || result?.textCommitVersion === 'provider-finished-text/v1' && result.outputBoundary === 'assistant-text/v1') return 'suffix';
     if (result?.outputBoundary === 'tool-call/v1') return 'task_resume';

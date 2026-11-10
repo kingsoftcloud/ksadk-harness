@@ -11,6 +11,9 @@ export function createNativeChildrenState({ hostRemote, agentId, sessionId, comm
   const validTask = task => task && ['childRunId', 'sessionId', 'parentRunId', 'role', 'phase', 'goalPreview']
     .every(key => typeof task[key] === 'string') && typeof task.resultAvailable === 'boolean'
     && task.usage && Number.isSafeInteger(task.usage.modelCalls) && Number.isSafeInteger(task.usage.toolCalls)
+    && (task.canResume === undefined || typeof task.canResume === 'boolean'
+      && (!task.canResume || task.phase === 'paused'
+        && !['effect_outcome_unknown', 'recovery_retry_exhausted', 'browser_session_unavailable'].includes(task.reason)))
     && (task.a2aTasks === undefined || Array.isArray(task.a2aTasks) && task.a2aTasks.length <= 10000
       && task.a2aTasks.every(item => item?.runId === task.parentRunId && item.childRunId === task.childRunId
         && item.childSessionId === task.sessionId && ['childAgentId', 'operationKey', 'callId']
@@ -25,7 +28,7 @@ export function createNativeChildrenState({ hostRemote, agentId, sessionId, comm
       if (disposed) return;
       valid(page);
       check(Array.isArray(page.tasks) && page.tasks.every(task => validTask(task)
-        && (!(task.canPromote || task.canCancel || task.canSendInput) || task.parentRunId === page.runId)
+        && (!(task.canPromote || task.canCancel || task.canSendInput || task.canResume) || task.parentRunId === page.runId)
         && (!task.canSendInput || Number.isSafeInteger(task.goalRevision) && task.goalRevision >= 0))
         && new Set(page.tasks.map(task => task.childRunId)).size === page.tasks.length
         && Number.isSafeInteger(page.offset) && page.offset >= 0 && page.nextOffset === page.offset + page.tasks.length
@@ -64,7 +67,7 @@ export function createNativeChildrenState({ hostRemote, agentId, sessionId, comm
     const pending = state.pending;
     set({ sending: true, error: '' });
     try {
-      const method = { promote: 'promoteNativeChild', send: 'sendNativeChildInput', cancel: 'cancelNativeChild' }[state.pendingAction];
+      const method = { promote: 'promoteNativeChild', send: 'sendNativeChildInput', cancel: 'cancelNativeChild', resume: 'resumeNativeChild' }[state.pendingAction];
       const receipt = await hostRemote[method](pending, lifetime.signal);
       check(receipt?.commandId === pending.commandId && ['accepted', 'duplicate'].includes(receipt.status), '子任务操作回执未确认。');
       if (disposed) return;
@@ -73,7 +76,7 @@ export function createNativeChildrenState({ hostRemote, agentId, sessionId, comm
     finally { set({ sending: false }); }
   }
   function control(action, task, extra = {}) {
-    const allowed = { promote: task.canPromote, send: task.canSendInput, cancel: task.canCancel }[action];
+    const allowed = { promote: task.canPromote, send: task.canSendInput, cancel: task.canCancel, resume: task.canResume === true }[action];
     if (disposed || state.pending || !allowed || task.parentRunId !== state.page?.runId) return;
     if (action === 'send' && (typeof extra.text !== 'string' || !extra.text.trim() || extra.text.length > 32768
       || !Number.isSafeInteger(task.goalRevision) || task.goalRevision < 0)) return;
@@ -86,6 +89,7 @@ export function createNativeChildrenState({ hostRemote, agentId, sessionId, comm
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     refresh: () => load(), next: () => load(true), read,
     promote: task => control('promote', task), cancel: task => control('cancel', task),
+    resume: task => control('resume', task),
     sendInput: (task, text) => control('send', task, { text, expectedGoalRevision: task.goalRevision }),
     retryControl: sendControl, retryPromotion: sendControl,
     dispose() { if (disposed) return; disposed = true; lifetime.abort(); reading++; listeners.clear(); },

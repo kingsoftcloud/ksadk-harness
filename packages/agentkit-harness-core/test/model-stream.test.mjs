@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MemoryRunStore, NativeKernel, emptyUsage } from '../dist/index.mjs';
-import { fixture, scope, digest } from './fixtures.mjs';
+import { fixture, scope, digest, tool } from './fixtures.mjs';
 const final = text => ({ kind: 'final_candidate', text, toolCalls: [], usage: emptyUsage() });
 const gate = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 function setup(generate, options = {}, overrides = {}) {
@@ -14,6 +14,24 @@ function setup(generate, options = {}, overrides = {}) {
 }
 const idleProfile = { profileId: 'idle', profileVersion: '1', providerFamily: 'fixture', compatibilityDigest: 'idle/v1',
   streaming: true, streamTimeoutPolicy: 'idle/v1', requestTimeoutMs: 30, maxProviderRetries: 0 };
+test('the first-tool request hint survives provider retry and ends after a tool dispatch', async () => {
+  const store = new MemoryRunStore(), observed = [];
+  const { config, snapshot } = fixture({ tools: [tool()],
+    profile: { ...idleProfile, maxProviderRetries: 1, retryInitialDelayMs: 1 } });
+  store.create(config, snapshot);
+  const kernel = new NativeKernel({ store, digest, owner: 'first-tool-worker', ports: {
+    model: { async generate(request) {
+      observed.push(request.beforeFirstTool);
+      if (observed.length === 1) return { ...final(''), kind: 'provider_retryable_error', failureKind: 'network_error' };
+      if (observed.length === 2) return { ...final(''), kind: 'tool_calls', toolCalls: [{ callId: 'read-1', name: 'read', arguments: {} }] };
+      return final('Done');
+    } },
+    tools: { execute: async () => ({ status: 'ok', content: 'read succeeded' }) },
+  } });
+  const result = await kernel.runUntilIdle(scope, 'run');
+  assert.equal(result.finalText, 'Done');
+  assert.deepEqual(observed, [true, true, undefined]);
+});
 test('idle policy: activity renews effect wait without a public or durable display fact', async () => {
   let clock = 0; const seen = [];
   const host = setup(async (_, emit) => {
@@ -79,15 +97,32 @@ test('live public prefix precedes model settlement and is copied into its durabl
   assert.equal(JSON.stringify(fact).includes('private replay'), false);
   const before = seen.length; await host.run(); assert.equal(seen.length, before);
 });
-test('stream cap limits the UTF-8 display prefix without truncating the authoritative result', async () => {
+test('stream cap bounds persisted history without stopping live publication or truncating the result', async () => {
   const seen = [];
   const host = setup(async (request, emit) => {
     emit({ kind: 'text', text: '中' }); emit({ kind: 'text', text: '界'.repeat(200) }); emit({ kind: 'text', text: 'tail' });
     return final('中' + '界'.repeat(200) + 'tail');
   }, { onStream: (_, event) => seen.push(event) }, { limits: { maxModelStreamBytes: 150 } });
   const result = await host.run(), display = host.store.load(scope, 'run').receipts[0].result.displayStream;
-  assert.equal(seen.length, 1); assert.equal(display.records[0].event.text, '中'); assert.equal(display.truncated, true);
+  assert.deepEqual(seen.map(event => event.text), ['中', '界'.repeat(200), 'tail']);
+  assert.deepEqual(display.records.map(record => record.event.text), ['中']);
+  assert.equal(display.truncated, true);
   assert.equal(result.finalText.length, 205);
+});
+test('live reasoning and text continue after the default 1 MiB history cap', async () => {
+  let live = 0, lastEvent;
+  const thinking = '字'.repeat(30), chunkCount = 10_000;
+  const host = setup(async (_, emit) => {
+    for (let index = 0; index < chunkCount; index++) emit({ kind: 'thinking', text: thinking });
+    emit({ kind: 'text', text: 'Completed after the history limit.' });
+    return final('Completed after the history limit.');
+  }, { onStream: (_, event) => { live++; lastEvent = event; } });
+  const result = await host.run(), display = host.store.load(scope, 'run').receipts[0].result.displayStream;
+  assert.equal(display.truncated, true);
+  assert.ok(display.records.length < chunkCount);
+  assert.ok(Buffer.byteLength(JSON.stringify(display.records)) <= 1024 * 1024);
+  assert.equal(live, chunkCount + 1);
+  assert.deepEqual(lastEvent, { kind: 'text', text: result.finalText });
 });
 test('display recording can be disabled while the final result remains complete', async () => {
   const seen = [];

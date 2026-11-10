@@ -1,14 +1,14 @@
 import type { ModelStreamEvent, ModelStreamRecord } from './contracts.mjs';
 import { canonical, copy } from './values.mjs';
 
-/** A bounded, public display prefix. It never supplies execution or replay authority. */
+/** Publish live output and retain a bounded public prefix for history. Neither supplies execution authority. */
 export function modelStreamCapture(maxBytes: number, now: () => number,
   publish: (event: ModelStreamEvent, record: ModelStreamRecord) => void) {
   const records: ModelStreamRecord[] = [];
-  let bytes = 2, truncated = false, discarded = 0, closed = false;
+  let bytes = 2, lastTime = 0, truncated = false, discarded = 0, closed = false;
   return {
     emit(value: ModelStreamEvent) {
-      if (closed || truncated) return;
+      if (closed) return;
       if (!value || !['text', 'thinking', 'tool_delta'].includes(value.kind) || typeof value.text !== 'string') {
         discarded++; return;
       }
@@ -24,11 +24,14 @@ export function modelStreamCapture(maxBytes: number, now: () => number,
           ...(typeof value.metadata?.name === 'string' ? { name: value.metadata.name } : {}) };
       }
       const clock = now();
-      const time = Math.max(records.at(-1)?.time ?? 0, Number.isSafeInteger(clock) && clock >= 0 ? clock : 0);
-      const record = { time, event };
-      const size = new TextEncoder().encode(canonical(record)).length + (records.length ? 1 : 0);
-      if (bytes + size > maxBytes) { truncated = true; return; }
-      bytes += size; records.push(record);
+      lastTime = Math.max(lastTime, Number.isSafeInteger(clock) && clock >= 0 ? clock : 0);
+      const record = { time: lastTime, event };
+      if (!truncated) {
+        const size = new TextEncoder().encode(canonical(record)).length + (records.length ? 1 : 0);
+        if (bytes + size > maxBytes) truncated = true;
+        else { bytes += size; records.push(record); }
+      }
+      if (maxBytes === 0) return;
       // Display observers cannot veto or mutate the model result or receipt.
       try { publish(copy(event), copy(record)); } catch { /* non-authoritative observer */ }
     },

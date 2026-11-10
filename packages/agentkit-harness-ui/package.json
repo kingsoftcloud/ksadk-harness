@@ -41,7 +41,8 @@
     "./host/native-approval-actions": "./src/host/native-approval-actions.mjs",
     "./host/native-a2a": "./src/host/native-a2a.mjs",
     "./host/state/native-a2a": "./src/host/state/native-a2a.mjs",
-    "./host/state/native-task-read-model": "./src/host/state/native-task-read-model.mjs"
+    "./host/state/native-task-read-model": "./src/host/state/native-task-read-model.mjs",
+    "./engine-view/adapter": "./src/engine-view/adapter.mjs"
   },
   "files": [
     "src",
@@ -66,7 +67,7 @@
   },
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "build": "node markdown/build/build-markdown.cjs"
+    "build": "node markdown/build/build-markdown.cjs && node scripts/build-engine-view.mjs"
   },
   "license": "Apache-2.0",
   "engines": {

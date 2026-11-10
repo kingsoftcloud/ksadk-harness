@@ -164,3 +164,15 @@ test('host tools are refused without the tools service, on name clashes and on m
   await assert.rejects(g.engine.startRun({ objective: 'x', hostTools: [lookup, lookup] }), { message: 'engine_host_tools_invalid' });
   assert.equal(f.model.requests.length + g.model.requests.length, 0);
 });
+
+test('the engine delivers its own task view over the protocol', async t => {
+  const f = await launch(t, [final('unused')]);
+  const hello = await f.engine.initialize();
+  assert.equal(hello.capabilities.ui?.contract, 'agentkit.engine-view/v1');
+  const view = await f.engine.view();
+  assert.equal(view.contract, 'agentkit.engine-view/v1');
+  assert.equal(view.sha256, hello.capabilities.ui.sha256);
+  assert.match(view.contentType, /^text\/html/);
+  assert.ok(view.html.startsWith('<!doctype html>') && view.html.includes("default-src 'none'"));
+  assert.ok(!/<script[^>]+src=|<link[^>]+href=|https?:\/\/[^"' ]+\.(?:js|css)/i.test(view.html), 'the view loads nothing from the network');
+});

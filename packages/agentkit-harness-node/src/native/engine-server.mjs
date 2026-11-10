@@ -32,11 +32,24 @@ import { createEngineRuntime } from './engine-runtime.mjs';
 
 export const ENGINE_PROTOCOL = 'agentkit.engine/v1';
 export const ENGINE_EVENT_SCHEMA = 'agentkit.engine-event/v1';
-const METHODS = ['initialize', 'run/start', 'run/status', 'run/events', 'run/resume', 'run/cancel', 'shutdown'];
+const METHODS = ['initialize', 'run/start', 'run/status', 'run/events', 'run/resume', 'run/cancel', 'ui/view', 'shutdown'];
+export const ENGINE_VIEW_CONTRACT = 'agentkit.engine-view/v1';
 const ERRORS = { parse: -32700, request: -32600, method: -32601, params: -32602, internal: -32603,
   notInitialized: -32010, runNotFound: -32011, runBusy: -32012 };
 const text = value => typeof value === 'string' && value.trim().length > 0;
 const sleep = ms => new Promise(done => setTimeout(done, ms));
+
+/** The engine's own task view, built by agentkit-harness-ui into this package's dist. */
+let viewCache;
+function engineView() {
+  if (viewCache !== undefined) return viewCache;
+  try {
+    const html = readFileSync(new URL('../../dist/engine-view.html', import.meta.url), 'utf8');
+    viewCache = { contract: ENGINE_VIEW_CONTRACT, version: packageVersion(), contentType: 'text/html; charset=utf-8',
+      sha256: createHash('sha256').update(html).digest('hex'), html };
+  } catch { viewCache = null; }
+  return viewCache;
+}
 
 function packageVersion() {
   try { return JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version; } catch { return 'unknown'; }
@@ -49,15 +62,26 @@ export function projectEngineEvent(event) {
   switch (event.kind) {
     case 'model.completed': return { ...base, category: 'model', title: payload.kind ?? 'model',
       ...(text(payload.text) ? { detail: payload.text } : {}),
-      ...(Array.isArray(payload.toolCalls) && payload.toolCalls.length ? { tools: payload.toolCalls.map(call => call.name) } : {}),
+      ...(Array.isArray(payload.toolCalls) && payload.toolCalls.length ? { tools: payload.toolCalls.map(call => call.name),
+        calls: payload.toolCalls.map(call => ({ callId: call.callId, name: call.name, arguments: bounded(call.arguments) })) } : {}),
       ...(payload.usage ? { usage: { inputTokens: payload.usage.inputTokens, outputTokens: payload.usage.outputTokens } } : {}) };
-    case 'tool.completed': return { ...base, category: 'tool', title: payload.name, status: payload.status };
+    case 'tool.completed': return { ...base, category: 'tool', title: payload.name, status: payload.status,
+      ...(text(payload.callId) ? { callId: payload.callId } : {}), ...(payload.content === undefined ? {} : { result: bounded(payload.content) }) };
     case 'model.failure_observed': return { ...base, category: 'model', title: 'model_failure', status: 'retrying', detail: payload.code };
     case 'run.started': return { ...base, category: 'run', title: 'started' };
     case 'run.terminal': return { ...base, category: 'run', title: payload.phase, status: payload.outcome,
       ...(payload.reason ? { reason: payload.reason } : {}), ...(text(payload.finalText) ? { detail: payload.finalText } : {}) };
     default: return { ...base, category: event.kind.split('.')[0] };
   }
+}
+
+/** Bound a value carried in a projected event: views show previews, never whole files. */
+const PREVIEW_CHARS = 4000;
+function bounded(value) {
+  if (value === undefined || value === null) return value ?? null;
+  const encoded = typeof value === 'string' ? value : JSON.stringify(value);
+  if (encoded.length <= PREVIEW_CHARS) return typeof value === 'string' ? value : JSON.parse(encoded);
+  return { truncated: true, preview: encoded.slice(0, PREVIEW_CHARS), chars: encoded.length };
 }
 
 export async function serveEngine({ input, output, log = () => {}, startup, env = process.env, fetchImpl = fetch }) {
@@ -119,7 +143,7 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
         model: { ...startup.model, apiKey: async () => env[startup.model.apiKeyEnv] ?? '' } });
       return { protocolVersion: ENGINE_PROTOCOL, engine: { name: '@kingsoftcloud/agentkit-harness-node', version: packageVersion(), ...runtime.info() },
         capabilities: { methods: METHODS, eventSchema: ENGINE_EVENT_SCHEMA, hostServices: ['approvals', 'tools'], approvals: host.services.approvals ? 'host' : startup.approval,
-          hostTools: host.services.tools } };
+          hostTools: host.services.tools, ...(engineView() ? { ui: { contract: ENGINE_VIEW_CONTRACT, sha256: engineView().sha256 } } : {}) } };
     },
     async 'run/start'(params) {
       if (!text(params?.objective)) throw rpcError(ERRORS.params, 'objective is required');
@@ -161,6 +185,11 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
       runtime.submit(params.runId, { commandId: `cancel-${randomUUID()}`, kind: 'cancel', payload: {} });
       if (!active.has(params.runId) && !status(params.runId).terminal) drive(params.runId);
       return status(params.runId);
+    },
+    async 'ui/view'() {
+      const view = engineView();
+      if (!view) throw rpcError(ERRORS.method, 'this engine build ships no task view');
+      return view;
     },
     async shutdown() { closing = true; return { ok: true }; },
   };

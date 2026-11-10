@@ -32,6 +32,14 @@
   `hostToolNamePattern` so a host never hard-codes engine tool names.
 - The engine's event wait reads only the journal suffix instead of rescanning
   every event on each poll.
+- Add the engine's own task view (`agentkit.engine-view/v1`). The UI package
+  bundles the shared timeline into one self-contained HTML document
+  (`dist/engine-view.html`, no network access, strict CSP) and maps
+  `agentkit.engine-event/v1` onto its event protocol. The engine delivers it
+  through `ui/view` and advertises it in `initialize`. A host embeds it in a
+  scripts-only sandboxed iframe and relays events by `postMessage`, so task
+  presentation changes ship with the engine. Projected events now carry
+  bounded tool calls and results for the view.
 
 ## 0.0.16 - 2026-11-10
 

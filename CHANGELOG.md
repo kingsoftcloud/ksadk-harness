@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.0.17 - 2026-11-10
+
+- Keep live reasoning, text, and tool previews streaming after the persisted
+  history reaches its size limit.
+- Default to low reasoning before the first tool dispatch on the gateway's
+  GLM-5.3-Flash route. Explicit settings and previously admitted Runs retain
+  their behavior.
+
 ## 0.0.16 - 2026-11-10
 
 - Expose child-owner shutdown through `ChildLifecyclePort.closeRun` and preserve

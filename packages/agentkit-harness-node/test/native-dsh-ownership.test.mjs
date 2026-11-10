@@ -87,6 +87,65 @@ test('admission retains the exact scoped Run and lossless numeric inputs, withou
 
 for (const sqlite of [false, true]) {
   const backend = sqlite ? 'SQLite' : 'memory';
+  test(`${backend}: explicit Host resume advances a paused Native Run while SDK redelivery preserves its pause`, async t => {
+    const host = setup(t, sqlite);
+    let control, paused = false;
+    const execute = host.executor({
+      onActive: (_payload, active) => { control = active; },
+      onCheckpoint: (_payload, snapshot) => {
+        if (!paused && snapshot.usage.toolCalls === 1 && snapshot.pendingIntent === null) {
+          paused = true;
+          control.kernel.submit(scope, snapshot.runId, { commandId: 'operator-pause-after-write', kind: 'pause', payload: {} });
+        }
+      },
+    });
+    await assert.rejects(execute(host.payload), /NATIVE_TURN_SUSPENDED|NATIVE_TURN_FAILED/);
+    const [before] = host.store.list(scope), record = host.store.load(scope, before.runId);
+    assert.equal(before.phase, 'paused'); assert.deepEqual(host.calls, { model: 1, write: 1 });
+    await assert.rejects(execute(host.payload), /NATIVE_TURN_SUSPENDED|NATIVE_TURN_FAILED/);
+    assert.equal(host.store.sessionHead(scope, 'original-session').phase, 'paused');
+    assert.deepEqual(host.calls, { model: 1, write: 1 }, 'SDK redelivery is not operator authority to resume');
+    assert.deepEqual(await execute.resume({ agent: host.consumer.agent }), { reason: { kind: 'completed' } });
+    const after = host.store.load(scope, before.runId);
+    assert.equal(after.snapshot.runId, before.runId);
+    assert.deepEqual(after.configuration, record.configuration);
+    assert.deepEqual(after.receipts.slice(0, record.receipts.length), record.receipts);
+    assert.deepEqual(host.calls, { model: 2, write: 1 }, 'the committed write is never dispatched again');
+    assert.equal(after.commands.filter(row => row.command.kind === 'resume' && row.consumed).length, 1);
+    await execute.resume({ agent: host.consumer.agent });
+    assert.deepEqual(host.calls, { model: 2, write: 1 });
+    assert.equal(host.store.list(scope).length, 1);
+  });
+
+  for (const guard of ['changed binding', 'pending cancellation'])
+  test(`${backend}: explicit paused-run recovery still honors ${guard}`, async t => {
+    const host = setup(t, sqlite);
+    let control, paused = false;
+    const execute = host.executor({
+      onActive: (_payload, active) => { control = active; },
+      onCheckpoint: (_payload, snapshot) => {
+        if (!paused && snapshot.usage.toolCalls === 1 && snapshot.pendingIntent === null) {
+          paused = true;
+          control.kernel.submit(scope, snapshot.runId, { commandId: 'pause-before-recovery-guard', kind: 'pause', payload: {} });
+        }
+      },
+    });
+    await assert.rejects(execute(host.payload), /NATIVE_TURN_SUSPENDED|NATIVE_TURN_FAILED/);
+    const [before] = host.store.list(scope);
+    if (guard === 'changed binding') {
+      host.binding.configuration.instructions += '\nChanged current policy';
+      await assert.rejects(execute.resume({ agent: host.consumer.agent }), /recovery_configuration_changed/);
+      assert.equal(host.store.load(scope, before.runId).snapshot.phase, 'paused');
+      assert.equal(host.store.load(scope, before.runId).commands.some(row => row.command.kind === 'resume'), false);
+    } else {
+      host.store.enqueue(scope, before.runId, { commandId: 'cancel-before-explicit-resume', kind: 'cancel', payload: {} });
+      const result = await execute.resume({ agent: host.consumer.agent });
+      assert.equal(result.reason.kind, 'aborted');
+      assert.equal(host.store.load(scope, before.runId).snapshot.phase, 'canceled');
+    }
+    assert.deepEqual(host.calls, { model: 1, write: 1 });
+  });
+
   test(`${backend}: the complete owner is durable before Run creation or any dispatch`, async t => {
     const host = setup(t, sqlite), entered = gate(), release = gate(); let flushed = false;
     const execute = host.executor({ flush: async () => {
@@ -166,6 +225,47 @@ for (const sqlite of [false, true]) {
     assert.deepEqual(await host.executor().resume({ agent: host.consumer.agent }), { reason: { kind: 'aborted', reason: cause } });
     assert.equal(host.store.load(scope, run.runId).snapshot.phase, 'canceled');
     assert.equal(host.store.list(scope).length, 1); assert.deepEqual(host.calls, { model: 0, write: 0 });
+  });
+
+  for (const timing of ['idle', 'checkpoint']) test(`${backend}: SDK disposal at approval ${timing} preserves the owned approval without dispatching it`, async t => {
+    const host = setup(t, sqlite), entered = gate();
+    let pending;
+    host.binding.ports.tools.execute = async request => {
+      if (request.interaction?.decision !== 'allow') return {
+        status: 'approval_required', content: null, interactionId: 'approval-1',
+      };
+      host.calls.write++;
+      return { status: 'ok', content: 'Written once' };
+    };
+    const execute = host.executor({ onCheckpoint: (_payload, snapshot) => {
+      if (timing === 'checkpoint' && snapshot.phase === 'awaiting_interaction') {
+        pending = snapshot;
+        entered.resolve();
+        host.controller.abort({ kind: 'disposed' });
+      }
+    }, onIdle: async (_payload, snapshot) => {
+      pending = snapshot;
+      entered.resolve();
+      await new Promise(() => {});
+    } });
+    const running = execute(host.payload);
+    await entered.promise;
+    assert.equal(pending.phase, 'awaiting_interaction');
+    const before = host.store.load(scope, pending.runId);
+    if (timing === 'idle') host.controller.abort({ kind: 'disposed' });
+    await assert.rejects(running, { code: 'NATIVE_TURN_SUSPENDED' });
+    const detached = host.store.load(scope, pending.runId);
+    assert.equal(detached.snapshot.phase, 'awaiting_interaction');
+    assert.deepEqual(detached.snapshot.pendingInteraction, before.snapshot.pendingInteraction);
+    assert.equal(detached.commands.some(row => row.command.kind === 'cancel'), false);
+    assert.equal(host.calls.write, 0);
+    const resumed = host.executor({ onIdle: (_payload, snapshot) => ({
+      commandId: 'approve-after-reattach', kind: 'submit_interaction',
+      payload: { interactionId: snapshot.pendingInteraction.interactionId, decision: 'allow' },
+    }) });
+    assert.deepEqual(await resumed.resume({ agent: host.consumer.agent }), { reason: { kind: 'completed' } });
+    assert.equal(host.store.load(scope, pending.runId).snapshot.phase, 'completed');
+    assert.deepEqual(host.calls, { model: 2, write: 1 });
   });
 
   test(`${backend}: checkpoint recovery continues the original Run without repeating its committed model`, async t => {

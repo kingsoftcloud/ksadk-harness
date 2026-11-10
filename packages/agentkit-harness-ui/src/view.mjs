@@ -220,8 +220,8 @@ function activityGroupBlock(group, opts) {
       h('span', { className: group.active ? 'harness-tool-title-streaming' : undefined }, title),
       h('span', { 'aria-hidden': true }, '·'),
       h('span', { 'data-testid': 'activity-counts' }, detail), chevronIcon('harness-tool-chevron')),
-    h('div', { className: 'harness-activity-children' }, group.family === 'browser'
-      ? renderTimelineItems(group.events, opts, false, false) : group.children.map(item => toolBlock(item, opts)))));
+    open || group.family !== 'changes' ? h('div', { className: 'harness-activity-children' }, group.family === 'browser'
+      ? renderTimelineItems(group.events, opts, false, false) : group.children.map(item => toolBlock(item, opts))) : null));
 }
 
 function contextMarker(item, opts) {
@@ -335,7 +335,11 @@ function toolBlock(item, opts) {
   // Dispatch to the renderer registry (execute / read / edit / default). Each
   // renderer owns its summary, body, and host-action data attributes; this
   // function is now a thin seam so the view stays a single projection.
-  return renderTool(item, opts);
+  const cached = opts.toolViewCache?.get(item);
+  if (cached) return cached;
+  const view = renderTool(item, opts);
+  opts.toolViewCache?.set(item, view);
+  return view;
 }
 
 function planDock(plan, opts) {

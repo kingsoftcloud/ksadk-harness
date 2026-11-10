@@ -1,4 +1,4 @@
-import type { ContextPlanningResult, RunConfiguration, RunSnapshot, ToolCall, ToolDefinition, ToolResult } from './contracts.mjs';
+import type { ContextPlanningResult, ObjectValue, RunConfiguration, RunSnapshot, ToolCall, ToolDefinition, ToolResult } from './contracts.mjs';
 import { canonical, copy, invariant } from './values.mjs';
 import { toolInputRejection } from './tool-input.mjs';
 import { searchTools } from './tool-search-ranking.mjs';
@@ -27,6 +27,8 @@ export function toolDiscoveryDefinitions(): ToolDefinition[] {
 
 export function validateToolDiscovery(config: RunConfiguration): void {
   invariant(config.toolDiscoveryPolicy === undefined || config.toolDiscoveryPolicy === TOOL_DISCOVERY_POLICY, 'invalid_tool_discovery_policy');
+  invariant(config.toolAdmissionPolicy === undefined || config.toolAdmissionPolicy === 'discover-before-retry/v1'
+    && config.toolDiscoveryPolicy === TOOL_DISCOVERY_POLICY, 'invalid_tool_admission_policy');
   invariant(config.profile.providerToolSearchPolicy === undefined || config.profile.providerToolSearchPolicy === 'local-only/v1'
     || config.profile.providerToolSearchPolicy === 'anthropic-deferred/v1'
       && config.profile.providerFamily === 'anthropic-messages' && config.toolDiscoveryPolicy === TOOL_DISCOVERY_POLICY,
@@ -125,6 +127,66 @@ export function discoveredCallExposed(snapshot: RunSnapshot, config: RunConfigur
       && snapshot.toolDiscovery?.discovered.includes(call.name) === true
     || config.profile.providerToolSearchPolicy === 'anthropic-deferred/v1'
       && snapshot.toolDiscovery?.discovered.includes(call.name) === true;
+}
+
+/** Exact, scoped names are sufficient evidence to discover a definition, not to
+ * authorize its proposed operation. Promote only newly exposed schemas, bounded
+ * like a search result. The next model request must resubmit through the normal
+ * schema/permission/approval path. Omission preserves historical admission. */
+export function discoverRejectedCalls(snapshot: RunSnapshot, config: RunConfiguration, calls: ToolCall[],
+  tools: ToolDefinition[]): { state: NonNullable<RunSnapshot['toolDiscovery']>; names: string[] } | null {
+  if (config.toolAdmissionPolicy !== 'discover-before-retry/v1' || !snapshot.toolDiscovery) return null;
+  const wrapper = tools.find(tool => tool.name === DEFERRED_TOOL_CALL);
+  const names: string[] = [], definitions: ObjectValue[] = [];
+  for (const call of calls) {
+    if (call.wireArgumentsInvalid || call.modelCallWrapper) continue;
+    const wrapped = call.name === DEFERRED_TOOL_CALL;
+    if (wrapped && (!wrapper || toolInputRejection(wrapper, call))) continue;
+    if (!wrapped && discoveredCallExposed(snapshot, config, call)) continue;
+    const name = wrapped ? String(call.arguments.name) : call.name;
+    if (names.includes(name) || snapshot.toolDiscovery.promoted.includes(name)
+      || wrapped && snapshot.toolDiscovery.discovered.includes(name)) continue;
+    const target = tools.find(tool => tool.name === name && tool.discovery?.deferred
+      && (config.contract.allowedToolNames === null || config.contract.allowedToolNames.includes(name)));
+    if (!target) continue;
+    const entry = { name, description: target.description, parameters: copy(target.parameters) };
+    // Keep metadata discovery finite and no larger than the existing search
+    // model-view envelope. Oversized schemas must use the explicit search path.
+    const bytes = new TextEncoder().encode(canonical({ content: canonical({ definitions: [...definitions, entry] }),
+      media: [], additionalContexts: [] })).length;
+    if (bytes + 32 > config.limits.maxToolResultBytes) continue;
+    names.push(name); definitions.push(entry);
+    if (names.length === 20) break;
+  }
+  return names.length ? { names, state: {
+    discovered: [...new Set([...snapshot.toolDiscovery.discovered, ...names])],
+    promoted: [...snapshot.toolDiscovery.promoted, ...names],
+  } } : null;
+}
+
+/** Describe a rejected model call using only the current, scoped execution
+ * catalog. Discovery is a suggested next call, never authority to dispatch the
+ * rejected operation. Historical events and frozen tool definitions stay intact. */
+export function toolAdmissionRejection(snapshot: RunSnapshot, config: RunConfiguration, call: ToolCall,
+  tools: ToolDefinition[]): ObjectValue {
+  const base = { status: 'error', code: 'tool_not_advertised', executed: false };
+  const available = tools.some(tool => tool.name === call.name);
+  const search = tools.find(tool => tool.name === TOOL_SEARCH);
+  const arguments_ = { query: `select:${call.name}` };
+  if (available && !discoveredCallExposed(snapshot, config, call) && search
+    && call.name === call.name.trim() && !/[,\r\n]/.test(call.name)
+    && !toolInputRejection(search, { callId: call.callId, name: TOOL_SEARCH, arguments: arguments_ })) {
+    const direct = config.profile.discoveredToolExposure === 'direct-after-search/v1'
+      || config.profile.providerToolSearchPolicy === 'anthropic-deferred/v1';
+    return { ...base, reason: 'definition_not_loaded', recovery: {
+      name: TOOL_SEARCH, arguments: arguments_,
+      call_after_discovery: direct ? 'direct' : DEFERRED_TOOL_CALL,
+    } };
+  }
+  const catalog = boundedCapabilityCatalog(discoveryModelTools(snapshot, config, tools)
+    .map(tool => ({ name: tool.name, description: '' })), 1024);
+  return { ...base, reason: available && discoveredCallExposed(snapshot, config, call) ? 'batch_not_executed' : 'tool_unavailable',
+    available_tool_names: catalog.entries.map(tool => tool.name), omitted_tool_names: catalog.omitted };
 }
 
 /** Reconstitute the provider's original call; execution records keep the real target. */

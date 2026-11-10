@@ -11,9 +11,10 @@ import { sourceWorkingSetGroup } from './source-working-set-group.mjs';
 import { sourceReuseProjector } from './context-source-reuse.mjs';
 import { defaultToolPruningThreshold, projectOldToolResults, toolPruningIdleElapsed } from './context-microcompact.mjs';
 import { summaryContinuityInstructions, validSummaryContinuity } from './summary-continuity.mjs';
-import { responseContinuationPairs } from './response-continuation.mjs';
+import { responseBoundaryRecovery, responseContinuationPairs } from './response-continuation.mjs';
 import { verificationModelView } from './model-surface.mjs';
 import { currentInstructionContribution } from './context-contributions.mjs';
+import { projectBackgroundCommands } from './background-contract.mjs';
 
 export interface ContextCounters {
   /** Clock observation for this journaled context effect; never recomputed during counting. */
@@ -46,6 +47,7 @@ export function contextContinuity(snapshot: RunSnapshot, config: RunConfiguratio
   const scopedEvidence = config.modelSurface?.verificationProjection === 'readable-evidence/v1';
   const canReadArtifacts = config.artifactPolicy === 'runtime-artifacts/v1' && config.tools.some(tool => tool.name === 'ArtifactRead'
     && (config.contract.allowedToolNames === null || config.contract.allowedToolNames.includes(tool.name)));
+  const commands = projectBackgroundCommands(snapshot.backgroundCommands, 32, 8);
   return copy({ schemaVersion: scopedEvidence ? 'agentkit.native-context-continuity/v2' : 'agentkit.native-context-continuity/v1', authority: 'host_record', goal: snapshot.goal,
     ...(snapshot.todos ? { todos: snapshot.todos.items, todoRevision: snapshot.todos.revision } : {}),
     ...(snapshot.planMode ? { planMode: snapshot.planMode, planModeGuidance: policies.forRun(config).planning.planModeGuidance(snapshot, config) } : {}),
@@ -61,7 +63,8 @@ export function contextContinuity(snapshot: RunSnapshot, config: RunConfiguratio
     childBudgetReservations: snapshot.childBudgetReservations ?? [], childRunIds: snapshot.childRunIds ?? [],
     childApproval: snapshot.childApproval ?? null,
     children: snapshot.children.map(child => ({ runId: child.runId, state: child.state, notified: child.notified })),
-    backgroundCommands: snapshot.backgroundCommands.map(command => ({ ...command.ref, notified: command.notified })),
+    backgroundCommands: commands.map(command => ({ ...command.ref, notified: command.notified })),
+    ...(commands.length < snapshot.backgroundCommands.length ? { omittedBackgroundCommands: snapshot.backgroundCommands.length - commands.length } : {}),
     verification: scopedEvidence ? verificationModelView(snapshot.verification,
       canReadArtifacts ? snapshot.artifactRefs : []) : snapshot.verification,
     hostBindingDigest: config.hostBindingDigest,
@@ -118,7 +121,7 @@ function groupsOf(messages: Message[], indexes: number[]): number[][] {
 }
 function mandatoryIndexes(snapshot: RunSnapshot, groups: number[][], config: RunConfiguration): Set<number> {
   const mandatory = new Set<number>(), messages = snapshot.messages;
-  if (config.outputRecoveryPolicy === 'response-boundary/v2')
+  if (responseBoundaryRecovery(config))
     for (const pair of responseContinuationPairs(messages)) for (const index of pair) mandatory.add(index);
   // The next inference must observe the just-completed batch, but that must
   // not exempt all older history from its soft budget on every tool turn.

@@ -245,10 +245,16 @@ export function createHarnessComponents(React) {
     };
     const callbacks = useMemo(() => ({ onOpenFile, onCopy, onOpenTerminal, onRetrieveFullDiff, onInspectTool, onOpenSubagent }),
       [onOpenFile, onCopy, onOpenTerminal, onRetrieveFullDiff, onInspectTool, onOpenSubagent]);
+    // Tool view trees contain action descriptors, not callback closures. Stable
+    // completed items can retain both their parsed view and React subtree while
+    // the live tail changes. Disclosure and presentation options invalidate it.
+    const toolViewCache = useMemo(() => new WeakMap(), [toolOpen, labels, locale, workspaceRoot,
+      Boolean(onOpenFile), Boolean(onCopy), Boolean(onOpenTerminal), Boolean(onRetrieveFullDiff), Boolean(onInspectTool), Boolean(onOpenSubagent)]);
+    const toolElementCache = useMemo(() => new WeakMap(), [toolViewCache, reducedMotion]);
     const tree = buildViewModel(state, {
-      thoughtOpen, toolOpen, historyOpen, labels, locale, showPlanDock, workspaceRoot, following, rootProps, ...callbacks,
+      thoughtOpen, toolOpen, historyOpen, labels, locale, showPlanDock, workspaceRoot, following, rootProps, toolViewCache, ...callbacks,
     });
-    const rendered = renderTree(tree, renderText, callbacks, React, reducedMotion);
+    const rendered = renderTree(tree, renderText, callbacks, React, reducedMotion, toolElementCache);
     if (styleSheet === null) return rendered;
     return createElement(Fragment, null,
       createElement("style", { "data-harness-ui": true }, styleSheet === undefined ? styles : styleSheet),
@@ -262,17 +268,18 @@ export function createHarnessComponents(React) {
  * summary) are wrapped in small behavior components that attach their own
  * refs/effects; everything else maps straight through.
  */
-function renderTree(node, renderText, callbacks, React, reducedMotion) {
+function renderTree(node, renderText, callbacks, React, reducedMotion, toolElementCache) {
   if (node == null || node === false) return null;
   if (typeof node !== "object") return node;
   const { createElement } = React;
   const testid = node.props?.["data-testid"];
   const props = node.props || {};
+  if (testid === 'tool-block' && toolElementCache?.has(node)) return toolElementCache.get(node);
 
   if (testid === "execute-command") {
     return createElement(CommandBox, {
       key: props["data-call-id"], type: node.type, props,
-      renderChildren: (node.children || []).map(c => renderTree(c, renderText, callbacks, React, reducedMotion)),
+      renderChildren: (node.children || []).map(c => renderTree(c, renderText, callbacks, React, reducedMotion, toolElementCache)),
     });
   }
 
@@ -286,7 +293,7 @@ function renderTree(node, renderText, callbacks, React, reducedMotion) {
       axis: "vertical",
       mask: "vertical",
       reducedMotion,
-      renderChildren: (node.children || []).map(c => renderTree(c, renderText, callbacks, React, reducedMotion)),
+      renderChildren: (node.children || []).map(c => renderTree(c, renderText, callbacks, React, reducedMotion, toolElementCache)),
       type: node.type,
       props: node.props,
     });
@@ -299,7 +306,7 @@ function renderTree(node, renderText, callbacks, React, reducedMotion) {
       axis: "vertical",
       freezeWhileReading: true,
       mask: "vertical",
-      renderChildren: (node.children || []).map(c => renderTree(c, renderText, callbacks, React, reducedMotion)),
+      renderChildren: (node.children || []).map(c => renderTree(c, renderText, callbacks, React, reducedMotion, toolElementCache)),
       type: node.type,
       props: node.props,
     });
@@ -310,7 +317,7 @@ function renderTree(node, renderText, callbacks, React, reducedMotion) {
     return createElement(ScrollEnd, {
       key: props["data-item-id"] || testid,
       reducedMotion,
-      renderChildren: (node.children || []).map(c => renderTree(c, renderText, callbacks, React, reducedMotion)),
+      renderChildren: (node.children || []).map(c => renderTree(c, renderText, callbacks, React, reducedMotion, toolElementCache)),
       type: node.type,
       props: node.props,
     });
@@ -319,8 +326,10 @@ function renderTree(node, renderText, callbacks, React, reducedMotion) {
   const isText = testid === "text-block" && props["data-role"] !== "user";
   const text = node.children?.[0]?.children?.[0];
   const children = isText && renderText ? [renderText(String(text ?? ""), { streaming: props["data-streaming"] === "true" })]
-    : (node.children || []).map(child => renderTree(child, renderText, callbacks, React, reducedMotion));
-  return createElement(node.type, { key: props["data-item-id"] ?? props["data-call-id"], ...props }, ...children);
+    : (node.children || []).map(child => renderTree(child, renderText, callbacks, React, reducedMotion, toolElementCache));
+  const element = createElement(node.type, { key: props["data-item-id"] ?? props["data-call-id"], ...props }, ...children);
+  if (testid === "tool-block") toolElementCache?.set(node, element);
+  return element;
 }
 
 // ── scroll mask helpers (reasoning.tsx / scrollMask.ts semantics) ───────────

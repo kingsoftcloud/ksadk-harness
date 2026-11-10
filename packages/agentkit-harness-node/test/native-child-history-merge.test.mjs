@@ -7,6 +7,15 @@ const inventory = (owner, count) => ({ contract: NATIVE_CHILD_HISTORY_CONTRACT, 
     childRunId: `${owner}-child-${index}`, parentRunId: owner, canCancel: true, canSendInput: true, canPromote: true,
   })) });
 
+test('output recovery is available only through the current original parent, never copied onto historical children', () => {
+  const current = inventory('current', 1), historic = inventory('historical', 1);
+  for (const source of [current, historic]) source.tasks[0] = { ...source.tasks[0], phase: 'paused',
+    reason: 'output_budget_exhausted', canResume: true };
+  const rows = mergeNativeChildHistory({ sessionId: 'session' }, [current, historic]).tasks;
+  assert.equal(rows[0].canResume, true); assert.equal(rows[1].canResume, false);
+  assert.equal(historic.tasks[0].canResume, true, 'composition leaves the original owner observation unchanged');
+});
+
 test('merged paging spans more than a public page per owner without losing rows or widening historical controls', () => {
   const current = inventory('current', 70), other = inventory('historical', 70), sources = [current, other];
   const first = mergeNativeChildHistory({ sessionId: 'session', limit: 64 }, sources), rows = [...first.tasks];

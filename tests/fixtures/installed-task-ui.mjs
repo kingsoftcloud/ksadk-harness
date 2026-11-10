@@ -51,7 +51,8 @@ const { HarnessTimeline } = createHarnessComponents(React);
 const html = renderToStaticMarkup(React.createElement(HarnessTimeline, { state, theme: 'dark', initiallyExpandedThoughts: ['thinking'], styleSheet: null }));
 assert.match(html, /Installed UI answer/); assert.match(html, /printf installed-proof/); assert.match(html, /Controlled provider thought/);
 
-const slots = new Map(), tabs = new Map(), cleanup = [], opened = [], eventSource = {};
+const slots = new Map(), tabs = new Map(), cleanup = [], opened = [], eventSource = { getSnapshot: () => eventWindow, subscribe: () => () => {} };
+  const eventWindow = { revision: 0, entries: [], change: { kind: 'replace', entries: [] } };
 const ctx = { theme: { getTheme: () => ({ active: { colorScheme: 'dark' } }) }, on: () => () => {},
   sessions: { binding: () => ({ eventSource }) }, effect: install => { const stop = install(); if (typeof stop === 'function') cleanup.push(stop); },
   sidebarRight: { openTab: (kind, options) => opened.push({ kind, ...options }) },
@@ -60,7 +61,9 @@ const ctx = { theme: { getTheme: () => ({ active: { colorScheme: 'dark' } }) }, 
     slots.set(key, { definition, component }); return () => slots.delete(key); },
   inject: (_name, install) => { const stop = install(); if (typeof stop === 'function') cleanup.push(stop); return typeof stop === 'function' ? stop : () => {}; } } };
 installTaskTimeline(ctx, { ui: { React, ReactDOM }, hostRemote: {}, resolveAgentFromPreset: () => 'agent' });
-assert.equal(slots.get('conversation.chat.presentation:primary').definition.inject('session').hooks.harnessEvents, eventSource);
+const feed = slots.get('conversation.chat.presentation:primary').definition.inject('session').hooks.harnessEvents;
+assert.equal(feed.getSnapshot(), eventSource.getSnapshot());
+const unsubscribe = feed.subscribe(() => {}); assert.equal(typeof unsubscribe, 'function'); unsubscribe();
 const commands = installNativeCommandPane(ctx, { React, hostRemote: {} });
 const children = installNativeChildPane(ctx, { React, hostRemote: {}, labels: {}, renderText: text => text });
 commands.open({ agentId: 'agent', sessionId: 'session', id: 'owned-command' });

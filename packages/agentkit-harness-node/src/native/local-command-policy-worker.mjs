@@ -4,6 +4,7 @@ import { basename, dirname, extname, isAbsolute, join, resolve, sep } from 'node
 import { homedir } from 'node:os';
 import { Workspace, PositionEncoding } from '@astral-sh/ruff-wasm-nodejs';
 import { NATIVE_PYTHON_SYNTAX } from './python-syntax.mjs';
+import { assertPythonGrammar } from './python-grammar.mjs';
 import { LOCAL_COMMAND_POLICY } from './local-command-policy.mjs';
 import { analyzeShellSource } from './shell-analysis.mjs';
 import { decodeRuffAst, ruffIdentifier, ruffNodes, ruffString, unwrapRuff } from './ruff-ast.mjs';
@@ -123,7 +124,7 @@ function checkPython(source, path, depth) {
   limited(depth); if (Buffer.byteLength(source) > 2 * 1024 * 1024) throw Error('command_policy_source_limit');
   let wire;
   try {
-    parser.comments(source); // Grammar only, matching ast.parse rather than compile.
+    assertPythonGrammar(parser, source);
     if (parser.check(source).some(item => / on Python 3\.12 \(syntax was added in Python 3\.\d+\)$/.test(item.message))) return null;
     wire = parser.parse(source);
   } catch (error) {

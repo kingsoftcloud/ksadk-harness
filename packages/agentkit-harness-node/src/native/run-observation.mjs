@@ -9,7 +9,7 @@ import { canCloseNativeReadInterruption } from './read-interruption.mjs';
 import { advanceNativeContextMarkerState, nativeContextMarkerFactsFromState } from './context-markers.mjs';
 
 export const NATIVE_RUN_OBSERVATION = 'agentkit.native-run-observation/v1';
-export const NATIVE_COMMIT_PROJECTION = 'agentkit.native-commit-projection/v2';
+export const NATIVE_COMMIT_PROJECTION = 'agentkit.native-commit-projection/v3';
 
 function contextProjection(previous, record) {
   let lastPlan = previous?.lastPlan ?? null, lastAdmission = previous?.lastAdmission ?? null;
@@ -24,7 +24,7 @@ function contextProjection(previous, record) {
 function observationHeader(s) {
   const header = Object.fromEntries(['scope', 'runId', 'sessionId', 'turnId', 'buildId', 'parentRunId', 'taskChainId',
     'configDigest', 'phase', 'revision', 'eventSeq', 'usage', 'descendantUsage', 'outcome', 'reason', 'pendingIntent',
-    'toolReconciliation'].filter(key => s[key] !== undefined).map(key => [key, s[key]]));
+    'toolReconciliation', 'retryNotBefore'].filter(key => s[key] !== undefined).map(key => [key, s[key]]));
   header.diagnostics = Object.fromEntries(['providerUsageIncomplete', 'descendantUsageIncomplete', 'lastModelFailure']
     .filter(key => s.diagnostics[key] !== undefined).map(key => [key, s.diagnostics[key]]));
   return header;

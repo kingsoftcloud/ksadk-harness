@@ -94,6 +94,16 @@ test('AST import aliases, attribute calls and Unicode line positions preserve pr
   assert.equal((await f.py('import os\ndef f(x,x): os.kill(1,9)')).rule, 'python.process_control');
   assert.equal(await f.py('import os\nos.kill('), null); // Source skips syntax errors.
 });
+test('long Unicode documentation cannot crash policy parsing or conceal restricted calls', async t => {
+  const f = fixture(t), documentation = `#!/usr/bin/env python3\n\"\"\"真实异常终止（SIGKILL）后继续的验收脚本（单进程内自驱动）。\n\"\"\"\n# ${'注释😀'.repeat(50)}\n`;
+  const safe = `${documentation}print('safe')\n`, restricted = `${documentation}import os\nos.kill(1, 9)\n`;
+  assert.equal(await f.py(safe), null);
+  assert.equal((await f.py(restricted)).rule, 'python.process_control');
+  writeFileSync(join(f.cwd, 'documented.py'), restricted);
+  const result = await f.check('python3 documented.py 2>&1 | tail -40');
+  assert.equal(result.rule, 'python.process_control');
+  assert.equal(result.line, 6);
+});
 test('subprocess tuple/list, literal shell flags and detached process checks use AST literals', async t => {
   const f = fixture(t);
   for (const method of ['call', 'check_call', 'check_output', 'Popen', 'run'])

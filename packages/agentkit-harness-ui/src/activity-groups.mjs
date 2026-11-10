@@ -34,7 +34,7 @@ function awaitingCommand(item) {
  * its parent active between model calls. Child outcomes remain independent.
  * Narrative, visible reasoning, context markers and child tasks are boundaries.
  */
-export function activityGroups(items, { stageTailIsRunning = false, enableChangesGrouping = false, enableBrowserGrouping = true } = {}) {
+export function activityGroups(items, { stageTailIsRunning = false, enableChangesGrouping = true, enableBrowserGrouping = true } = {}) {
   // A Shell input draft without a command is transparent to stage boundaries.
   // Filter before counting/tail detection; keep the original event state intact.
   items = items.filter(item => !awaitingCommand(item));
@@ -49,7 +49,19 @@ export function activityGroups(items, { stageTailIsRunning = false, enableChange
       const kind = group === 'explore' ? explorationBucket(item) : toolIdentity(item.name).family;
       counts[kind] = (counts[kind] ?? 0) + 1;
     }
+    const paths = new Set();
+    let unknownFileOperations = 0;
+    if (group === 'changes') for (const item of children) {
+      const display = item.display ?? {}, input = item.input ?? {};
+      const candidates = display.kind === 'file_edit' && Array.isArray(display.files) ? display.files.map(file => file.path)
+        : display.path ? [display.path] : Array.isArray(input.files) ? input.files.map(file => file.path)
+          : [input.path ?? input.file_path ?? input.filePath ?? input.filename];
+      const known = candidates.filter(path => typeof path === 'string' && path.trim());
+      if (!known.length) unknownFileOperations++;
+      for (const path of known) paths.add(path.trim());
+    }
     result.push({ kind: 'activity-group', id: `activity:${group}:${first.callId ?? first.id}`, family: group, children, counts,
+      ...(group === 'changes' ? { fileCount: paths.size, unknownFileOperations } : {}),
       active: stageTailIsRunning && index === items.length,
       failed: children.filter(item => item.status === 'failed').length,
       uncertain: children.filter(item => ['uncertain', 'interrupted', 'waiting'].includes(item.status)).length });
@@ -66,6 +78,10 @@ export function activityGroupSummary(group, locale) {
   const parts = group.family === 'explore'
     ? Object.entries(units).filter(([key]) => group.counts[key])
       .map(([key, unit]) => `${group.counts[key]} ${unit}${!zh && group.counts[key] !== 1 ? key === 'search' || key === 'web-fetch' ? 'es' : 's' : ''}`)
+    : group.family === 'changes'
+      ? [group.fileCount ? `${group.fileCount} ${zh ? '个文件' : group.fileCount === 1 ? 'file' : 'files'}` : '',
+        `${group.children.length} ${zh ? '次操作' : 'operations'}`,
+        group.unknownFileOperations ? `${group.unknownFileOperations} ${zh ? '次路径待确认' : 'paths unconfirmed'}` : ''].filter(Boolean)
     : [`${group.children.length} ${group.family === 'terminal' ? zh ? '个命令' : 'commands'
       : group.family === 'browser' ? zh ? '次调用' : 'calls' : zh ? '次文件操作' : 'file operations'}`];
   if (group.failed) parts.push(`${group.failed} ${zh ? '失败' : 'failed'}`);

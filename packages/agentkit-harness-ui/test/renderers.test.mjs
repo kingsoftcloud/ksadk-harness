@@ -8,6 +8,8 @@ import { findByTestId, findAllByTestId, attr, textOf, hasText } from "./helpers.
 function ev(type, id, extra = {}) { return { v: 1, type, id, ...extra }; }
 const render = (item, opts = {}) => renderTool(item, { diffMaxLines: 200, ...opts });
 
+const renderOpen = (item, extra = {}) => render(item, { ...extra, toolOpen: new Map([[item.callId, true]]) });
+
 test("toolRendererKind classifies execute/read/edit and falls back to default", () => {
   assert.equal(toolRendererKind("Bash"), "execute");
   assert.equal(toolRendererKind("run_command"), "execute");
@@ -26,7 +28,7 @@ test("execute renderer emits $ prompt, monospace command, cwd, and open-terminal
     ev(EventType.ToolStarted, "x2", { callId: "c1" }),
   ]);
   const item = s.items[0];
-  const tree = render(item, { onOpenTerminal: () => {}, onCopy: () => {} });
+  const tree = renderOpen(item, { onOpenTerminal: () => {}, onCopy: () => {} });
   assert.equal(attr(tree, "data-renderer"), "execute");
   assert.equal(attr(tree, "data-status"), "running");
   assert.equal(textOf(findByTestId(tree, "execute-command-prompt")), "$");
@@ -44,7 +46,7 @@ test("execute renderer shows live output with stdout/stderr/exit from the result
     ev(EventType.ToolScheduled, "x1", { callId: "c1", name: "Bash", input: { command: "npm test" } }),
     ev(EventType.ToolResult, "x2", { callId: "c1", display: { kind: "command_output", stdout: "ok\n", stderr: "", exit: 0, cwd: "/r" } }),
   ]);
-  const tree = render(s.items[0], { onCopy: () => {} });
+  const tree = renderOpen(s.items[0], { onCopy: () => {} });
   assert.equal(textOf(findByTestId(tree, "bash-result-output")), "ok\n");
   const exit = findByTestId(tree, "execute-exit");
   assert.equal(attr(exit, "data-exit"), "0");
@@ -58,7 +60,7 @@ test("execute renderer surfaces a nonzero exit as an error-styled badge", () => 
     ev(EventType.ToolScheduled, "x1", { callId: "c1", name: "Bash", input: { command: "bad" } }),
     ev(EventType.ToolResult, "x2", { callId: "c1", display: { kind: "command_output", stdout: "", stderr: "boom", exit: 1 } }),
   ]);
-  const tree = render(s.items[0]);
+  const tree = renderOpen(s.items[0]);
   assert.ok(textOf(findByTestId(tree, "bash-result-stderr")).includes("boom"));
   const exit = findByTestId(tree, "execute-exit");
   assert.equal(attr(exit, "data-exit"), "1");
@@ -72,7 +74,7 @@ test("execute renderer shows streaming preview via tool.progress display (comman
     ev(EventType.ToolStarted, "x2", { callId: "c1" }),
     ev(EventType.ToolProgress, "x3", { callId: "c1", message: "running", display: { kind: "command_preview", fullText: "partial..." } }),
   ]);
-  const tree = render(s.items[0]);
+  const tree = renderOpen(s.items[0]);
   assert.equal(textOf(findByTestId(tree, "bash-output-preview-full")), "partial...");
   assert.equal(attr(findByTestId(tree, "bash-output-preview-full"), "data-streaming"), "true");
 });
@@ -86,7 +88,7 @@ test('event and direct Host previews preserve separate stdout/stderr without an 
     ev(EventType.ToolProgress, 'p3', { callId: 'c1', display }),
   ]);
   for (const item of [state.items[0], { ...state.items[0], display }]) {
-    const tree = render(item);
+    const tree = renderOpen(item);
     assert.equal(textOf(findByTestId(tree, 'bash-output-preview-full')), 'phase=1\n');
     assert.equal(textOf(findByTestId(tree, 'bash-result-stderr')), 'diagnostic=1\n');
     assert.equal(findByTestId(tree, 'execute-exit'), null);
@@ -99,7 +101,7 @@ test("execute output is ANSI-sanitized: escape sequences are stripped to plain t
     ev(EventType.ToolScheduled, "x1", { callId: "c1", name: "Bash", input: { command: "ls" } }),
     ev(EventType.ToolResult, "x2", { callId: "c1", display: { kind: "command_output", stdout: "\x1b[31mfile\x1b[0m" } }),
   ]);
-  const tree = render(s.items[0]);
+  const tree = renderOpen(s.items[0]);
   assert.equal(textOf(findByTestId(tree, "bash-result-output")), "file");
 });
 
@@ -224,7 +226,7 @@ test("edit renderer shows file chips, +N/-N count, and an inline diff with real 
     ev(EventType.ToolScheduled, "x1", { callId: "c1", name: "Edit", input: { file_path: "a.ts" } }),
     ev(EventType.ToolResult, "x2", { callId: "c1", display: { kind: "file_diff", path: "a.ts", patch, changeStat: { added: 1, removed: 1 } } }),
   ]);
-  const tree = render(s.items[0], { onOpenFile: () => {}, onRetrieveFullDiff: () => {} });
+  const tree = renderOpen(s.items[0], { onOpenFile: () => {}, onRetrieveFullDiff: () => {} });
   assert.equal(attr(tree, "data-renderer"), "edit");
   const count = findByTestId(tree, "edit-diff-count");
   assert.ok(textOf(count).includes("+1"));
@@ -251,7 +253,7 @@ test("edit renderer retrieves full diff via callback when the preview is truncat
     ev(EventType.ToolScheduled, "x1", { callId: "c1", name: "Edit", input: { file_path: "a.ts" } }),
     ev(EventType.ToolResult, "x2", { callId: "c1", display: { kind: "file_diff", path: "a.ts", patch: big } }),
   ]);
-  const tree = render(s.items[0], { onRetrieveFullDiff: () => {}, diffMaxLines: 5 });
+  const tree = renderOpen(s.items[0], { onRetrieveFullDiff: () => {}, diffMaxLines: 5 });
   assert.ok(findByTestId(tree, "edit-diff-truncated"), "truncated marker shown");
   assert.ok(findByTestId(tree, "edit-show-full-diff"), "retrieve-full-diff action present");
 });
@@ -262,7 +264,7 @@ test("default renderer keeps the bounded detail block for unknown/MCP tools and 
     ev(EventType.ToolScheduled, "x1", { callId: "c1", name: "mcp__weather", input: { city: "London" } }),
     ev(EventType.ToolResult, "x2", { callId: "c1", result: { temp: 12 } }),
   ]);
-  const tree = render(s.items[0], { workspaceRoot: null });
+  const tree = renderOpen(s.items[0], { workspaceRoot: null });
   assert.equal(attr(tree, "data-renderer"), "default");
   assert.ok(findByTestId(tree, "tool-detail"), "bounded detail block for unknown tool");
   assert.ok(findByTestId(tree, "tool-result"), "result preview for unknown tool");
@@ -274,6 +276,6 @@ test("default renderer surfaces a file_diff display even on an unknown tool name
     ev(EventType.ToolScheduled, "x1", { callId: "c1", name: "custom_patch", input: { path: "a.ts" } }),
     ev(EventType.ToolResult, "x2", { callId: "c1", display: { kind: "file_diff", path: "a.ts", patch: "@@ -1 +1 @@\n-x\n+y" } }),
   ]);
-  const tree = render(s.items[0]);
+  const tree = renderOpen(s.items[0]);
   assert.ok(findByTestId(tree, "edit-diff"), "file_diff display renders a diff regardless of tool name");
 });

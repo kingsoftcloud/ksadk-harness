@@ -176,12 +176,17 @@ export function createWorkspaceCheckpointJournal({ stateDir, sessionId, workspac
       files: files.map(file => ({ path: file.path, action: file.desired.kind === 'absent' ? 'delete' : 'restore',
         current_sha256: file.current.sha256 ?? null, restored_sha256: file.desired.sha256 ?? null })) } };
   }
-  function originalRecord(request, original = false) {
-    return rows().toReversed().find(row =>
-      row.binding && ['scope', 'sessionId', 'runId', 'turnId', 'buildId'].every(key => canonical(row.binding[key] ?? null) === canonical(request[key] ?? null))
+  function sameRun(row, request) {
+    return row.binding && ['scope', 'sessionId', 'runId', 'turnId', 'buildId'].every(key =>
+      canonical(row.binding[key] ?? null) === canonical(request[key] ?? null));
+  }
+  function originalRecord(request, original = false, entries = rows()) {
+    const callDigest = sha256(canonical(request.call)), definitionDigest = sha256(canonical(request.definition));
+    return entries.toReversed().find(row =>
+      sameRun(row, request)
       && row.binding.operationKey === (original ? request.originalOperationKey : request.operationKey)
       && row.binding.executionFence === (original ? request.originalClaimedFence : request.executionFence)
-      && row.callDigest === sha256(canonical(request.call)) && row.definitionDigest === sha256(canonical(request.definition)));
+      && row.callDigest === callDigest && row.definitionDigest === definitionDigest);
   }
   function receiptRecord(request, original = false) {
     const row = originalRecord(request, original);
@@ -267,7 +272,17 @@ export function createWorkspaceCheckpointJournal({ stateDir, sessionId, workspac
       if (row.receipt && canonical(row.receipt) !== canonical(result)) fail('checkpoint_receipt_conflict');
       save({ ...row, receipt: structuredClone(result) });
     },
-    readReceipt(request) { return structuredClone(receiptRecord(request, true)?.receipt ?? null); },
+    readReceipt(request) {
+      const entries = rows();
+      const row = originalRecord(request, true, entries);
+      if (row) return structuredClone(['completed', 'failed'].includes(row.status) ? row.receipt ?? null : null);
+      // Every checkpoint-governed mutation writes its operation identity before
+      // publication. Require an intact journal anchored to this same Run, and
+      // keep a conflicting operation identity unknown even if its digest differs.
+      if (!entries.some(entry => sameRun(entry, request))
+        || entries.some(entry => entry.binding?.operationKey === request.originalOperationKey)) return null;
+      return { status: 'error', content: { code: 'workspace_mutation_not_started', executed: false } };
+    },
     list: () => rows().toReversed().slice(0, 50).map(row => ({ checkpoint_id: row.id, created_at: row.createdAt,
     status: row.status, run_id: row.binding?.runId ?? row.controlBinding?.expectedHeadRunId ?? null,
     tool: row.binding?.toolName ?? 'conversation_workspace_rewind', paths: row.files.map(file => file.path) })) };

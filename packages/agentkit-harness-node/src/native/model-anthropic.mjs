@@ -281,8 +281,13 @@ export function parseAnthropicBuffered(bodyText, request, { captureReplay = fals
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     throw new ProtocolError('invalid response envelope', 'envelope_invalid');
   }
+  if ('error' in payload) {
+    if (payload.type !== 'error') throw new ProtocolError('conflicting error envelope', 'envelope_invalid');
+    throw Object.assign(new ProtocolError('provider rejected generation', 'provider_error'), {
+      streamError: classifyAnthropicStreamError(payload.error),
+    });
+  }
   if ('type' in payload && payload.type !== 'message') throw new ProtocolError('invalid response envelope', 'envelope_invalid');
-  if ('error' in payload) throw new ProtocolError('invalid response envelope', 'envelope_invalid');
   if (typeof payload.stop_sequence !== 'undefined' && payload.stop_sequence !== null && typeof payload.stop_sequence !== 'string') {
     throw new ProtocolError('invalid stop_sequence');
   }

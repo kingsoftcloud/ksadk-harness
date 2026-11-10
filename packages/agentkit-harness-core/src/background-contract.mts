@@ -4,6 +4,18 @@ import { copy, invariant } from './values.mjs';
 export const BACKGROUND_COMMAND_CONTRACT = 'agentkit.background-command-observation/v1' as const;
 export interface BackgroundCommandRef { taskId: string; sourceRunId: string; operationKey: string }
 export interface BackgroundCommandState { ref: BackgroundCommandRef; notified: boolean }
+/** Bound a read view without retiring any durable command ownership. Prefer
+ * commands whose completion has not been accounted for, then recent history. */
+export function projectBackgroundCommands(rows: readonly BackgroundCommandState[], limit: number,
+  recentLimit = limit): BackgroundCommandState[] {
+  const outstanding: number[] = [], recent: number[] = [];
+  for (let index = rows.length - 1; index >= 0 && outstanding.length < limit; index--) {
+    if (rows[index]!.notified === true) {
+      if (recent.length < recentLimit) recent.push(index);
+    } else outstanding.push(index);
+  }
+  return [...outstanding, ...recent.slice(0, limit - outstanding.length)].sort((a, b) => a - b).map(index => rows[index]!);
+}
 export interface BackgroundCommandRequest extends Omit<PortContext, 'signal'> {
   schemaVersion: typeof BACKGROUND_COMMAND_CONTRACT; cursor: string; refs: BackgroundCommandRef[];
 }

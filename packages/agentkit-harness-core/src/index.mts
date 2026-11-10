@@ -49,6 +49,7 @@ export * from './child-budget.mjs';
 export * from './child-contract.mjs';
 export * from './child-runtime.mjs';
 export * from './child-control.mjs';
+export * from './approval-outcome.mjs';
 export * from './guidance.mjs';
 export * from './tool-receipt.mjs';
 export * from './output-recovery.mjs';

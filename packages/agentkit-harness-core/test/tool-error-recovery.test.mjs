@@ -46,6 +46,47 @@ const refusals = snapshot => snapshot.messages.filter(message => message.role ==
 
 for (const sqlite of [false, true]) {
   const backend = sqlite ? 'sqlite' : 'memory';
+  test(`${backend}: v2 bounds repeated refused actions with unlimited task budgets`, async t => {
+    const run = setup(t, { sqlite, options: { toolErrorRecoveryPolicy: 'diagnose-before-repeat/v2',
+      toolErrorRecoveryModelCalls: undefined,
+      limits: { maxModelCalls: null, maxToolCalls: null, maxWallMs: null, finalizationReserveModelCalls: 0 } },
+      script: Array.from({ length: 30 }, (_, i) => calls(action(i, 'write', { text: String(i) }))) });
+    assert.equal(run.config.toolErrorRecoveryModelCalls, 10);
+    const result = await run.worker().runUntilIdle(scope, 'run');
+    assert.equal(result.reason, 'repeated_tool_error_recovery_exhausted');
+    assert.equal(result.usage.modelCalls, 16); assert.equal(result.usage.toolCalls, 6);
+    assert.equal(refusals(result).length, 10); assert.equal(run.effects.length, 6);
+    if (sqlite) {
+      run.reopen();
+      const restored = await run.worker().runUntilIdle(scope, 'run');
+      assert.equal(restored.usage.modelCalls, 16); assert.equal(run.requests.length, 16);
+    }
+  });
+  test(`${backend}: v2 respects an explicitly smaller diagnosis budget`, async t => {
+    const run = setup(t, { sqlite, options: { toolErrorRecoveryPolicy: 'diagnose-before-repeat/v2',
+      toolErrorRecoveryModelCalls: 2 }, script: [...errors(), calls(action(6, 'read')),
+      calls(action(7)), final('must not be requested')] });
+    const result = await run.worker().runUntilIdle(scope, 'run');
+    assert.equal(result.reason, 'repeated_tool_error_recovery_exhausted');
+    assert.equal(result.usage.modelCalls, 8); assert.equal(run.requests.length, 8);
+  });
+  test(`${backend}: v2 leaves healthy long tasks and explicit unbounded diagnosis unchanged`, async t => {
+    const healthy = setup(t, { sqlite, options: { toolErrorRecoveryPolicy: 'diagnose-before-repeat/v2',
+      toolErrorRecoveryModelCalls: undefined,
+      limits: { maxModelCalls: null, maxToolCalls: null, maxWallMs: null, finalizationReserveModelCalls: 0 } },
+      script: [...Array.from({ length: 24 }, (_, i) => calls(action(i, 'read', { path: String(i) }))), final()] });
+    const completed = await healthy.worker().runUntilIdle(scope, 'run');
+    assert.equal(completed.phase, 'completed'); assert.equal(completed.usage.modelCalls, 25);
+    const explicit = setup(t, { sqlite, options: { toolErrorRecoveryPolicy: 'diagnose-before-repeat/v2',
+      toolErrorRecoveryModelCalls: null,
+      limits: { maxModelCalls: null, maxToolCalls: null, maxWallMs: null, finalizationReserveModelCalls: 0 } },
+      script: [...errors(), ...Array.from({ length: 12 }, (_, i) => calls(action(6 + i))),
+        calls(action(18, 'replace')), final()] });
+    const alternate = await explicit.worker().runUntilIdle(scope, 'run');
+    assert.equal(explicit.config.toolErrorRecoveryModelCalls, null);
+    assert.equal(alternate.phase, 'completed'); assert.equal(alternate.usage.modelCalls, 20);
+    assert.equal(refusals(alternate).length, 12);
+  });
   test(`${backend}: context overflow and actual summary retries consume the original diagnosis allowance`, async t => {
     const run = setup(t, { sqlite, options: {
       profile: { ...fixture().config.profile, contextWindow: 20000, maxOutputTokens: 128, retryInitialDelayMs: 0, maxProviderRetries: 9 },

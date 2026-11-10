@@ -1,6 +1,6 @@
 {
   "name": "@kingsoftcloud/agentkit-harness-node",
-  "version": "0.0.13",
+  "version": "0.0.16",
   "private": false,
   "type": "module",
   "description": "Standalone Native Harness Node adapters: a durable SQLite run store, a one-request model HTTP port, and a minimal versioned JSON-RPC 2.0 over NDJSON process entry. Reuses the shared Native adapter implementations and externalizes @kingsoftcloud/agentkit-harness-core; depends on no Studio/DSH code at runtime.",
@@ -25,6 +25,8 @@
     "./native/child-history": "./src/native/child-history.mjs",
     "./native/child-command-resource": "./src/native/child-command-resource.mjs",
     "./native/child-owner": "./src/native/child-owner.mjs",
+    "./native/session-tool-approval": "./src/native/session-tool-approval.mjs",
+    "./native/approval-preflight": "./src/native/approval-preflight.mjs",
     "./native/child-publication": "./src/native/child-publication.mjs",
     "./native/child-readers": "./src/native/child-readers.mjs",
     "./native/child-tools": "./src/native/child-tools.mjs",
@@ -35,6 +37,7 @@
     "./native/component-tools": "./src/native/component-tools.mjs",
     "./native/context-counter": "./src/native/context-counter.mjs",
     "./native/conversation-command-control": "./src/native/conversation-command-control.mjs",
+    "./native/conversation-presentation": "./src/native/conversation-presentation.mjs",
     "./native/delivery-timeline": "./src/native/delivery-timeline.mjs",
     "./native/dsh-background-ownership": "./src/native/dsh-background-ownership.mjs",
     "./native/dsh-managed-ownership": "./src/native/dsh-managed-ownership.mjs",
@@ -137,7 +140,7 @@
     "src/package-integrity.mjs"
   ],
   "dependencies": {
-    "@kingsoftcloud/agentkit-harness-core": "0.0.13",
+    "@kingsoftcloud/agentkit-harness-core": "0.0.16",
     "@astral-sh/ruff-wasm-nodejs": "0.16.8",
     "parse5": "7.3.0",
     "playwright-core": "1.58.2",

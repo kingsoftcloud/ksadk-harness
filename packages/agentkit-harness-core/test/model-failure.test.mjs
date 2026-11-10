@@ -15,6 +15,44 @@ const conflictDiagnostic = { ...diagnostic, contract: 'model-failure-diagnostic/
   reported: { inputTokens: 9, outputTokens: 2, cachedInputTokens: 4, reasoningTokens: 2 },
 } };
 
+const providerDiagnostic = { contract: 'model-failure-diagnostic/v3', protocol: 'openai-chat',
+  phase: 'stream', code: 'provider_error', frameIndex: 0, providerError: {
+    category: 'server_error', status: 503, type: 'ServiceUnavailableError', fingerprint: `sha256:${'a'.repeat(64)}`,
+  } };
+
+test('provider evidence admits only closed identifiers and an opaque fingerprint', () => {
+  assert.doesNotThrow(() => validateModelFailure(providerDiagnostic));
+  assert.doesNotThrow(() => validateModelFailure({ ...providerDiagnostic, protocol: 'openai-responses',
+    phase: 'buffered', frameIndex: undefined }));
+  for (const value of [
+    { ...providerDiagnostic, contract: 'model-failure-diagnostic/v1' },
+    { ...providerDiagnostic, contract: 'model-failure-diagnostic/v2' },
+    { ...providerDiagnostic, code: 'transport_error' },
+    { ...providerDiagnostic, protocol: 'anthropic-messages' },
+    { ...providerDiagnostic, phase: 'headers' },
+    { ...providerDiagnostic, providerError: undefined },
+    ...[null, [], {},
+      { ...providerDiagnostic.providerError, message: 'Authorization: Bearer secret' },
+      { ...providerDiagnostic.providerError, code: 'secret-provider-code' },
+      { ...providerDiagnostic.providerError, type: 'secret-provider-type' },
+      { ...providerDiagnostic.providerError, category: 'arbitrary' },
+      { ...providerDiagnostic.providerError, status: 200 },
+      { ...providerDiagnostic.providerError, status: 503.5 },
+      { ...providerDiagnostic.providerError, fingerprint: 'secret' },
+    ].map(providerError => ({ ...providerDiagnostic, providerError })),
+  ]) assert.throws(() => validateModelFailure(value), { code: 'invalid_model_failure_diagnostic' });
+});
+
+test('provider evidence survives termination but never authorizes retries or effects', () => {
+  const { config, snapshot } = fixture();
+  const changes = reduceModel({ ...snapshot, phase: 'requesting_model' },
+    { ...failed, failureDiagnostic: providerDiagnostic }, config, 0, 0);
+  const terminal = plan({ ...snapshot, ...changes }, config, {}, 0);
+  assert.equal(terminal.snapshot.phase, 'failed');
+  assert.deepEqual(terminal.events.find(event => event.kind === 'run.terminal').payload.modelFailure, providerDiagnostic);
+  assert.deepEqual(terminal.intents, []);
+});
+
 test('usage conflict evidence is versioned, numeric, bounded and distinct from billable usage', () => {
   assert.deepEqual(validateModelResult({ ...failed, failureDiagnostic: conflictDiagnostic }).usage, failed.usage);
   const evidence = conflictDiagnostic.usageConflict;

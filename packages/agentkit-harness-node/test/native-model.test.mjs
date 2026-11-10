@@ -214,12 +214,83 @@ test('failure diagnostic HTTP: protocol failures retain typed provenance without
     const { result, requests } = await collect(null, 'openai-chat', () => ({ headers: SSE_HEADERS, body }), makeRequest());
     assert.equal(result.kind, 'provider_terminal_error', code);
     assert.deepEqual(result.toolCalls, [], code);assert.equal(requests.length, 1);
-    assert.deepEqual(result.failureDiagnostic, { contract: code === 'usage_conflict'
+    assert.deepEqual(result.failureDiagnostic, { contract: code === 'provider_error' ? 'model-failure-diagnostic/v3' : code === 'usage_conflict'
       ? 'model-failure-diagnostic/v2' : 'model-failure-diagnostic/v1', protocol: 'openai-chat', phase: 'stream', code, frameIndex,
+      ...(code === 'provider_error' ? { providerError: result.failureDiagnostic.providerError } : {}),
       ...(code === 'usage_conflict' ? { usageConflict: { previousFrameIndex: 0,
         previous: { inputTokens: 9, outputTokens: 1 }, reported: { inputTokens: 9, outputTokens: 2 } } } : {}) });
+    if (code === 'provider_error') {
+      assert.deepEqual(Object.keys(result.failureDiagnostic.providerError).sort(), ['category', 'fingerprint']);
+      assert.equal(result.failureDiagnostic.providerError.category, 'invalid_response');
+      assert.match(result.failureDiagnostic.providerError.fingerprint, /^sha256:[0-9a-f]{64}$/);
+    }
     assert.doesNotMatch(JSON.stringify(result), /PRIVATE_PROVIDER_BYTES|fake-key|private-code|other-private-completion/);
   }
+});
+
+for (const protocol of ['openai-chat', 'openai-responses']) for (const streaming of [false, true]) {
+  test(`provider diagnostic HTTP: ${protocol}, streaming=${streaming} retains safe evidence for known and unknown envelopes`, async () => {
+    const observed = [];
+    for (const error of [
+      { code: 503, type: 'ServiceUnavailableError', message: 'Authorization: Bearer PRIVATE_PROVIDER_BYTES',
+        headers: { authorization: 'fake-key' }, context: { secret: 'PRIVATE_NESTED_BYTES' } },
+      { code: 'PRIVATE_UNKNOWN_CODE', type: 'PRIVATE_UNKNOWN_TYPE', message: 'PRIVATE_PROVIDER_BYTES' },
+      { message: 'PRIVATE_PROVIDER_BYTES', type: 'PRIVATE_UNKNOWN_TYPE', code: 'PRIVATE_UNKNOWN_CODE' },
+      { code: 'PRIVATE_UNKNOWN_CODE', type: 'PRIVATE_UNKNOWN_TYPE', message: 'DIFFERENT_PRIVATE_BYTES' },
+      { code: 'insufficient_quota', type: 'rate_limit_error', message: 'PRIVATE_PROVIDER_BYTES' },
+    ]) {
+      const payload = protocol === 'openai-chat' ? { error } : { status: 'failed', error };
+      const frame = sse(protocol === 'openai-chat' ? payload : { type: 'response.failed', response: payload });
+      const { result, requests } = await collect(0, protocol, () => streaming
+        ? { headers: SSE_HEADERS, body: [frame] }
+        : { headers: JSON_HEADERS, body: JSON.stringify(payload) }, makeRequest({ profile: makeProfile({ streaming }) }));
+      assert.equal(requests.length, 1); assert.deepEqual(result.toolCalls, []);
+      assert.equal(result.failureDiagnostic.contract, 'model-failure-diagnostic/v3');
+      assert.equal(result.failureDiagnostic.phase, streaming ? 'stream' : 'buffered');
+      const evidence = result.failureDiagnostic.providerError;
+      assert.match(evidence.fingerprint, /^sha256:[0-9a-f]{64}$/);
+      assert.doesNotMatch(JSON.stringify(result), /PRIVATE_|fake-key|Authorization|authorization/);
+      if (observed.length === 0) {
+        assert.equal(result.kind, 'provider_retryable_error');
+        assert.deepEqual({ ...evidence, fingerprint: null }, { category: 'server_error', fingerprint: null,
+          status: 503, type: 'ServiceUnavailableError' });
+      } else if (error.code === 'insufficient_quota') {
+        assert.equal(result.kind, 'provider_terminal_error');
+        assert.deepEqual({ ...evidence, fingerprint: null }, { category: 'client_error', fingerprint: null,
+          code: 'insufficient_quota', type: 'rate_limit_error' });
+      } else {
+        assert.equal(result.kind, 'provider_terminal_error');
+        assert.deepEqual(Object.keys(evidence).sort(), ['category', 'fingerprint']);
+      }
+      observed.push(evidence);
+    }
+    assert.equal(observed[1].fingerprint, observed[2].fingerprint, 'JSON field order does not change provenance');
+    assert.notEqual(observed[2].fingerprint, observed[3].fingerprint, 'Different unseen provider content remains distinguishable');
+  });
+}
+
+test('provider diagnostic HTTP: SQLite cold reopen preserves safe provenance after retries exhaust', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'native-provider-diagnostic-'));
+  const filename = join(directory, 'runs.sqlite'); let store;
+  try {
+    await withServer(() => ({ headers: SSE_HEADERS, body: sse({ error: { code: 503,
+      type: 'ServiceUnavailableError', message: 'PRIVATE_PROVIDER_BYTES fake-key' } }) }), async server => {
+      const { config, snapshot } = coreFixture({ profile: makeProfile({ compatibilityDigest: 'provider-evidence/v1',
+        requestTimeoutMs: 2000, maxProviderRetries: 0 }) });
+      store = new SqliteRunStore(filename); store.create(config, snapshot);
+      const kernel = new NativeKernel({ store, digest: coreDigest, owner: 'provider-evidence-owner',
+        ports: { model: makePort({ port: server.port, protocol: 'openai-chat' }) } });
+      const done = await kernel.runUntilIdle(coreScope, 'run');
+      assert.equal(done.phase, 'failed'); assert.equal(server.requests.length, 1);
+      const original = store.load(coreScope, 'run');
+      const evidence = original.events.find(event => event.kind === 'run.terminal').payload.modelFailure;
+      assert.equal(evidence.contract, 'model-failure-diagnostic/v3');
+      assert.equal(evidence.providerError.status, 503);
+      store.close(); store = new SqliteRunStore(filename);
+      assert.deepEqual(store.load(coreScope, 'run'), original);
+      assert.doesNotMatch(JSON.stringify(original), /PRIVATE_PROVIDER_BYTES|fake-key/);
+    });
+  } finally { store?.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
 test('usage conflict HTTP: retain only the two validated counter snapshots and their frame positions', async () => {
@@ -1751,4 +1822,102 @@ test('v3 MiniMax HTTP clean EOF seals complete tools and request schema literals
   assert.equal(result.kind, 'tool_calls'); assert.equal(result.toolCalls[0].arguments.kind, 'file');
   assert.equal(JSON.parse(requests[0].body).tools[0].function.parameters.properties.kind.type, 'string');
   assert.equal(tool.parameters.properties.kind.type, undefined);
+});
+
+
+// HTTP 200 does not guarantee a successful provider generation. Retry only
+// recognized transient error envelopes; incomplete tools never escape them.
+for (const protocol of ['openai-chat', 'openai-responses', 'anthropic-messages']) {
+  for (const streaming of [false, true]) {
+    test(`provider error envelopes: ${protocol}, streaming=${streaming}`, async t => {
+      for (const [error, kind, failureKind] of [
+        [{ type: 'rate_limit_error' }, 'provider_retryable_error', 'rate_limit'],
+        [{ code: 'rate_limit_exceeded' }, 'provider_retryable_error', 'rate_limit'],
+        [{ type: 'server_error' }, 'provider_retryable_error', 'server_error'],
+        [{ type: 'authentication_error' }, 'provider_terminal_error', 'client_error'],
+        [{ type: 'invalid_request_error' }, 'provider_terminal_error', 'client_error'],
+        [{ code: 'insufficient_quota', type: 'rate_limit_error' }, 'provider_terminal_error', 'client_error'],
+        [{ code: 429, type: 'TooManyRequestsError' }, 'provider_retryable_error', 'rate_limit'],
+        [{ code: 503, type: 'ServiceUnavailableError' }, 'provider_retryable_error', 'server_error'],
+        [{ code: 408, type: 'RequestTimeoutError' }, 'provider_retryable_error', 'request_timeout'],
+        [{ code: 401, type: 'UnauthorizedError' }, 'provider_terminal_error', 'client_error'],
+        [{ code: 429, type: 'authentication_error' }, 'provider_terminal_error', 'client_error'],
+        [{ code: 200, type: 'rate_limit_error' }, 'provider_terminal_error', 'invalid_response'],
+        [{ code: {}, type: 'rate_limit_error' }, 'provider_terminal_error', 'invalid_response'],
+        [{ code: 'foreign_error' }, 'provider_terminal_error', 'invalid_response'],
+        [null, 'provider_terminal_error', 'invalid_response'],
+        [['rate_limit_error'], 'provider_terminal_error', 'invalid_response'],
+      ].filter(([error]) => protocol !== 'anthropic-messages' || (!error?.code && error?.type !== 'server_error'))) await t.test(JSON.stringify(error), async () => {
+        const payload = protocol === 'openai-responses' ? { status: 'failed', error }
+          : protocol === 'anthropic-messages' ? { type: 'error', error } : { error };
+        if (error && !Array.isArray(error)) error.message = 'PRIVATE_PROVIDER_BYTES Authorization: Bearer fake-key';
+        const frame = protocol === 'anthropic-messages' ? ae('error', payload)
+          : sse(protocol === 'openai-responses' ? { type: 'response.failed', response: payload } : payload);
+        const { result, requests } = await collect(0, protocol,
+          () => streaming ? { headers: SSE_HEADERS, body: [frame] }
+            : { headers: JSON_HEADERS, body: JSON.stringify(payload) },
+          makeRequest({ profile: makeProfile({ streaming }) }));
+        assert.equal(result.kind, kind); assert.equal(result.failureKind, failureKind);
+        assert.deepEqual(result.toolCalls, []); assert.equal(requests.length, 1);
+        assert.doesNotMatch(JSON.stringify(result), /PRIVATE_PROVIDER_BYTES|fake-key/);
+      });
+    });
+  }
+}
+
+test('chat provider errors override a prior length finish and discard partial tool arguments', async () => {
+  const { result, requests } = await collect(0, 'openai-chat', () => ({ headers: SSE_HEADERS, body: [
+    sse(ochunk({ tool_calls: [{ index: 0, id: 'partial', type: 'function', function: { name: 'read', arguments: '{' } }] }, 'length')),
+    sse({ error: { code: 'rate_limit_exceeded', message: 'PRIVATE_PROVIDER_BYTES' } }), sseDone(),
+  ] }), makeRequest());
+  assert.equal(result.kind, 'provider_retryable_error'); assert.equal(result.failureKind, 'rate_limit');
+  assert.deepEqual(result.toolCalls, []); assert.equal(requests.length, 1);
+});
+
+test('buffered provider errors cannot launder conflicting successful envelopes into retries', async () => {
+  for (const [protocol, payload] of [
+    ['openai-chat', { error: { type: 'rate_limit_error' }, choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'answer' } }] }],
+    ['openai-responses', { status: 'completed', error: { type: 'rate_limit_error' }, output: [] }],
+    ['anthropic-messages', { type: 'message', error: { type: 'rate_limit_error' }, content: [] }],
+  ]) {
+    const { result } = await collect(0, protocol, () => ({ headers: JSON_HEADERS, body: JSON.stringify(payload) }), makeRequest());
+    assert.equal(result.kind, 'provider_terminal_error'); assert.equal(result.failureKind, 'invalid_response');
+  }
+});
+
+
+test('chat SSE provider rejection: kernel retries the model and commits a later complete tool batch once across cold reopen', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'native-provider-error-'));
+  let store = new SqliteRunStore(join(root, 'runs.sqlite'));
+  t.after(() => { store?.close(); rmSync(root, { recursive: true, force: true }); });
+  let attempts = 0, executions = 0;
+  await withServer(() => ({ headers: SSE_HEADERS, body: ++attempts === 1 ? [
+    sse(ochunk({ tool_calls: [{ index: 0, id: 'discard', type: 'function', function: { name: 'read', arguments: '{' } }] })),
+    sse({ error: { type: 'rate_limit_error', message: 'PRIVATE_PROVIDER_BYTES' } }),
+  ] : attempts === 2 ? [
+    sse(ochunk({ tool_calls: [{ index: 0, id: 'read-once', type: 'function', function: { name: 'read', arguments: '{}' } }] }, 'tool_calls')), sseDone(),
+  ] : [sse(ochunk({ content: 'Delivered.' }, 'stop')), sseDone()] }), async server => {
+    const { config, snapshot } = coreFixture({ tools: [coreTool()], profile: makeProfile({
+      compatibilityDigest: 'provider-error-proof/v1', requestTimeoutMs: 2000, retryInitialDelayMs: 0, retryMaxDelayMs: 0, rateLimitCooldownMs: 0 }) });
+    store.create(config, snapshot);
+    const ports = { model: makePort({ port: server.port, protocol: 'openai-chat' }),
+      tools: { execute: async () => { executions++; return { status: 'ok', content: 'Observed once' }; } } };
+    const result = await new NativeKernel({ store, digest: coreDigest, owner: 'error-proof', ports }).runUntilIdle(coreScope, 'run');
+    assert.equal(result.phase, 'completed'); assert.equal(executions, 1); assert.equal(server.requests.length, 3);
+    const failure = store.load(coreScope, 'run').receipts.find(receipt => receipt.result.failureDiagnostic);
+    assert.equal(failure.result.kind, 'provider_retryable_error'); assert.equal(failure.result.failureKind, 'rate_limit');
+    assert.deepEqual(failure.result.toolCalls, []); assert.doesNotMatch(JSON.stringify(failure), /PRIVATE_PROVIDER_BYTES/);
+    store.close(); store = new SqliteRunStore(join(root, 'runs.sqlite'));
+    assert.equal((await new NativeKernel({ store, digest: coreDigest, owner: 'error-cold', ports }).runUntilIdle(coreScope, 'run')).phase, 'completed');
+    assert.equal(executions, 1); assert.equal(server.requests.length, 3);
+  });
+});
+
+for (const protocol of ['openai-chat', 'anthropic-messages']) test(`provider errors never retry an already observed refusal: ${protocol}`, async () => {
+  const body = protocol === 'openai-chat' ? [sse(ochunk({ refusal: 'Cannot comply.' })), sse({ error: { type: 'server_error' } })]
+    : [ae('message_start', { type: 'message_start', message: { id: 'm1', model: 'fake-model', role: 'assistant', usage: { input_tokens: 2, output_tokens: 0 } } }),
+      ae('message_delta', { type: 'message_delta', delta: { stop_reason: 'refusal', stop_sequence: null }, usage: { output_tokens: 1 } }),
+      ae('error', { type: 'error', error: { type: 'overloaded_error' } })];
+  const { result, requests } = await collect(0, protocol, () => ({ headers: SSE_HEADERS, body }), makeRequest());
+  assert.equal(result.kind, 'policy_abort'); assert.deepEqual(result.toolCalls, []); assert.equal(requests.length, 1);
 });

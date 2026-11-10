@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Add the engine preset contract `agentkit.engine-preset/v1`. A host names a
+  preset (`official`) and the engine resolves the recovery policy versions,
+  output restart allowance, control tools and default per-request output budget
+  for new Runs. Hosts no longer spell engine policy versions, so a policy
+  improvement ships with an engine release only. Existing Runs keep the
+  configuration frozen at their creation.
+- The `official` preset selects `response-boundary/v3`, `per-response/v2`,
+  `diagnose-before-repeat/v2` and a 32000-token default request budget bounded
+  by the model limit and half the context window.
+
 ## 0.0.16 - 2026-11-10
 
 - Expose child-owner shutdown through `ChildLifecyclePort.closeRun` and preserve

@@ -65,3 +65,4 @@ export * from './summary-continuity.mjs';
 export { matchesToolExecutionContract } from './tool-execution-contract.mjs';
 export * from './workspace-change.mjs';
 export * from './error-presentation.mjs';
+export * from './engine-preset.mjs';

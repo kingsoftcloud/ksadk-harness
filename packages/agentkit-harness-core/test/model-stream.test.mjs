@@ -79,14 +79,16 @@ test('live public prefix precedes model settlement and is copied into its durabl
   assert.equal(JSON.stringify(fact).includes('private replay'), false);
   const before = seen.length; await host.run(); assert.equal(seen.length, before);
 });
-test('stream cap limits the UTF-8 display prefix without truncating the authoritative result', async () => {
+test('stream cap bounds persisted history without stopping live publication or truncating the result', async () => {
   const seen = [];
   const host = setup(async (request, emit) => {
     emit({ kind: 'text', text: '中' }); emit({ kind: 'text', text: '界'.repeat(200) }); emit({ kind: 'text', text: 'tail' });
     return final('中' + '界'.repeat(200) + 'tail');
   }, { onStream: (_, event) => seen.push(event) }, { limits: { maxModelStreamBytes: 150 } });
   const result = await host.run(), display = host.store.load(scope, 'run').receipts[0].result.displayStream;
-  assert.equal(seen.length, 1); assert.equal(display.records[0].event.text, '中'); assert.equal(display.truncated, true);
+  assert.deepEqual(seen.map(event => event.text), ['中', '界'.repeat(200), 'tail']);
+  assert.deepEqual(display.records.map(record => record.event.text), ['中']);
+  assert.equal(display.truncated, true);
   assert.equal(result.finalText.length, 205);
 });
 test('display recording can be disabled while the final result remains complete', async () => {

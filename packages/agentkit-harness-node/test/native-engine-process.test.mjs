@@ -40,14 +40,14 @@ function fixture(script) {
     close: () => new Promise(closed => { server.closeAllConnections(); server.close(closed); }) })));
 }
 
-async function launch(t, script, { approval = 'deny', onApproveTool } = {}) {
+async function launch(t, script, { approval = 'deny', onApproveTool, onCallTool } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'engine-proc-')), workspace = join(dir, 'workspace');
   mkdirSync(workspace);
   const model = await fixture(script);
   let log = '';
   const engine = spawnEngine({ command: process.execPath, args: [entry, '--workspace', workspace, '--state-dir', join(dir, 'state'), '--approval', approval],
     env: { PATH: process.env.PATH, HOME: dir, AGENTKIT_ENGINE_MODEL_NAME: 'fixture-model', AGENTKIT_ENGINE_MODEL_BASE_URL: model.url,
-      AGENTKIT_ENGINE_MODEL_API_KEY: 'fixture-secret-key' }, onApproveTool, hostName: 'engine-test', onLog: chunk => { log += chunk; } });
+      AGENTKIT_ENGINE_MODEL_API_KEY: 'fixture-secret-key' }, onApproveTool, onCallTool, hostName: 'engine-test', onLog: chunk => { log += chunk; } });
   t.after(async () => { await engine.close().catch(() => {}); await model.close(); rmSync(dir, { recursive: true, force: true }); });
   return { engine, model, workspace, log: () => log };
 }
@@ -112,4 +112,55 @@ test('the protocol rejects use before initialize, unknown methods and unknown ru
   await assert.rejects(f.engine.status('nope'), { code: -32011 });
   await assert.rejects(f.engine.startRun({}), { code: -32602 });
   assert.equal(f.model.requests.length, 0);
+});
+
+const lookup = { name: 'kb_search', description: 'Search the bound knowledge base.', readOnly: true,
+  parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } };
+
+test('the engine forwards host tools to the host and feeds the result back to the model', async t => {
+  const calls = [];
+  const f = await launch(t, [toolCall('call_kb', 'kb_search', { query: 'refund window' }), final('Refunds are accepted within 30 days.')],
+    { onCallTool: request => { calls.push(request); return { status: 'ok', content: { hits: [{ title: 'Refund policy', text: '30 days' }] } }; } });
+  const hello = await f.engine.initialize();
+  assert.equal(hello.capabilities.hostTools, true);
+  assert.ok(hello.engine.reservedToolNames.includes('write_workspace_file') && hello.engine.reservedToolNames.includes('submit_final_output'));
+  assert.ok(!hello.engine.reservedToolNames.includes('kb_search') && new RegExp(hello.engine.hostToolNamePattern).test('kb_search'));
+  const started = await f.engine.startRun({ objective: 'What is the refund window?', hostTools: [lookup] });
+  assert.deepEqual(started.hostTools, ['kb_search']);
+  const events = [];
+  const rest = await f.engine.follow(started.runId, event => events.push(event), { waitMs: 2000 });
+  assert.equal(rest.phase, 'completed', JSON.stringify(rest) + f.log());
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, 'kb_search'); assert.deepEqual(calls[0].arguments, { query: 'refund window' });
+  assert.equal(calls[0].runId, started.runId); assert.equal(calls[0].callId, 'call_kb');
+  // The model saw the tool, and the host's result came back to it.
+  const advertised = f.model.requests[0].body.tools.map(tool => tool.function.name);
+  assert.ok(advertised.includes('kb_search') && advertised.includes('write_workspace_file'));
+  assert.ok(JSON.stringify(f.model.requests[1].body.messages).includes('Refund policy'));
+  assert.ok(events.some(event => event.kind === 'tool.completed' && event.title === 'kb_search' && event.status === 'ok'));
+});
+
+test('a host tool failure reaches the model as a tool error and the Run continues', async t => {
+  const f = await launch(t, [toolCall('call_kb', 'kb_search', { query: 'x' }), final('The knowledge base is unavailable right now.')],
+    { onCallTool: () => { throw new Error('knowledge base offline'); } });
+  await f.engine.initialize();
+  const started = await f.engine.startRun({ objective: 'Look it up.', hostTools: [lookup] });
+  const events = [];
+  const rest = await f.engine.follow(started.runId, event => events.push(event), { waitMs: 2000 });
+  assert.equal(rest.phase, 'completed', f.log());
+  assert.ok(events.some(event => event.kind === 'tool.completed' && event.title === 'kb_search' && event.status === 'error'));
+  assert.ok(JSON.stringify(f.model.requests[1].body.messages).includes('knowledge base offline'));
+});
+
+test('host tools are refused without the tools service, on name clashes and on malformed schemas', async t => {
+  const f = await launch(t, [final('unused')]);
+  await f.engine.initialize();
+  await assert.rejects(f.engine.startRun({ objective: 'x', hostTools: [lookup] }), { code: -32602 });
+  const g = await launch(t, [final('unused')], { onCallTool: () => ({ status: 'ok', content: null }) });
+  await g.engine.initialize();
+  for (const bad of [{ ...lookup, name: 'write_workspace_file' }, { ...lookup, name: 'submit_final_output' }, { ...lookup, name: '1bad name' }, { ...lookup, parameters: { type: 'string' } },
+    { ...lookup, extra: true }])
+    await assert.rejects(g.engine.startRun({ objective: 'x', hostTools: [bad] }), { message: 'engine_host_tools_invalid' });
+  await assert.rejects(g.engine.startRun({ objective: 'x', hostTools: [lookup, lookup] }), { message: 'engine_host_tools_invalid' });
+  assert.equal(f.model.requests.length + g.model.requests.length, 0);
 });

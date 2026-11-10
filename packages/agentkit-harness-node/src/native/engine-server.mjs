@@ -8,8 +8,9 @@
 // Host -> engine: initialize, run/start, run/status, run/events (cursor
 //   long-poll), run/resume, run/cancel, shutdown.
 // Engine -> host: host/approveTool, only when the host declared the
-//   `approvals` service during initialize. Otherwise the startup `--approval`
-//   policy decides.
+//   `approvals` service during initialize (otherwise the startup `--approval`
+//   policy decides), and host/callTool for tools the host passed in
+//   run/start `hostTools`, only when the host declared the `tools` service.
 //
 // The protocol is additive: new methods, fields and event kinds may appear in
 // any release. A host must ignore what it does not understand and decide by
@@ -79,12 +80,23 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
       return reply?.decision === 'allow' ? 'allow' : 'deny';
     } catch (error) { log(`approval unavailable: ${publicErrorMessage(error)}`); return 'deny'; }
   };
+  const callHostTool = async ({ runId, callId, name, arguments: args, timeoutMs }) => {
+    if (!host?.services?.tools) return { status: 'error', content: { code: 'host_tools_unavailable', message: 'The host did not declare tool execution.' } };
+    return callHost('host/callTool', { runId, callId, name, arguments: args }, timeoutMs + 5000);
+  };
 
+  // Highest event seq seen per Run, so status never rescans the whole journal.
+  const seen = new Map();
+  const tail = runId => {
+    const events = runtime.events(runId, seen.get(runId) ?? 0);
+    if (events.length) seen.set(runId, events.at(-1).seq);
+    return seen.get(runId) ?? 0;
+  };
   const status = runId => {
-    const record = runtime.load(runId), snapshot = record.snapshot, events = runtime.events(runId, 0);
+    const snapshot = runtime.load(runId).snapshot;
     return { runId, phase: snapshot.phase, outcome: snapshot.outcome ?? null, reason: snapshot.reason ?? null,
       terminal: runtime.terminal(snapshot), running: active.has(runId), usage: snapshot.usage,
-      finalText: snapshot.finalText ?? snapshot.candidate?.text ?? null, cursor: events.length ? events.at(-1).seq : 0 };
+      finalText: snapshot.finalText ?? snapshot.candidate?.text ?? null, cursor: tail(runId) };
   };
   const drive = runId => {
     if (active.has(runId)) return;
@@ -100,32 +112,40 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
     async initialize(params) {
       const offered = Array.isArray(params?.protocolVersions) ? params.protocolVersions : [];
       if (!offered.includes(ENGINE_PROTOCOL)) throw rpcError(ERRORS.params, 'no common protocol version', { supported: [ENGINE_PROTOCOL] });
-      host = { name: text(params.host?.name) ? params.host.name : 'unknown', services: { approvals: params.services?.approvals === true } };
+      host = { name: text(params.host?.name) ? params.host.name : 'unknown',
+        services: { approvals: params.services?.approvals === true, tools: params.services?.tools === true } };
       runtime ??= await createEngineRuntime({ workspaceRoot: startup.workspace, stateDir: startup.stateDir, sessionId: startup.sessionId,
-        scope: startup.scope, authorize, fetchImpl, sourceEnv: env,
+        scope: startup.scope, authorize, callHostTool, fetchImpl, sourceEnv: env,
         model: { ...startup.model, apiKey: async () => env[startup.model.apiKeyEnv] ?? '' } });
       return { protocolVersion: ENGINE_PROTOCOL, engine: { name: '@kingsoftcloud/agentkit-harness-node', version: packageVersion(), ...runtime.info() },
-        capabilities: { methods: METHODS, eventSchema: ENGINE_EVENT_SCHEMA, hostServices: ['approvals'], approvals: host.services.approvals ? 'host' : startup.approval } };
+        capabilities: { methods: METHODS, eventSchema: ENGINE_EVENT_SCHEMA, hostServices: ['approvals', 'tools'], approvals: host.services.approvals ? 'host' : startup.approval,
+          hostTools: host.services.tools } };
     },
     async 'run/start'(params) {
       if (!text(params?.objective)) throw rpcError(ERRORS.params, 'objective is required');
+      if (params.hostTools?.length && !host.services.tools) throw rpcError(ERRORS.params, 'hostTools require the tools host service');
       const runId = text(params.runId) ? params.runId : `run-${createHash('sha256').update(randomUUID()).digest('hex').slice(0, 24)}`;
       if (known(runId)) { drive(runId); return { ...status(runId), existing: true }; }
-      const started = runtime.start({ runId, objective: params.objective, hostInstructions: params.hostInstructions ?? '',
+      const started = runtime.start({ runId, objective: params.objective, hostInstructions: params.hostInstructions ?? '', hostTools: params.hostTools,
         ...(params.preset === undefined ? {} : { preset: params.preset }), maxModelCalls: params.maxModelCalls ?? null });
       drive(runId);
-      return { ...status(runId), preset: started.preset, existing: false };
+      return { ...status(runId), preset: started.preset, hostTools: started.hostTools, existing: false };
     },
     async 'run/status'(params) { requireRun(params); return status(params.runId); },
     async 'run/events'(params) {
       requireRun(params);
       const cursor = Number.isSafeInteger(params.cursor) && params.cursor >= 0 ? params.cursor : 0;
       const deadline = Date.now() + Math.min(Math.max(Number(params.waitMs) || 0, 0), 30000);
+      // The wait reads only the journal suffix; the Run record is loaded once, on return.
       for (;;) {
-        const events = runtime.events(params.runId, cursor), state = status(params.runId);
-        if (events.length || !state.running || Date.now() >= deadline)
-          return { events: events.map(projectEngineEvent), cursor: events.length ? events.at(-1).seq : cursor, terminal: state.terminal, running: state.running };
-        await sleep(100);
+        const running = active.has(params.runId), events = runtime.events(params.runId, cursor);
+        if (events.length || !running || Date.now() >= deadline) {
+          const next = events.length ? events.at(-1).seq : cursor;
+          if (next > (seen.get(params.runId) ?? 0)) seen.set(params.runId, next);
+          return { events: events.map(projectEngineEvent), cursor: next,
+            terminal: runtime.terminal(runtime.load(params.runId).snapshot), running: active.has(params.runId) };
+        }
+        await sleep(250);
       }
     },
     async 'run/resume'(params) {

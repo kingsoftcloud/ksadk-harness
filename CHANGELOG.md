@@ -24,6 +24,14 @@
   web tools, the official preset and engine-rendered instructions from this
   package alone. `native/engine-client` is a thin client with no engine logic.
   Events are projected to the host-renderable `agentkit.engine-event/v1`.
+- Add host tools to `agentkit.engine/v1`. A host that declares the `tools`
+  service may pass `hostTools` to `run/start`; the engine advertises them and
+  forwards each call over `host/callTool`, where the host executes and
+  authorizes it. Read-only host tools may be re-run after a crash; others are
+  never replayed. `initialize` reports `reservedToolNames` and
+  `hostToolNamePattern` so a host never hard-codes engine tool names.
+- The engine's event wait reads only the journal suffix instead of rescanning
+  every event on each poll.
 
 ## 0.0.16 - 2026-11-10
 

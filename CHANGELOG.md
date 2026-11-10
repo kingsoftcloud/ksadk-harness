@@ -11,6 +11,12 @@
 - The `official` preset selects `response-boundary/v3`, `per-response/v2`,
   `diagnose-before-repeat/v2` and a 32000-token default request budget bounded
   by the model limit and half the context window.
+- Add engine-rendered instructions (`engine-instructions/v1`), now the policy
+  new Runs are admitted with. The engine owns the base system prompt and places
+  the Host's rendered contribution verbatim in a delimited slot. Recovery
+  compares only the Host contribution, so a base wording change in a later
+  engine release no longer invalidates Runs admitted earlier. Runs admitted
+  under `native-owned-sections/v1..v3` keep their exact whole-prompt check.
 
 ## 0.0.16 - 2026-11-10
 

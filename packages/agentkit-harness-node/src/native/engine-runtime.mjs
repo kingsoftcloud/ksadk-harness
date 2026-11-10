@@ -48,6 +48,27 @@ export function admitEngineModel(model) {
     requestTimeoutMs: model.requestTimeoutMs ?? 180000 };
 }
 
+const CONVERSATION_TURNS = 64, CONVERSATION_CHARS = 60000;
+
+/** Earlier turns of the conversation a new Run continues. The engine decides how
+ * they reach the model; the host only supplies role and text. Newest turns win
+ * when the history exceeds the budget. */
+export function renderEngineObjective(objective, conversation) {
+  invariant(conversation === undefined || Array.isArray(conversation) && conversation.every(turn => turn && typeof turn === 'object'
+    && ['user', 'assistant'].includes(turn.role) && typeof turn.text === 'string'), 'engine_conversation_invalid');
+  const turns = [];
+  let used = 0;
+  for (const turn of [...(conversation ?? [])].reverse()) {
+    const body = turn.text.trim();
+    if (!body) continue;
+    if (turns.length >= CONVERSATION_TURNS || used + body.length > CONVERSATION_CHARS) break;
+    turns.unshift(`${turn.role === 'user' ? 'User' : 'Assistant'}: ${body}`); used += body.length;
+  }
+  if (!turns.length) return objective;
+  return ['This Run continues an existing conversation. Earlier turns, oldest first:', '', ...turns, '',
+    'The current request, which is your task:', objective].join('\n');
+}
+
 const HOST_TOOL_LIMIT = 128;
 const HOST_TOOL_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 
@@ -146,7 +167,7 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
   const kernel = new NativeKernel({ store, owner, digest, ports: { model: modelPort, tools, workspace, context: context.port, artifacts, background } });
 
   /** Admit a new Run. The Run freezes the preset and instructions it starts with. */
-  function start({ runId, objective, hostInstructions = '', hostTools, preset: presetName, maxModelCalls = null }) {
+  function start({ runId, objective, conversation, hostInstructions = '', hostTools, preset: presetName, maxModelCalls = null }) {
     invariant(text(runId) && text(objective) && typeof hostInstructions === 'string', 'engine_run_invalid');
     const preset = resolveEnginePreset({ ...(presetName === undefined ? {} : { preset: presetName }), maxModelCalls });
     const engineTools = [...bound, ...enginePresetToolDefinitions(preset)];
@@ -156,7 +177,7 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
     const runtimeTools = [...bound, ...hosted, ...(searchable ? toolDiscoveryDefinitions() : []), ...todoToolDefinitions(searchable),
       ...enginePresetToolDefinitions(preset)];
     const instructions = renderEngineInstructions({ hostInstructions });
-    const configuration = configure({ profile, tools: runtimeTools, contract: { objective }, ...preset.policies,
+    const configuration = configure({ profile, tools: runtimeTools, contract: { objective: renderEngineObjective(objective, conversation) }, ...preset.policies,
       hostBindingDigest: digest({ contract: ENGINE_RUNTIME_CONTRACT, workspaceRoot: root, description, tools: runtimeTools, instructions,
         preset: { preset: preset.preset, revision: preset.revision } }),
       limits: { ...preset.limits, maxWallMs: null, maxModelCalls,

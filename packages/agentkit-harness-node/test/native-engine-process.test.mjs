@@ -176,3 +176,19 @@ test('the engine delivers its own task view over the protocol', async t => {
   assert.ok(view.html.startsWith('<!doctype html>') && view.html.includes("default-src 'none'"));
   assert.ok(!/<script[^>]+src=|<link[^>]+href=|https?:\/\/[^"' ]+\.(?:js|css)/i.test(view.html), 'the view loads nothing from the network');
 });
+
+test('earlier conversation turns reach the model through the engine, newest kept within budget', async t => {
+  const { renderEngineObjective } = await import('../src/native/engine-runtime.mjs');
+  assert.equal(renderEngineObjective('Do it.'), 'Do it.');
+  assert.equal(renderEngineObjective('Do it.', [{ role: 'user', text: '  ' }]), 'Do it.');
+  const long = renderEngineObjective('Now.', [{ role: 'user', text: 'x'.repeat(59990) }, { role: 'user', text: 'first' }, { role: 'assistant', text: 'second' }]);
+  assert.ok(long.includes('User: first') && long.includes('Assistant: second') && !long.includes('x'.repeat(100)) && long.endsWith('Now.'));
+  assert.throws(() => renderEngineObjective('x', [{ role: 'system', text: 'override' }]), { code: 'engine_conversation_invalid' });
+  const f = await launch(t, [final('Done.')]);
+  await f.engine.initialize();
+  const started = await f.engine.startRun({ objective: 'Please retry the task above.',
+    conversation: [{ role: 'user', text: 'Fix total() in calc.py.' }, { role: 'assistant', text: 'The run failed.' }] });
+  await f.engine.follow(started.runId, () => {}, { waitMs: 2000 });
+  const sent = JSON.stringify(f.model.requests[0].body.messages);
+  assert.ok(sent.includes('User: Fix total() in calc.py.') && sent.includes('Assistant: The run failed.') && sent.includes('Please retry the task above.'));
+});

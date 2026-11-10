@@ -28,7 +28,11 @@ function App() {
       if (message.source !== window.parent) return;
       const data = message.data;
       if (!data || data.contract !== ENGINE_VIEW_CONTRACT) return;
-      if (data.type === "theme" && ["light", "dark", "system"].includes(data.theme)) setView(current => ({ ...current, theme: data.theme }));
+      if (data.type === "theme" && ["light", "dark", "system"].includes(data.theme)) {
+        // The view's text and native controls follow the host's scheme; its background stays transparent.
+        document.documentElement.style.colorScheme = data.theme === "system" ? "light dark" : data.theme;
+        setView(current => ({ ...current, theme: data.theme }));
+      }
       else if (data.type === "reset") setView(current => ({ ...current, runId: String(data.runId || "run"), state: initialState() }));
       else if (data.type === "events" && Array.isArray(data.events)) setView(current => {
         const runId = String(data.runId || current.runId);

@@ -150,7 +150,7 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
       if (params.hostTools?.length && !host.services.tools) throw rpcError(ERRORS.params, 'hostTools require the tools host service');
       const runId = text(params.runId) ? params.runId : `run-${createHash('sha256').update(randomUUID()).digest('hex').slice(0, 24)}`;
       if (known(runId)) { drive(runId); return { ...status(runId), existing: true }; }
-      const started = runtime.start({ runId, objective: params.objective, hostInstructions: params.hostInstructions ?? '', hostTools: params.hostTools,
+      const started = runtime.start({ runId, objective: params.objective, conversation: params.conversation, hostInstructions: params.hostInstructions ?? '', hostTools: params.hostTools,
         ...(params.preset === undefined ? {} : { preset: params.preset }), maxModelCalls: params.maxModelCalls ?? null });
       drive(runId);
       return { ...status(runId), preset: started.preset, hostTools: started.hostTools, existing: false };

@@ -40,6 +40,9 @@
   scripts-only sandboxed iframe and relays events by `postMessage`, so task
   presentation changes ship with the engine. Projected events now carry
   bounded tool calls and results for the view.
+- `run/start` accepts earlier `conversation` turns; the engine renders them into
+  the Run objective, newest first within a fixed budget. The engine view follows
+  the host's color scheme sent with the `theme` message.
 
 ## 0.0.16 - 2026-11-10
 

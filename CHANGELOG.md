@@ -17,6 +17,13 @@
   compares only the Host contribution, so a base wording change in a later
   engine release no longer invalidates Runs admitted earlier. Runs admitted
   under `native-owned-sections/v1..v3` keep their exact whole-prompt check.
+- Add the engine process `agentkit-engine` speaking `agentkit.engine/v1`
+  (JSON-RPC 2.0 over NDJSON stdio): `initialize` with capability negotiation,
+  `run/start`, `run/status`, `run/events`, `run/resume`, `run/cancel` and the
+  engine-to-host request `host/approveTool`. It composes workspace, command and
+  web tools, the official preset and engine-rendered instructions from this
+  package alone. `native/engine-client` is a thin client with no engine logic.
+  Events are projected to the host-renderable `agentkit.engine-event/v1`.
 
 ## 0.0.16 - 2026-11-10
 

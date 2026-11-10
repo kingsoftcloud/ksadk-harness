@@ -7,6 +7,9 @@
   "exports": {
     ".": "./dist/index.mjs",
     "./rpc-entry": "./dist/rpc-entry.mjs",
+    "./native/engine-runtime": "./src/native/engine-runtime.mjs",
+    "./native/engine-server": "./src/native/engine-server.mjs",
+    "./native/engine-client": "./src/native/engine-client.mjs",
     "./native/a2a-tools": "./src/native/a2a-tools.mjs",
     "./native/artifact-codec": "./src/native/artifact-codec.mjs",
     "./native/artifact-store": "./src/native/artifact-store.mjs",
@@ -127,6 +130,7 @@
     "./package-integrity": "./src/package-integrity.mjs"
   },
   "bin": {
+    "agentkit-engine": "./src/native/engine-server.mjs",
     "agentkit-native-rpc": "./dist/rpc-entry.mjs"
   },
   "files": [

@@ -125,7 +125,7 @@ export function createEngineManagedService({ startup, stateDir, workspace, confi
         configuration = engine.prepareRun({ runId, objective, inputImages, originalInput: true, durableApprovals: !!authorizeInteraction,
           ...(strictApproval ? { toolPolicy: { contract: ENGINE_TOOL_POLICY, mode: 'strict', rules: {} } } : {}),
           ...(resources ? { hostInstructions: resources.hostInstructions, hostTools: resources.hostTools.map(tool =>
-            ({ ...tool, readOnly: false, effectProtocol: ENGINE_HOST_EFFECT })) } : {}),
+            tool.readOnly === true ? tool : { ...tool, readOnly: false, effectProtocol: ENGINE_HOST_EFFECT }) } : {}),
         }).configuration;
         if (resources) configuration = configure({ ...configuration,
           hostRecoveryBinding: { contract: MANAGED_HOST_RESOURCES, ref: bindingRef,

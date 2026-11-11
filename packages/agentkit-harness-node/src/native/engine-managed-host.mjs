@@ -59,10 +59,10 @@ export function createManagedEngineHost(config, env, fetchImpl = fetch) {
       }
     },
     async callTool({ scope, sessionId, ref, runId, callId, name, arguments: args, effect, signal, timeoutMs }) {
-      invariant(effect && typeof effect.operationKey === 'string', 'engine_managed_host_effect_invalid');
+      invariant(effect === undefined || typeof effect?.operationKey === 'string', 'engine_managed_host_effect_invalid');
       const reply = await exchange('tool', { scope, sessionId, ref, runId, callId, name, arguments: args,
-        effect: { operationKey: effect.operationKey, approved: effect.approved,
-          canRequestApproval: effect.canRequestApproval } }, signal, timeoutMs + 1000);
+        ...(effect ? { effect: { operationKey: effect.operationKey, approved: effect.approved,
+          canRequestApproval: effect.canRequestApproval } } : {}) }, signal, timeoutMs + 1000);
       invariant(['ok', 'error', 'approval_required', 'uncertain'].includes(reply.status), 'engine_managed_host_reply_invalid');
       return { status: reply.status, content: reply.content };
     },

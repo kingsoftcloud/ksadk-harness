@@ -44,7 +44,7 @@ export const ENGINE_EVENT_SCHEMA = 'agentkit.engine-event/v1';
 const METHODS = ['initialize', 'run/start', 'run/status', 'run/events', 'run/resume', 'run/cancel', 'ui/view', 'shutdown'];
 const DURABLE_APPROVAL_METHOD = 'run/approve';
 const HOST_OBSERVATIONS_METHOD = 'run/host-observations';
-const ERRORS = { parse: -32700, request: -32600, method: -32601, params: -32602, internal: -32603,
+const ERRORS = { parse: -32700, request: -32600, method: -32601, params: -32602, internalError: -32603,
   notInitialized: -32010, runNotFound: -32011, runBusy: -32012 };
 const text = value => typeof value === 'string' && value.trim().length > 0;
 const sleep = ms => new Promise(done => setTimeout(done, ms));
@@ -365,7 +365,7 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
         if (frame.method !== 'initialize' && !runtime) throw rpcError(ERRORS.notInitialized, 'initialize first');
         reply({ result: await handlers[frame.method](frame.params ?? {}) });
       } catch (error) {
-        reply({ error: error.rpc ?? { code: isNativeError(error) ? ERRORS.params : ERRORS.internal,
+        reply({ error: error.rpc ?? { code: isNativeError(error) ? ERRORS.params : ERRORS.internalError,
           message: isNativeError(error) ? error.code : publicErrorMessage(error) } });
       }
       if (closing) frames.close();

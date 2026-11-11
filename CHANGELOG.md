@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.0.18
+
+- Run Harness as a separately installed HTTP service with its own model
+  connection, workspace, command and Run journals, and task view. Studio and
+  KSADK can continue a Run after replacing the service image within the
+  supported protocol and journal versions.
+- Persist child and tool approvals in the service and reconcile committed
+  effects before resuming. Deliver managed commands, resumable event cursors
+  and terminal receipts through the service protocol.
+- Accept approved host tools, bound Skills and context contributions over the
+  host protocol. Keep host identity and resource authorization at the
+  integration boundary.
 - Add the engine preset contract `agentkit.engine-preset/v1`. A host names a
   preset (`official`) and the engine resolves the recovery policy versions,
   output restart allowance, control tools and default per-request output budget

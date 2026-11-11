@@ -27,7 +27,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import * as readline from 'node:readline';
 import { setTimeout as wait } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { isNativeError } from '@kingsoftcloud/agentkit-harness-core';
+import { isNativeError, TOOL_RECEIPT_OBSERVATION_CONTRACT } from '@kingsoftcloud/agentkit-harness-core';
 import { publicErrorMessage } from '@kingsoftcloud/agentkit-harness-core/error-presentation';
 import { createEngineRuntime, engineApprovalSubject, ENGINE_APPROVAL_CONTRACT, ENGINE_EXECUTION_POLICY,
   ENGINE_INPUT_IMAGES } from './engine-runtime.mjs';
@@ -35,7 +35,7 @@ import { ENGINE_VIEW_CONTRACT } from './engine-view-store.mjs';
 import { ENGINE_TOOL_POLICY } from './engine-tool-policy.mjs';
 import { ENGINE_CONTEXT } from './engine-context.mjs';
 import { ENGINE_HOOKS } from './engine-hooks.mjs';
-import { ENGINE_HOST_EFFECT } from './engine-host-effects.mjs';
+import { ENGINE_HOST_EFFECT, hostReceiptReply, hostReceiptSource, waitForHostReceipt } from './engine-host-effects.mjs';
 import { ENGINE_VERIFICATION } from './engine-verification.mjs';
 export { ENGINE_VIEW_CONTRACT };
 
@@ -107,7 +107,7 @@ function bounded(value) {
 export async function serveEngine({ input, output, log = () => {}, startup, env = process.env, fetchImpl = fetch, detachOnShutdown = false, viewStore }) {
   const frames = readline.createInterface({ input, crlfDelay: Infinity });
   const send = frame => output.write(`${JSON.stringify(frame)}\n`);
-  const pending = new Map(), active = new Map(), driven = new Set();
+  const pending = new Map(), active = new Map(), driven = new Set(), receiptWaits = new Map();
   let host = null, runtime = null, runtimePromise, closing = false;
   const viewRef = viewStore ? viewStore.archive(engineView()) : null;
 
@@ -135,6 +135,16 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
     return callHost('host/callTool', { runId, callId, name, arguments: args, ...(effect ? { effect } : {}) },
       timeoutMs + 5000, effect ? signal : undefined);
   };
+  async function readHostReceipt(runId, call, originalOperationKey, signal, observationId) {
+    if (!host?.services?.toolReceipts) throw new Error('host receipt service unavailable');
+    const reply = await callHost('host/readToolReceipt', { runId, callId: call.callId, name: call.name, arguments: call.arguments,
+      originalOperationKey, ...(observationId ? { observationId } : {}) }, observationId ? 12000 : 3000, signal);
+    return hostReceiptReply(reply, observationId);
+  }
+  const callHostReceipt = async request => ({
+    contract: request.contract, originalOperationKey: request.originalOperationKey, callId: request.call.callId,
+    result: await readHostReceipt(request.runId, request.call, request.originalOperationKey, request.signal, request.operationKey),
+  });
   const callHostContext = async (params, timeoutMs, signal) => {
     if (!host?.services?.context) throw new Error('host context service unavailable');
     return callHost('host/readContext', params, timeoutMs, signal);
@@ -173,7 +183,25 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
     const execute = async () => {
       let deadline;
       for (;;) {
-        try { return await runtime.run(runId, runOptions); }
+        try {
+          const snapshot = await runtime.run(runId, runOptions);
+          if (snapshot.phase !== 'awaiting_reconciliation' || !snapshot.toolReconciliation || !host?.services?.toolReceipts) return snapshot;
+          const record = runtime.load(runId);
+          if (!hostReceiptSource(record)) return snapshot;
+          if (runtime.pendingCommands(runId).length) continue;
+          const idle = new AbortController();
+          receiptWaits.set(runId, idle);
+          const signal = AbortSignal.any([idle.signal, controller.signal]);
+          try {
+            const command = await waitForHostReceipt(record, {
+              read: (call, operationKey, receiptSignal) => readHostReceipt(runId, call, operationKey, receiptSignal),
+              signal, assertCurrent: () => signal.throwIfAborted(),
+            });
+            if (command) runtime.submit(runId, command);
+          } catch (error) {
+            if (controller.signal.aborted || !idle.signal.aborted) throw error;
+          } finally { receiptWaits.delete(runId); }
+        }
         catch (error) {
           if (!detachOnShutdown || !isNativeError(error) || error.code !== 'lease_busy') throw error;
           // After an unclean shutdown, let the previous lease expire. A
@@ -218,9 +246,11 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
           hooks: detachOnShutdown && params.services?.hooks === ENGINE_HOOKS,
           verification: detachOnShutdown && params.services?.verification === ENGINE_VERIFICATION,
           toolEffects: detachOnShutdown && params.services?.toolEffects === ENGINE_HOST_EFFECT,
+          toolReceipts: detachOnShutdown && params.services?.toolEffects === ENGINE_HOST_EFFECT
+            && params.services?.toolReceipts === TOOL_RECEIPT_OBSERVATION_CONTRACT,
           durableApprovals: detachOnShutdown && params.services?.durableApprovals === true } };
       runtimePromise ??= createEngineRuntime({ workspaceRoot: startup.workspace, stateDir: startup.stateDir, sessionId: startup.sessionId,
-        scope: startup.scope, authorize, callHostTool, callHostContext, callHostHook, callHostVerification, fetchImpl, sourceEnv: env,
+        scope: startup.scope, authorize, callHostTool, callHostContext, callHostHook, callHostVerification, callHostReceipt, fetchImpl, sourceEnv: env,
         commandSandbox: startup.commandSandbox,
         subAgents: detachOnShutdown ? startup.subAgents : undefined,
         model: { ...startup.model, apiKey: async () => env[startup.model.apiKeyEnv] ?? '' } })
@@ -237,6 +267,7 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
           ...(host.services.hooks ? { hostHooks: ENGINE_HOOKS } : {}),
           ...(host.services.verification ? { hostVerification: ENGINE_VERIFICATION } : {}),
           ...(host.services.toolEffects ? { hostToolEffects: ENGINE_HOST_EFFECT } : {}),
+          ...(host.services.toolReceipts ? { hostToolReceipts: TOOL_RECEIPT_OBSERVATION_CONTRACT } : {}),
           ...(runtime.info().model.images ? { inputImages: ENGINE_INPUT_IMAGES } : {}),
           ...(engineView() ? { ui: { contract: ENGINE_VIEW_CONTRACT, sha256: engineView().sha256 } } : {}) } };
     },
@@ -252,6 +283,8 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
       const hostEffects = Array.isArray(params.hostTools) && params.hostTools.some(tool => tool?.effectProtocol !== undefined);
       if (hostEffects && !host.services.toolEffects)
         throw rpcError(ERRORS.params, 'host tool effects require a negotiated host service');
+      if (Array.isArray(params.hostTools) && params.hostTools.some(tool => tool?.receiptObservation !== undefined) && !host.services.toolReceipts)
+        throw rpcError(ERRORS.params, 'host receipt observation requires a negotiated host service');
       const runId = text(params.runId) ? params.runId : `run-${createHash('sha256').update(randomUUID()).digest('hex').slice(0, 24)}`;
       const existing = lookup(runId);
       if (existing) {
@@ -281,7 +314,9 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
       const { snapshot, configuration } = requireRun(params);
       if (detachOnShutdown && params.follow === true && !driven.has(runId) && !runtime.terminal(snapshot)) {
         const idle = ['paused', 'awaiting_interaction', 'awaiting_reconciliation'].includes(snapshot.phase);
-        if (!idle || runtime.pendingCommands(runId).length) drive(runId);
+        const hasReceipt = snapshot.phase === 'awaiting_reconciliation' && snapshot.toolReconciliation
+          && host.services.toolReceipts && hostReceiptSource(runtime.load(runId));
+        if (!idle || hasReceipt || runtime.pendingCommands(runId).length) drive(runId);
       }
       const cursor = Number.isSafeInteger(params.cursor) && params.cursor >= 0 ? params.cursor : 0;
       const deadline = Date.now() + Math.min(Math.max(Number(params.waitMs) || 0, 0), 30000);
@@ -328,6 +363,7 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
     async 'run/cancel'(params) {
       requireRun(params);
       runtime.submit(params.runId, { commandId: `cancel-${randomUUID()}`, kind: 'cancel', payload: {} });
+      receiptWaits.get(params.runId)?.abort();
       if (!active.has(params.runId) && !status(params.runId).terminal) drive(params.runId);
       return status(params.runId);
     },

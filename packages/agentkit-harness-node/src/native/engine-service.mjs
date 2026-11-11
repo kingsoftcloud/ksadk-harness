@@ -239,6 +239,7 @@ export function createEngineService({ startup, token, env = process.env, fetchIm
       closing = true;
       const stopped = new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
       await Promise.allSettled([...sessions.values()].map(session => session.close()).concat(managedRuntime?.close() ?? []));
+      server.closeAllConnections();
       await stopped;
     },
   };

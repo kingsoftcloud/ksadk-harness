@@ -1,9 +1,8 @@
 import { createHash, createPublicKey, timingSafeEqual } from 'node:crypto';
 import { join } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
-import { canonical, configure, invariant, parseNativeJson, TOOL_RECEIPT_OBSERVATION_CONTRACT, toolReceiptSource } from '@kingsoftcloud/agentkit-harness-core';
+import { canonical, configure, invariant, parseNativeJson, TOOL_RECEIPT_OBSERVATION_CONTRACT } from '@kingsoftcloud/agentkit-harness-core';
 import { createEngineRuntime } from './engine-runtime.mjs';
-import { ENGINE_HOST_EFFECT } from './engine-host-effects.mjs';
+import { ENGINE_HOST_EFFECT, waitForHostReceipt } from './engine-host-effects.mjs';
 import { ENGINE_TOOL_POLICY } from './engine-tool-policy.mjs';
 import { createManagedSessionDelivery, MANAGED_SESSION_DELIVERY, projectManagedSessionEvent } from './engine-managed-delivery.mjs';
 import { createManagedEngineHost, MANAGED_HOST_RESOURCES } from './engine-managed-host.mjs';
@@ -151,34 +150,9 @@ export function createEngineManagedService({ startup, stateDir, workspace, confi
       }) : {};
       const hasHostReceipts = configuration.tools.some(tool => tool.hostEffectProtocol === ENGINE_HOST_EFFECT
         && tool.recoveryPolicy === 'receipt-observation/v1');
-      async function waitForReceipt(snapshot, { signal: idleSignal, assertCurrent }) {
+      function waitForReceipt(_snapshot, { signal: idleSignal, assertCurrent }) {
         assertCurrent();
-        const originalOperationKey = snapshot.toolReconciliation?.operationKey;
-        if (!originalOperationKey) return null;
-        const record = store.load(scope, runId);
-        const { call, definition } = toolReceiptSource(record, originalOperationKey);
-        if (definition.hostEffectProtocol !== ENGINE_HOST_EFFECT) return null;
-        for (;;) {
-          assertCurrent();
-          // This read only inspects the Host's durable checkpoint. A known
-          // Task can be queried by a separately claimed Core receipt intent.
-          const ready = await readReceipt(call, originalOperationKey, idleSignal).catch(() => null);
-          assertCurrent();
-          if (ready) {
-            const prefix = 'host-receipt-' + digest({ runId, originalOperationKey, token: ready.token });
-            const attempts = record.commands.filter(row => row.consumed && row.command.commandId.startsWith(prefix + '-')).length;
-            // A first read of a known original task is useful even when its
-            // execution deadline has passed. Retry pending observations only
-            // inside that deadline. Later terminal facts have a new token.
-            const retry = ready.settled ? attempts < 3 : attempts === 0 || Date.now() < ready.retryUntil;
-            if (retry) {
-              if (attempts) await delay(Math.min(1500 * attempts, 5000), undefined, { signal: idleSignal });
-              assertCurrent();
-              return { commandId: prefix + '-' + attempts, kind: 'reconcile_tool', payload: { originalOperationKey } };
-            }
-          }
-          await delay(1000, undefined, { signal: idleSignal });
-        }
+        return waitForHostReceipt(store.load(scope, runId), { read: readReceipt, signal: idleSignal, assertCurrent });
       }
       return { scope, buildId, configuration, ports: engine.ports, ...delivery,
         ...(hasHostReceipts ? { withExecution: ({ execute }) => execute({ onIdle: waitForReceipt }) } : {}),

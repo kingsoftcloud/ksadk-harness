@@ -1,5 +1,6 @@
 import { canonical, invariant, parseNativeJson } from '@kingsoftcloud/agentkit-harness-core';
 import { MANAGED_SESSION_DELIVERY_LIMIT } from './engine-managed-delivery.mjs';
+import { hostReceiptReply } from './engine-host-effects.mjs';
 
 export const MANAGED_HOST_RESOURCES = 'agentkit.managed-host-resources/v1';
 const PATH = '/_agentkit/managed-host/v1/';
@@ -68,16 +69,7 @@ export function createManagedEngineHost(config, env, fetchImpl = fetch) {
     },
     async receipt(payload, signal) {
       const reply = await exchange('receipt', payload, signal, payload.observationId ? 12000 : 3000);
-      if (payload.observationId) {
-        invariant(reply.result === undefined || object(reply.result) && ['ok', 'error'].includes(reply.result.status),
-          'engine_managed_host_reply_invalid');
-        return reply.result ?? null;
-      }
-      if (reply.token === undefined) return null;
-      invariant(typeof reply.token === 'string' && /^[0-9a-f]{64}$/u.test(reply.token) && typeof reply.settled === 'boolean'
-        && (reply.settled || Number.isSafeInteger(reply.retryUntil) && reply.retryUntil > 0),
-        'engine_managed_host_reply_invalid');
-      return { token: reply.token, settled: reply.settled, retryUntil: reply.retryUntil };
+      return hostReceiptReply(reply, payload.observationId);
     },
   });
 }

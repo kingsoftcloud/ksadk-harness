@@ -1,9 +1,55 @@
 import { createHash } from 'node:crypto';
-import { isNativeError } from '@kingsoftcloud/agentkit-harness-core';
+import { setTimeout as delay } from 'node:timers/promises';
+import { canonical, invariant, isNativeError, toolReceiptSource } from '@kingsoftcloud/agentkit-harness-core';
 
 export const ENGINE_HOST_EFFECT = 'agentkit.engine-host-tool-effect/v1';
 const MAX_INPUT_BYTES = 128 * 1024;
 const MAX_INPUTS = 64;
+
+export function hostReceiptSource(record) {
+  const originalOperationKey = record.snapshot.toolReconciliation?.operationKey;
+  if (record.snapshot.phase !== 'awaiting_reconciliation' || !originalOperationKey) return null;
+  const { call, definition } = toolReceiptSource(record, originalOperationKey);
+  return definition.hostEffectProtocol === ENGINE_HOST_EFFECT ? { call, originalOperationKey } : null;
+}
+
+export function hostReceiptReply(reply, observationId) {
+  invariant(reply && typeof reply === 'object' && !Array.isArray(reply), 'engine_host_receipt_invalid');
+  if (observationId) {
+    invariant(reply.result === undefined || reply.result && ['ok', 'error'].includes(reply.result.status), 'engine_host_receipt_invalid');
+    return reply.result ?? null;
+  }
+  if (reply.token === undefined) return null;
+  invariant(typeof reply.token === 'string' && /^[0-9a-f]{64}$/u.test(reply.token) && typeof reply.settled === 'boolean'
+    && (reply.settled || Number.isSafeInteger(reply.retryUntil) && reply.retryUntil > 0), 'engine_host_receipt_invalid');
+  return { token: reply.token, settled: reply.settled, retryUntil: reply.retryUntil };
+}
+
+/** Idle reads inspect a durable checkpoint. The Kernel claims the original
+ * remote receipt query separately from the initial mutation. */
+export async function waitForHostReceipt(record, { read, signal, assertCurrent }) {
+  const source = hostReceiptSource(record);
+  if (!source) return null;
+  const { call, originalOperationKey } = source, { runId } = record.snapshot;
+  for (;;) {
+    assertCurrent();
+    const ready = await read(call, originalOperationKey, signal).catch(() => null);
+    assertCurrent();
+    if (ready) {
+      const digest = createHash('sha256').update(canonical({ runId, originalOperationKey, token: ready.token })).digest('hex');
+      const prefix = 'host-receipt-' + digest;
+      const attempts = record.commands.filter(row => row.consumed && row.command.commandId.startsWith(prefix + '-')).length;
+      // One initial read may find the original Task finished even after its
+      // deadline. Later terminal facts have a different checkpoint token.
+      if (ready.settled ? attempts < 3 : attempts === 0 || Date.now() < ready.retryUntil) {
+        if (attempts) await delay(Math.min(1500 * attempts, 5000), undefined, { signal });
+        assertCurrent();
+        return { commandId: prefix + '-' + attempts, kind: 'reconcile_tool', payload: { originalOperationKey } };
+      }
+    }
+    await delay(1000, undefined, { signal });
+  }
+}
 
 /** The host receives original user text and stable identities, never imported prose or media. */
 export function engineUserObservations(store, scope, snapshot, { indexes, currentOnly = false } = {}) {

@@ -93,6 +93,43 @@ test('a host completes a file-writing task through the protocol alone, approving
   assert.equal(f.model.requests.length, 2);
 });
 
+for (const [preset, expectedBudgets] of [
+  [undefined, [32000, 32000, 32000]],
+  ['experimental-reasoning-stall', [32000, 8192]],
+]) test(`the engine pauses at the output limit and resumes the original Run (${preset ?? 'default'})`, async t => {
+  const reasoningCutoff = count => [
+    { id: 'c', choices: [{ index: 0, delta: { role: 'assistant', reasoning_content: 'Planning' } }] },
+    { id: 'c', choices: [{ index: 0, delta: {}, finish_reason: 'length' }],
+      usage: { prompt_tokens: 10, completion_tokens: count, total_tokens: count + 10,
+        completion_tokens_details: { reasoning_tokens: count } } },
+  ];
+  const approvals = [];
+  const f = await launch(t, [
+    toolCall('first-write', 'write_workspace_file', { path: 'out.txt', content: 'original effect\n' }),
+    ...expectedBudgets.map(reasoningCutoff),
+    final('Continued the original Run.'),
+  ], { onApproveTool: request => { approvals.push(request); return 'allow'; } });
+  await f.engine.initialize();
+  const started = await f.engine.startRun({ objective: 'Write out.txt and report the result.', ...(preset ? { preset } : {}) });
+  const paused = await f.engine.follow(started.runId);
+  assert.equal(paused.phase, 'paused', f.log());
+  assert.equal(paused.reason, 'output_budget_exhausted');
+  assert.equal(paused.terminal, false);
+  assert.deepEqual(f.model.requests.map(request => request.body.max_tokens), [32000, ...expectedBudgets]);
+  assert.equal(paused.usage.reasoningTokens, expectedBudgets.reduce((total, tokens) => total + tokens, 0));
+  assert.equal(approvals.length, 1);
+  assert.equal(readFileSync(join(f.workspace, 'out.txt'), 'utf8'), 'original effect\n');
+
+  await f.engine.resume(started.runId);
+  const finished = await f.engine.follow(started.runId);
+  assert.equal(finished.phase, 'completed', f.log());
+  assert.equal(finished.runId, started.runId);
+  assert.equal(finished.finalText, 'Continued the original Run.');
+  assert.equal(f.model.requests.at(-1).body.max_tokens, 32000);
+  assert.equal(approvals.length, 1);
+  assert.equal(readFileSync(join(f.workspace, 'out.txt'), 'utf8'), 'original effect\n');
+});
+
 test('without a host approval service the startup policy decides, and deny leaves the workspace untouched', async t => {
   const f = await launch(t, [toolCall('call_1', 'write_workspace_file', { path: 'out.txt', content: 'x' }), final('I could not write the file.')]);
   const hello = await f.engine.initialize();

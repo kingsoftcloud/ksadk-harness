@@ -1,0 +1,8 @@
+.git
+.artifacts
+**/node_modules
+**/dist
+**/*.sqlite*
+**/.env
+**/.env.*
+**/*.log

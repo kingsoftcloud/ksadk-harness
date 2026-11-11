@@ -12,6 +12,7 @@ export function safeReadRecoveryCalls(calls: ToolCall[], configuration: RunConfi
 }
 function replayPolicy(intent: EffectIntent, configuration: RunConfiguration): string | null {
   if (intent.kind === 'workspace') return 'workspace-observation/v1';
+  if (intent.kind === 'verify' && configuration.hostVerification) return 'host-verification-read/v1';
   if (intent.kind === 'model' && configuration.modelRecoveryPolicy === 'pure-inference/v1') return 'pure-inference/v1';
   if (intent.kind === 'tool') {
     const calls = intent.payload.calls as unknown as ToolCall[];

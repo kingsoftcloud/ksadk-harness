@@ -12,6 +12,7 @@ import { NativeKernel, emptyUsage, currentHookState, validateHookInvocation } fr
 import { scope, digest, acceptance, verificationReport, tool, fixture } from '../../agentkit-harness-core/test/fixtures.mjs';
 import { SqliteRunStore } from '../src/native/sqlite-store.mjs';
 import { createNativeHookExecutor, nativeHookExecutionPolicyDigest } from '../src/native/hook-executor.mjs';
+import { ENGINE_HOOKS, engineHookPort } from '../src/native/engine-hooks.mjs';
 
 const CLEANUP = 1000;
 const policyDigest = nativeHookExecutionPolicyDigest({ cleanupTimeoutMs: CLEANUP });
@@ -33,6 +34,34 @@ function sqliteRun(t, config, snapshot, prefix) {
   t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
   return { store, filename };
 }
+
+test('a lost independent Hook reply never grants replay or promotes another receipt', async () => {
+  const { snapshot } = fixture();
+  const definition = hookDef({ readOnly: false });
+  const input = { goal: 'fixture', toolCallCount: 0, stopContinuationCount: 0,
+    call: { name: 'read', callId: 'call', arguments: {} }, toolResult: null, candidate: null, compaction: null };
+  const request = { scope, runId: snapshot.runId, sessionId: snapshot.sessionId, turnId: snapshot.turnId,
+    buildId: snapshot.buildId, parentRunId: null, taskChainId: snapshot.taskChainId,
+    operationKey: 'hook-effect', goalRevision: 0, event: 'PreToolUse', schemaVersion: 'agentkit.native-hook/v1',
+    definition, input, inputDigest: digest({ definition, input }), signal: new AbortController().signal };
+  let invoked = 0;
+  const lost = engineHookPort(async frame => {
+    invoked++;
+    assert.equal(frame.scope, undefined);
+    throw new Error('connection closed after delivery');
+  });
+  const uncertain = await lost.invoke(request);
+  assert.equal(uncertain.status, 'uncertain');
+  assert.equal(invoked, 1);
+  const wrong = engineHookPort(async frame => ({ contract: ENGINE_HOOKS, operationKey: frame.operationKey,
+    inputDigest: 'wrong digest', status: 'ok', output: output(), reason: null }));
+  assert.equal((await wrong.invoke(request)).status, 'uncertain');
+  const denied = engineHookPort(async frame => ({ contract: ENGINE_HOOKS, operationKey: frame.operationKey,
+    inputDigest: frame.inputDigest, status: 'failed', output: null, reason: 'policy_denied' }));
+  const rejected = await denied.invoke(request);
+  assert.equal(rejected.reason, 'policy_denied');
+  assert.equal(rejected.status, 'failed');
+});
 
 test('NativeKernel+SQLite drives PreToolUse/PostToolUse through the executor with sealed receipts and serialized feedback', async (t) => {
   const def = hookDef({ events: ['PreToolUse', 'PostToolUse'] });

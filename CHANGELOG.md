@@ -8,9 +8,11 @@
   for new Runs. Hosts no longer spell engine policy versions, so a policy
   improvement ships with an engine release only. Existing Runs keep the
   configuration frozen at their creation.
-- The `official` preset selects `response-boundary/v3`, `per-response/v2`,
-  `diagnose-before-repeat/v2` and a 32000-token default request budget bounded
-  by the model limit and half the context window.
+- The `official` preset keeps its 32000-token default request budget, bounded
+  by the model limit and half the context window, for the initial call and up
+  to two automatic continuations. Further truncation pauses the original Run
+  with its committed effects intact. The opt-in `experimental-reasoning-stall`
+  preset tests one shorter retry after a confirmed reasoning-only cutoff.
 - Add engine-rendered instructions (`engine-instructions/v1`), now the policy
   new Runs are admitted with. The engine owns the base system prompt and places
   the Host's rendered contribution verbatim in a delimited slot. Recovery
@@ -43,6 +45,14 @@
 - `run/start` accepts earlier `conversation` turns; the engine renders them into
   the Run objective, newest first within a fixed budget. The engine view follows
   the host's color scheme sent with the `theme` message.
+
+## 0.0.17 - 2026-11-10
+
+- Keep live reasoning, text, and tool previews streaming after the persisted
+  history reaches its size limit.
+- Default to low reasoning before the first tool dispatch on the gateway's
+  GLM-5.3-Flash route. Explicit settings and previously admitted Runs retain
+  their behavior.
 
 ## 0.0.16 - 2026-11-10
 

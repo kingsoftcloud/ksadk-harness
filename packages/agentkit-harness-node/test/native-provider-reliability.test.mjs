@@ -59,13 +59,34 @@ test('known MiniMax clean EOF requires finish and usage; errors and unknown prov
 test('v3 leaves mandatory GLM reasoning on for both task and summary, old requests stay frozen', () => {
   const binding = { model: 'glm-5.3-flash', baseUrl: 'https://kspmas.ksyun.com/v1' };
   const payload = { model: binding.model, max_tokens: 8192, tools: [{ type: 'function', function: { name: 'read' } }], messages: [] };
-  assert.equal(admitProviderCompatibilityPolicy().contract, 'provider-compat/v4');
+  assert.equal(admitProviderCompatibilityPolicy().contract, 'provider-compat/v5');
   for (const purpose of ['task', 'compaction']) {
     const modern = applyProviderChatCompatibility(payload, { purpose, profile: profile('provider-compat/v3') }, binding);
     assert.equal(modern.thinking, undefined);
     assert.equal(applyProviderChatCompatibility(payload, { purpose, profile: profile('provider-compat/v2') }, binding).thinking.type, 'disabled');
   }
   assert.throws(() => applyProviderChatCompatibility(payload, { profile: { ...profile('provider-compat/v3'), thinkingMode: 'disabled' } }, binding), /thinking_disable_unsupported/);
+});
+
+test('new gateway GLM runs default to low reasoning before the first tool, preserving explicit and frozen settings', () => {
+  const binding = { model: 'glm-5.3-flash', baseUrl: 'https://kspmas.ksyun.com/v1' };
+  const payload = { messages: [], max_tokens: 131072, tool_choice: 'auto',
+    tools: [{ type: 'function', function: { name: 'read' } }] };
+  const request = { beforeFirstTool: true, profile: profile('provider-compat/v5') };
+  const apply = (body = {}, options = {}, route = {}) =>
+    applyProviderChatCompatibility({ ...payload, ...body }, { ...request, ...options }, { ...binding, ...route });
+  assert.equal(apply().reasoning_effort, 'low');
+  assert.equal(apply().thinking, undefined);
+  assert.equal(apply().max_tokens, 131072);
+  assert.equal(apply({ reasoning_effort: 'high' }).reasoning_effort, 'high');
+  assert.equal(apply({}, { profile: { ...request.profile, reasoningEffort: 'max' } }).reasoning_effort, 'max');
+  assert.equal(apply({ thinking: { type: 'enabled' } }).reasoning_effort, undefined);
+  assert.equal(apply({}, { beforeFirstTool: undefined }).reasoning_effort, undefined);
+  assert.equal(apply({}, { finalizationOnly: true }).reasoning_effort, undefined);
+  assert.equal(apply({ tool_choice: 'none' }).reasoning_effort, undefined);
+  assert.equal(apply({ tools: [] }).reasoning_effort, undefined);
+  assert.equal(apply({}, { profile: profile('provider-compat/v4') }).reasoning_effort, undefined);
+  assert.equal(apply({}, {}, { model: 'glm-5.3-flashx' }).reasoning_effort, undefined);
 });
 
 test('dialect projection types enum/const through nested schemas without mutating source or data', () => {

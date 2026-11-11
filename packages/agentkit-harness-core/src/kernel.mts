@@ -14,7 +14,8 @@ import { executeTimedTool } from './tool-execution.mjs';
 import { executeKernelTool, kernelToolPolicy } from './kernel-tool-staging.mjs';
 import type { ToolDispatchProof, ToolFailureObservation } from './tool-execution.mjs';
 import { reduceCommand, transition } from './transitions.mjs';
-import { addUsage, modelToolCatalog, modelRoom, objectValue, plan, reduceModel, reduceTools, settle, validateModelResult } from './machine.mjs';
+import { addUsage, initialPlanMessages, initialPlanPending, modelToolCatalog, modelRoom, objectValue, plan, reduceModel,
+  reduceTools, settle, validateModelResult } from './machine.mjs';
 import { browserTaskMessages } from './task-policy.mjs';
 import { normalizeToolIdentities, projectSessionHistory } from './history.mjs';
 import { prepareSourceReadQuote, sourceReadBudgetFor, SOURCE_READ_POLICY } from './source-read-budget.mjs';
@@ -32,10 +33,10 @@ import { assertHookFeedbackRetained, deniedByHook, reduceHook, stagePostHooks } 
 import { hookBytes, hookResult } from './hook-contract.mjs';
 import { planNativeContext, reduceContextModel } from './context-planning.mjs';
 import type { ContextCounters } from './context-planning.mjs';
-import { collectContextContributions, contextSourceUnavailable } from './context-contributions.mjs';
+import { collectContextContributions, contextSourceUnavailable, expiredHostContribution } from './context-contributions.mjs';
 import { validateInstructionScopes } from './instruction-scopes.mjs';
 import { refreshContextSources } from './context-source-refresh.mjs';
-import { outputRestartPayload } from './output-recovery.mjs';
+import { outputRestartPayload, reasoningStallRetryTokens } from './output-recovery.mjs';
 import { reduceTurnInput } from './turn-input.mjs';
 import { modelStreamCapture } from './model-stream.mjs';
 import { browserRecoveryTransition } from './browser-runtime.mjs';
@@ -261,7 +262,10 @@ export class NativeKernel {
     const promotion = admitChildPromotion({ ...snapshot, ...changes }, config, command, this.childTaskStates(snapshot));
     return promotion.reason === 'applied' ? { ...promotion, commandId: command.commandId } : null;
   }
-  async runUntilIdle(scope: RunScope, runId: string, { signal, waitForRetry = true }: { signal?: AbortSignal; waitForRetry?: boolean } = {}): Promise<RunSnapshot> {
+  async runUntilIdle(scope: RunScope, runId: string, { signal, detachSignal, waitForRetry = true }: {
+    signal?: AbortSignal; detachSignal?: AbortSignal; waitForRetry?: boolean;
+  } = {}): Promise<RunSnapshot> {
+    detachSignal?.throwIfAborted();
     const initial = this.drivingState(scope, runId);
     invariant(this.digest(initial.configuration) === initial.snapshot.configDigest, 'stored_configuration_mismatch');
     this.policies.bindings(effectiveRunConfiguration(initial.snapshot, initial.configuration, this.digest));
@@ -280,6 +284,11 @@ export class NativeKernel {
     const externalAbort = () => this.submit(scope, runId, { commandId: `${key}:signal-cancel`, kind: 'cancel', payload: {} });
     if (signal?.aborted) externalAbort();
     signal?.addEventListener('abort', externalAbort, { once: true });
+    // Worker shutdown releases ownership without submitting a user cancel.
+    // A claimed effect with no committed receipt follows normal lease recovery.
+    const detach = () => controller.abort(new NativeError('worker_detached'));
+    detachSignal?.addEventListener('abort', detach, { once: true });
+    if (detachSignal?.aborted) detach();
     let leaseError: unknown;
     const heartbeat = setInterval(() => {
       try {
@@ -299,6 +308,7 @@ export class NativeKernel {
         // Immediate ports and synchronous storage can otherwise form an
         // unbounded microtask chain that starves lease renewal and cancellation.
         await new Promise<void>(resolve => setTimeout(resolve, 0));
+        detachSignal?.throwIfAborted();
         if (leaseError) throw leaseError;
         if (this.onCheckpoint) {
           const checkpoint = (this.store.authority?.(scope, runId) ?? this.store.load(scope, runId)).snapshot;
@@ -452,12 +462,13 @@ export class NativeKernel {
           try { claimed = this.store.claim(scope, runId, lease, this.now(), intent.operationKey); }
           catch (error) { if (isNativeError(error) && error.code === 'pending_command_conflict') continue; throw error; }
           const claimedSnapshot = (this.store.authority?.(scope, runId) ?? this.store.load(scope, runId)).snapshot;
-          const batch = await this.execute(claimedSnapshot, config, claimed, controller.signal, lease.fence);
+          const batch = await this.execute(claimedSnapshot, config, claimed, controller.signal, lease.fence, detachSignal);
           this.commit(claimedSnapshot, lease, batch);
           continue;
         }
         const next = plan({ ...snapshot, activeElapsedMs: this.elapsed(snapshot) }, config, { context: !!this.ports.context, workspace: !!this.ports.workspace,
-          verification: !!this.ports.verification, input: !!this.ports.input }, this.digest, this.policies);
+          verification: !!this.ports.verification && this.ports.verification.available?.(config) !== false,
+          input: !!this.ports.input }, this.digest, this.policies);
         if (!next) return snapshot;
         try { this.commit(snapshot, lease, next); }
         catch (error) { if (isNativeError(error) && error.code === 'pending_command_conflict') continue; throw error; }
@@ -465,6 +476,7 @@ export class NativeKernel {
     } finally {
       clearInterval(heartbeat); this.active.delete(key); this.clockAnchors.delete(key);
       signal?.removeEventListener('abort', externalAbort);
+      detachSignal?.removeEventListener('abort', detach);
       try { this.store.release(scope, runId, lease); }
       catch (error) { if (!(isNativeError(error) && error.code === 'stale_fence')) throw error; }
     }
@@ -611,7 +623,8 @@ export class NativeKernel {
     }
     return recoverClaimed(snapshot, config, intent, this.now(), observedFacts);
   }
-  private async execute(snapshot: RunSnapshot, configuration: RunConfiguration, intent: EffectIntent, signal: AbortSignal, executionFence: number): Promise<CommitBatch> {
+  private async execute(snapshot: RunSnapshot, configuration: RunConfiguration, intent: EffectIntent, signal: AbortSignal,
+    executionFence: number, detachSignal?: AbortSignal): Promise<CommitBatch> {
     const started = this.monotonicNow(), abort = new AbortController();
     const effectSignal = AbortSignal.any([signal, abort.signal]);
     const context: PortContext = { scope: copy(snapshot.scope), runId: snapshot.runId, sessionId: snapshot.sessionId,
@@ -734,12 +747,15 @@ export class NativeKernel {
             changes.todos = { ...copy(snapshot.todos), assistantTurns,
               ...(result.toolCalls.some(call => call.name === this.policies.forRun(configuration).todo.TODO_WRITE) ? { lastWriteAssistantTurn: assistantTurns } : {}) };
           }
-          facts.push({ kind: 'model.completed', payload: { kind: result.kind, text: rejectedDraft ? '' : result.text,
-            ...(rejectedDraft ? { candidateStatus: 'rejected' } : {}),
+          const planning = intent.payload.purpose === 'initial_plan';
+          const planText = planning && changes.initialPlanCompleted && assistantOffset >= 0 ? appended[assistantOffset]!.content : null;
+          facts.push({ kind: 'model.completed', payload: { kind: planText === null ? result.kind : 'initial_plan',
+            text: planning ? planText ?? '' : rejectedDraft ? '' : result.text,
+            ...(!planning && rejectedDraft ? { candidateStatus: 'rejected' } : {}),
             messageIndex: assistantOffset < 0 ? null : snapshot.messages.length + assistantOffset,
             messageCursor: changes.messages?.length ?? snapshot.messages.length,
             usageReported: result.usageReported !== false,
-            toolCalls: result.toolCalls.map(objectValue), usage: objectValue(result.usage) } });
+            toolCalls: planning ? [] : result.toolCalls.map(objectValue), usage: objectValue(result.usage) } });
           break;
         }
         case 'input':
@@ -920,6 +936,8 @@ export class NativeKernel {
         default: throw new NativeError('effect_port_not_implemented');
       }
     } catch (error) {
+      // Leave an unsettled claim for fenced recovery when the worker shuts down.
+      detachSignal?.throwIfAborted();
       const code = isNativeError(error) ? error.code : 'effect_port_error';
       const unavailableSource = contextSourceUnavailable(error, configuration);
       facts.push(observedEffectFailure({ operationKey: intent.operationKey, kind: intent.kind, code,
@@ -1034,10 +1052,17 @@ export class NativeKernel {
   private taskModelRequest(context: PortContext, snapshot: RunSnapshot, configuration: RunConfiguration, intent: EffectIntent): ModelRequest {
     const review = intent.payload.purpose === 'delivery_review';
     const beforeCall = { ...snapshot, usage: { ...snapshot.usage, modelCalls: snapshot.usage.modelCalls - 1 } };
-    return { ...context, profile: copy(configuration.profile), ...(review ? { purpose: 'delivery_review' as const } : {}),
-      messages: review ? snapshot.preparedContext ? modelContextMessages(snapshot, this.digest) : this.policies.forRun(configuration).review.deliveryReviewMessages(snapshot)
+    const profile = copy(configuration.profile);
+    // Admission reserved the full allowance. Lowering the dispatched request
+    // preserves that admission and the frozen Run profile.
+    if (!review && configuration.outputRecoveryPolicy === 'response-boundary/v4' && snapshot.reasoningStallRetry)
+      profile.maxOutputTokens = reasoningStallRetryTokens(profile.maxOutputTokens);
+    const messages = review ? snapshot.preparedContext ? modelContextMessages(snapshot, this.digest) : this.policies.forRun(configuration).review.deliveryReviewMessages(snapshot)
         : configuration.profile.operatorGuidancePolicy === 'journaled-system/v1' ? modelContextMessages(snapshot, this.digest)
-          : deliveryTaskMessages(beforeCall, configuration, browserTaskMessages(beforeCall, configuration, modelContextMessages(snapshot, this.digest))),
+          : deliveryTaskMessages(beforeCall, configuration, browserTaskMessages(beforeCall, configuration, modelContextMessages(snapshot, this.digest)));
+    return { ...context, profile, ...(review ? { purpose: 'delivery_review' as const } : {}),
+      ...(!review && snapshot.usage.toolCalls === 0 ? { beforeFirstTool: true as const } : {}),
+      messages: intent.payload.purpose === 'initial_plan' ? initialPlanMessages(snapshot, configuration, messages) : messages,
       tools: copy(modelToolCatalog(beforeCall, configuration, this.policies)), finalizationOnly: intent.payload.finalizationOnly === true,
       maxInlineImageBytes: configuration.limits.maxInlineImageBytes };
   }
@@ -1071,12 +1096,14 @@ export class NativeKernel {
       }
       case 'model': {
         const review = intent.payload.purpose === 'delivery_review';
-        invariant(review === this.policies.forRun(configuration).review.reviewPending(snapshot) || intent.payload.purpose === 'compaction', 'model_purpose_changed');
+        const compaction = intent.payload.purpose === 'compaction';
+        invariant(compaction || review === this.policies.forRun(configuration).review.reviewPending(snapshot)
+          && (intent.payload.purpose === 'initial_plan') === initialPlanPending(snapshot, configuration), 'model_purpose_changed');
         if (configuration.contextPolicy) {
           invariant(this.ports.context?.tokens?.tokenizerId === configuration.contextPolicy.tokenizerId
             && this.ports.context.tokens.tokenizerDigest === configuration.contextPolicy.tokenizerDigest, 'context_tokenizer_binding_mismatch');
         }
-        if (intent.payload.purpose === 'compaction') {
+        if (compaction) {
           const chunk = snapshot.contextState?.compaction?.chunk;
           invariant(chunk && chunk.projectionDigest === this.digest(chunk.messages), 'context_summary_quote_changed');
           return this.ports.model.generate({ ...context, profile: { ...copy(configuration.profile), maxOutputTokens: chunk.maxOutputTokens },
@@ -1092,6 +1119,12 @@ export class NativeKernel {
             && admission.countedInputTokens + admission.maxOutputTokens <= configuration.profile.contextWindow, 'context_admission_invalid');
         }
         const request = this.taskModelRequest(context, snapshot, configuration, intent);
+        const now = Date.now();
+        request.messages = request.messages.filter(message => {
+          const expired = expiredHostContribution(message, configuration, now);
+          invariant(!expired?.required, 'context_source_expired');
+          return !expired;
+        });
         return this.ports.model.generate(request, emit);
       }
       case 'tool': {
@@ -1205,11 +1238,12 @@ export class NativeKernel {
             } } : {}),
             countRequest: async (messages, tools, purpose, maxOutputTokens) => {
               context.signal.throwIfAborted(); assertBinding();
-              const count = await counter.countRequest({ ...context, profile: { ...copy(configuration.profile), maxOutputTokens },
-                messages: purpose === 'task' ? configuration.profile.operatorGuidancePolicy === 'journaled-system/v1'
+              const projected = purpose === 'task' ? configuration.profile.operatorGuidancePolicy === 'journaled-system/v1'
                   ? this.policies.forRun(configuration).providerContext.projectAnthropicReplay(this.policies.forRun(configuration).providerContext.operatorInputView(this.policies.forRun(configuration).providerContext.anthropicTaskFeedback(snapshot, configuration, messages), configuration.profile, this.digest), tools,
                     configuration.profile, snapshot.abandonedReplayDigests ?? [], this.digest).messages
-                  : deliveryTaskMessages(snapshot, configuration, browserTaskMessages(snapshot, configuration, messages)) : messages, tools, purpose, maxOutputTokens,
+                  : deliveryTaskMessages(snapshot, configuration, browserTaskMessages(snapshot, configuration, messages)) : messages;
+              const count = await counter.countRequest({ ...context, profile: { ...copy(configuration.profile), maxOutputTokens },
+                messages: purpose === 'task' ? initialPlanMessages(snapshot, configuration, projected) : projected, tools, purpose, maxOutputTokens,
                 maxInlineImageBytes: configuration.limits.maxInlineImageBytes });
               context.signal.throwIfAborted(); assertBinding(); return count;
             },

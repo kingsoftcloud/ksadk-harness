@@ -28,6 +28,7 @@ export interface ConfigurationInput {
   contract: Pick<TaskContract, 'objective'> & Partial<TaskContract>;
   tools?: ToolDefinition[]; limits?: Partial<RunLimits>; instructions?: string;
   hostBindingDigest: string; contextSources?: RunConfiguration['contextSources']; hooks?: RunConfiguration['hooks'];
+  hostVerification?: RunConfiguration['hostVerification'];
   stopHookContinuationLimit?: number; delegationDepth?: number;
   modelRecoveryPolicy?: RunConfiguration['modelRecoveryPolicy'];
   guidancePolicy?: RunConfiguration['guidancePolicy'];
@@ -47,6 +48,7 @@ export interface ConfigurationInput {
   childTaskPolicy?: RunConfiguration['childTaskPolicy'];
   coordinatorResponsePolicy?: RunConfiguration['coordinatorResponsePolicy'];
   planModePolicy?: RunConfiguration['planModePolicy'];
+  initialPlanPolicy?: RunConfiguration['initialPlanPolicy'];
   planModeInitialActive?: boolean;
   childPlanPolicy?: RunConfiguration['childPlanPolicy'];
   toolErrorRecoveryModelCalls?: RunConfiguration['toolErrorRecoveryModelCalls'];
@@ -90,6 +92,7 @@ export function configure(input: ConfigurationInput): RunConfiguration {
     ...(input.childCapabilityPolicy === undefined ? {} : { childCapabilityPolicy: input.childCapabilityPolicy }),
     ...(input.sessionInjectionPolicy === undefined ? {} : { sessionInjectionPolicy: input.sessionInjectionPolicy }),
     tools: input.tools ?? [], instructions: input.instructions ?? '', hostBindingDigest: input.hostBindingDigest,
+    ...(input.hostVerification === undefined ? {} : { hostVerification: input.hostVerification }),
     inputMessages: input.inputMessages ?? null,
     ...(input.conversationSeed === undefined ? {} : { conversationSeed: input.conversationSeed }),
     ...(input.conversationRewind === undefined ? {} : { conversationRewind: input.conversationRewind }),
@@ -110,6 +113,7 @@ export function configure(input: ConfigurationInput): RunConfiguration {
     ...(input.childTaskPolicy === undefined ? {} : { childTaskPolicy: input.childTaskPolicy }),
     ...(input.coordinatorResponsePolicy === undefined ? {} : { coordinatorResponsePolicy: input.coordinatorResponsePolicy }),
     ...(input.planModePolicy === undefined ? {} : { planModePolicy: input.planModePolicy }),
+    ...(input.initialPlanPolicy === undefined ? {} : { initialPlanPolicy: input.initialPlanPolicy }),
     ...(input.planModeInitialActive === undefined ? {} : { planModeInitialActive: input.planModeInitialActive }),
     ...(input.childPlanPolicy === undefined ? {} : { childPlanPolicy: input.childPlanPolicy }),
     ...(input.toolErrorRecoveryModelCalls === undefined
@@ -159,9 +163,9 @@ export function configure(input: ConfigurationInput): RunConfiguration {
     && typeof config.hostRecoveryBinding === 'object' && !Array.isArray(config.hostRecoveryBinding), 'invalid_host_recovery_binding');
   invariant(config.guidancePolicy == null || config.guidancePolicy === 'boundary-guide/v1', 'invalid_guidance_policy');
   invariant(config.inputPolicy === undefined || config.inputPolicy === 'before-first-model/v1', 'invalid_input_policy');
-  invariant(config.outputRecoveryPolicy == null || ['task-or-delivery/v1', 'response-boundary/v2', 'response-boundary/v3'].includes(config.outputRecoveryPolicy), 'invalid_output_recovery_policy');
+  invariant(config.outputRecoveryPolicy == null || ['task-or-delivery/v1', 'response-boundary/v2', 'response-boundary/v3', 'response-boundary/v4', 'response-boundary/v5'].includes(config.outputRecoveryPolicy), 'invalid_output_recovery_policy');
   invariant(config.outputRestartPolicy === undefined || ['per-response/v1', 'per-response/v2'].includes(config.outputRestartPolicy)
-    && ['response-boundary/v2', 'response-boundary/v3'].includes(config.outputRecoveryPolicy ?? ''), 'invalid_output_restart_policy');
+    && ['response-boundary/v2', 'response-boundary/v3', 'response-boundary/v4', 'response-boundary/v5'].includes(config.outputRecoveryPolicy ?? ''), 'invalid_output_restart_policy');
   invariant(config.approvalOutcomePolicy === undefined || config.approvalOutcomePolicy === 'owner-outcome/v1', 'invalid_approval_outcome_policy');
   invariant(config.providerRecoveryPolicy == null || config.providerRecoveryPolicy === 'provider-recovery/v2', 'invalid_provider_recovery_policy');
   invariant(config.toolExecutionPolicy === undefined || config.toolExecutionPolicy === 'owner-execution/v1', 'invalid_tool_execution_policy');
@@ -249,7 +253,7 @@ export function configure(input: ConfigurationInput): RunConfiguration {
     const policy = profile.providerCompatibilityPolicy;
     invariant(policy !== null && typeof policy === 'object' && !Array.isArray(policy)
       && Object.keys(policy).every(key => ['contract', 'rule'].includes(key))
-      && ['provider-compat/v1', 'provider-compat/v2', 'provider-compat/v3', 'provider-compat/v4'].includes(policy.contract)
+      && ['provider-compat/v1', 'provider-compat/v2', 'provider-compat/v3', 'provider-compat/v4', 'provider-compat/v5'].includes(policy.contract)
       && ['auto', 'permissive', 'openai', 'strict-openai', 'cerebras', 'groq', 'deepseek',
         'zai', 'kspmas-gateway', 'moonshot', 'mimo'].includes(policy.rule), 'invalid_provider_compatibility_policy');
   }
@@ -288,6 +292,19 @@ export function configure(input: ConfigurationInput): RunConfiguration {
   validateDeliveryConfiguration(config);
   validateCoordinatorConfiguration(config);
   validatePlanModeConfiguration(config);
+  const verifier = config.hostVerification;
+  if (verifier !== undefined) {
+    invariant(verifier && /^sha256:[a-f0-9]{64}$/.test(verifier.bindingDigest)
+      && config.contract.acceptance.some(item => item.required && item.verificationMethod === 'deterministic'
+        && item.verifierRef === verifier.verifierRef && item.verifierVersion === verifier.verifierVersion)
+      && Array.isArray(verifier.evidenceTools) && verifier.evidenceTools.length <= 16
+      && new Set(verifier.evidenceTools).size === verifier.evidenceTools.length
+      && verifier.evidenceTools.every(name => config.tools.some(tool => tool.name === name))
+      && (verifier.contextSourceId === null || config.contextSources.some(source => source.sourceId === verifier.contextSourceId)),
+    'invalid_host_verification_binding');
+  }
+  invariant(config.initialPlanPolicy === undefined || config.initialPlanPolicy === 'plan-act-observe/v1',
+    'invalid_initial_plan_policy');
   const names = new Set<string>();
   for (const tool of config.tools) {
     invariant(tool.name.trim() && !names.has(tool.name), 'duplicate_or_invalid_tool');
@@ -296,6 +313,11 @@ export function configure(input: ConfigurationInput): RunConfiguration {
     invariant(Number.isFinite(tool.timeoutMs) && tool.timeoutMs > 0 && tool.timeoutMs < limits.effectTimeoutMs, 'invalid_tool_timeout');
     invariant(tool.executionTimeoutPolicy === undefined || ['dispatch/v1', 'dispatch/v2'].includes(tool.executionTimeoutPolicy), 'invalid_tool_execution_timeout_policy');
     invariant(tool.approvalPolicy === undefined || tool.approvalPolicy === 'durable-preflight/v1', 'invalid_tool_approval_policy');
+    invariant(tool.hostApprovalRequired === undefined || tool.hostApprovalRequired === true
+      && tool.approvalPolicy === 'durable-preflight/v1', 'invalid_tool_host_approval_policy');
+    invariant(tool.hostEffectProtocol === undefined
+      || tool.hostEffectProtocol === 'agentkit.engine-host-tool-effect/v1' && !tool.readOnly,
+    'invalid_tool_host_effect_protocol');
     invariant(!tool.concurrentSafe || tool.readOnly && tool.observationRole === 'none', 'invalid_tool_concurrency');
     invariant(tool.workspaceEditPolicy === undefined || ['zcode-match/v1', 'zcode-match/v2'].includes(tool.workspaceEditPolicy)
       && ['edit_workspace_file', 'multi_edit_workspace_file'].includes(tool.name)

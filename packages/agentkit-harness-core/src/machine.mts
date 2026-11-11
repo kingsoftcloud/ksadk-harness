@@ -16,7 +16,7 @@ import { rememberCommand } from './background-runtime.mjs';
 import { admittedToolBudget, outstandingChildCalls, reduceChildBudget } from './child-budget.mjs';
 import { prepareChildLifecycle, unsettledChildren } from './child-runtime.mjs';
 import { toolResourceUsage, toolUsageIncomplete } from './tool-resource-usage.mjs';
-import { completeContinuation, outputRecoveryMode, restartContinuation } from './output-recovery.mjs';
+import { completeContinuation, outputRecoveryMode, reasoningStall, reasoningStallRetryTokens, restartContinuation } from './output-recovery.mjs';
 import { responseBoundaryRecovery, responseContinuationPending, responseScopedOutputRestarts } from './response-continuation.mjs';
 import { advanceDiagnosticRecovery, advanceObservedProgress, advanceToolErrorStreak, guardedToolErrorAction,
   refuseUndiagnosedToolAction, reserveDiagnosticTrial, toolErrorRecoveryBoundary, toolErrorRecoveryEnabled,
@@ -66,8 +66,18 @@ export function finalizationOnly(snapshot: RunSnapshot, config: RunConfiguration
   const calls = modelRoom(snapshot, config);
   return calls <= config.limits.finalizationReserveModelCalls;
 }
+export function initialPlanPending(snapshot: RunSnapshot, config: RunConfiguration): boolean {
+  return config.initialPlanPolicy === 'plan-act-observe/v1' && !snapshot.initialPlanCompleted;
+}
+export function initialPlanMessages(snapshot: RunSnapshot, config: RunConfiguration, messages: Message[]): Message[] {
+  if (!initialPlanPending(snapshot, config)) return messages;
+  const instruction = responseContinuationPending(snapshot, config)
+    ? 'Continue the unfinished execution plan. Return only its missing text suffix.'
+    : 'First give a concise step-by-step execution plan for the current user request. Tools are unavailable in this step. The next step will execute the plan.';
+  return [{ role: 'system', content: instruction }, ...messages];
+}
 export function advertisedTools(snapshot: RunSnapshot, config: RunConfiguration, policies = new NativePolicyRegistry()) {
-  if (responseContinuationPending(snapshot, config)) return [];
+  if (initialPlanPending(snapshot, config) || responseContinuationPending(snapshot, config)) return [];
   if (policies.forRun(config).review.reviewPending(snapshot)) return policies.forRun(config).review.deliveryReviewTools(snapshot, config);
   const submission = finalSubmissionTool(config);
   const tools = finalizationOnly(snapshot, config) || toolRoom(snapshot, config) <= 0 ? []
@@ -80,7 +90,7 @@ export function advertisedTools(snapshot: RunSnapshot, config: RunConfiguration,
 export interface PlanCapabilities { context: boolean; workspace: boolean; verification: boolean; input?: boolean }
 /** Stable declaration is distinct from the per-turn execution admission above. */
 export function modelToolCatalog(snapshot: RunSnapshot, config: RunConfiguration, policies = new NativePolicyRegistry()) {
-  if (responseContinuationPending(snapshot, config)) return [];
+  if (initialPlanPending(snapshot, config) || responseContinuationPending(snapshot, config)) return [];
   if ((config.profile.toolCatalogPolicy !== 'stable-task/v1' && config.profile.providerToolSearchPolicy !== 'anthropic-deferred/v1')
     || policies.forRun(config).review.reviewPending(snapshot)) return discoveryModelTools(snapshot, config, advertisedTools(snapshot, config, policies));
   const submission = finalSubmissionTool(config);
@@ -216,6 +226,8 @@ export function plan(snapshot: RunSnapshot, config: RunConfiguration, capabiliti
       if (candidate) return transition(snapshot, { phase: 'verifying', candidate, verification: null, preparedContext: null },
         [{ kind: 'verification.checkpoint_started', payload: { workspaceRevision: snapshot.workspaceRevision } }]);
     }
+    if (initialPlanPending(snapshot, config)) return prepareEffect(snapshot, 'model', 'requesting_model',
+      { purpose: 'initial_plan', finalizationOnly: false });
     return prepareEffect(snapshot, 'model', 'requesting_model', policies.forRun(config).review.reviewPending(snapshot)
       ? { purpose: 'delivery_review', finalizationOnly: false } : { finalizationOnly: finalizationOnly(snapshot, config) },
       policies.forRun(config).review.reviewPending(snapshot) ? {} : policies.forRun(config).providerContext.captureAnthropicContext(snapshot, config, modelToolCatalog(snapshot, config, policies), digest));
@@ -243,11 +255,11 @@ export function plan(snapshot: RunSnapshot, config: RunConfiguration, capabiliti
         [{ kind: 'tools.budget_exhausted', payload: {} }]);
     }
     let calls: ToolCall[] = [first];
-    if (definition.readOnly && definition.concurrentSafe && !definition.delegatedReadOnly && !guardedToolErrorAction(snapshot, first, digest)) {
+    if (definition.readOnly && definition.concurrentSafe && !definition.approvalPolicy && !definition.delegatedReadOnly && !guardedToolErrorAction(snapshot, first, digest)) {
       calls = [];
       for (const call of snapshot.pendingTools.slice(0, Math.min(config.limits.maxParallelTools, toolRoom(snapshot, config)))) {
         const tool = config.tools.find(item => item.name === call.name);
-        if (!tool?.readOnly || !tool.concurrentSafe || tool.delegatedReadOnly || tool.observationRole !== 'none') break;
+        if (!tool?.readOnly || !tool.concurrentSafe || tool.approvalPolicy || tool.delegatedReadOnly || tool.observationRole !== 'none') break;
         if (guardedToolErrorAction(snapshot, call, digest)) break;
         calls.push(call);
       }
@@ -338,12 +350,22 @@ export function reduceModel(snapshot: RunSnapshot, input: ModelResult, config: R
   // errors, malformed calls and context-overflow retries keep this input debt.
   if (snapshot.hookState && ['tool_calls', 'final_candidate', 'output_limit'].includes(result.kind)
     && (result.toolCalls.length > 0 || result.text.trim())) base.hookState = { ...currentHookState(snapshot), feedback: [] };
+  const stalled = config.outputRecoveryPolicy === 'response-boundary/v4' && reasoningStall(result);
+  // Keep the narrowed retry through transport errors and context preparation.
+  // A sealed cutoff with text or an unfinished tool call uses the ordinary budget again.
+  if (snapshot.reasoningStallRetry && (result.kind === 'tool_calls' || result.kind === 'final_candidate'
+    || result.kind === 'output_limit' && !stalled)) base.reasoningStallRetry = false;
   const message: Message = { role: 'assistant', content: result.text,
     ...(config.contextPolicy?.pruneIdleThresholdMinutes !== undefined && Number.isSafeInteger(now) && now >= 0
       && ['tool_calls', 'final_candidate', 'output_limit'].includes(result.kind) ? { completedAtMs: now } : {}),
     ...(replay ? { providerReplay: replay, ...(result.replayToolIds ? { replayToolIds: result.replayToolIds } : {}) } : {}) };
   switch (result.kind) {
     case 'tool_calls':
+      if (initialPlanPending(snapshot, config)) {
+        const errors = snapshot.modelErrors + 1, exhausted = errors > config.profile.maxRetries;
+        return { ...base, phase: exhausted ? 'finalizing' : 'preparing_context', pendingTools: [],
+          modelErrors: errors, outcome: exhausted ? 'blocked' : null, reason: exhausted ? 'initial_plan_invalid' : null };
+      }
       if (responseContinuationPending(snapshot, config)) {
         const errors = snapshot.modelErrors + 1, exhausted = errors > config.profile.maxRetries;
         return { ...base, pendingTools: [], modelErrors: errors, phase: exhausted ? 'finalizing' : 'preparing_context',
@@ -398,6 +420,17 @@ export function reduceModel(snapshot: RunSnapshot, input: ModelResult, config: R
         continuations: 0, modelErrors: 0,
         ...(responseScopedOutputRestarts(config) ? { outputRestarts: 0 } : {}) };
     case 'final_candidate': {
+      if (initialPlanPending(snapshot, config)) {
+        const text = completeContinuation(snapshot.messages, result.text, digest).trim();
+        if (!text) {
+          const errors = snapshot.modelErrors + 1, exhausted = errors > config.profile.maxRetries;
+          return { ...base, phase: exhausted ? 'finalizing' : 'preparing_context', modelErrors: errors,
+            outcome: exhausted ? 'failed' : null, reason: exhausted ? 'initial_plan_empty' : null };
+        }
+        return { ...base, phase: 'preparing_context', initialPlanCompleted: true, modelErrors: 0,
+          continuations: 0, outputRestarts: 0,
+          messages: [...snapshot.messages, { role: 'assistant', kind: 'initial_plan', content: text }] };
+      }
       if (config.contract.finalSubmissionSchema) {
         const errors = snapshot.modelErrors + 1;
         const exhausted = errors > config.profile.maxRetries || modelRoom(snapshot, config) <= 0;
@@ -414,6 +447,10 @@ export function reduceModel(snapshot: RunSnapshot, input: ModelResult, config: R
     }
     case 'output_limit': {
       const resumable = config.outputRestartPolicy === 'per-response/v2';
+      const boundedRecovery = config.outputRecoveryPolicy === 'response-boundary/v4' || config.outputRecoveryPolicy === 'response-boundary/v5';
+      // Honor stricter caller limits. The experimental retry spends the same
+      // continuation allowance as the ordinary retry.
+      const continuationLimit = boundedRecovery ? Math.min(config.profile.maxContinuations, 2) : config.profile.maxContinuations;
       const continuation = () => {
         const mode = result.text ? outputRecoveryMode({ ...snapshot, ...base }, config,
           advertisedTools({ ...snapshot, ...base }, config, policies).length > 0, result) : 'empty_output';
@@ -435,11 +472,22 @@ export function reduceModel(snapshot: RunSnapshot, input: ModelResult, config: R
         ? { phase: 'paused', resumePhase: 'preparing_context', outcome: null, reason: 'output_budget_exhausted',
           messages: result.text ? continuation().messages : snapshot.messages }
         : { phase: 'finalizing', outcome: 'unverified', reason: 'continuation_budget_exhausted' };
-      if (snapshot.continuations >= config.profile.maxContinuations) {
+      if (stalled) {
+        if (snapshot.reasoningStallRetry || snapshot.continuations >= continuationLimit
+          || reasoningStallRetryTokens(config.profile.maxOutputTokens) >= config.profile.maxOutputTokens)
+          return { ...base, ...exhausted(), messages: snapshot.messages };
+        const suffix = responseContinuationPending(snapshot, config);
+        return { ...base, phase: 'preparing_context', reasoningStallRetry: true, continuations: snapshot.continuations + 1,
+          messages: [...snapshot.messages, { role: 'user',
+            kind: suffix ? 'response_continuation_feedback' : 'output_limit_reasoning_observation',
+            content: suffix ? 'Continue with only the missing text suffix now.'
+              : 'The previous attempt spent its output budget on reasoning without taking action. Take the next useful tool action now, or answer directly if the task is complete.' }] };
+      }
+      if (snapshot.continuations >= continuationLimit) {
         // Committed answer text stays a suffix contract even when the first
         // response has no remaining continuation allowance. It is not a tool
         // fragment that may be discarded for an output restart.
-        if (responseContinuationPending(snapshot, config) || resumable && continuation().mode === 'suffix')
+        if (boundedRecovery || responseContinuationPending(snapshot, config) || resumable && continuation().mode === 'suffix')
           return { ...base, ...exhausted() };
         if (snapshot.outputRestarts < config.limits.maxOutputRestarts) {
           try { return { ...base, ...restartContinuation(snapshot, config, result.text, digest), phase: 'preparing_context',

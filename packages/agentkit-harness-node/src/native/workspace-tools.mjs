@@ -1108,6 +1108,8 @@ export function createNativeWorkspaceTools({
           throw e;
         }
         if (decision === 'deny') return { status: 'error', content: { code: 'policy_denied' } };
+        if (request.definition?.approvalPolicy === 'durable-preflight/v1' && decision?.status === 'approval_required'
+          && decision.approvalPolicy === request.definition.approvalPolicy && typeof decision.interactionId === 'string') return decision;
         if (decision === 'approval_required') {
           const pending = store.addPending({
             callId: call.callId, name, argumentsDigest: argumentsDigest(call.arguments),

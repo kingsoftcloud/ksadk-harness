@@ -29,7 +29,7 @@ export function engineEventToTimeline(event, { runId = "run" } = {}) {
     case "model.completed": {
       const out = [];
       // Commentary that accompanies tool calls is progress, not the answer.
-      if (text(event.detail) && Array.isArray(event.calls) && event.calls.length) {
+      if (text(event.detail) && (event.title === "initial_plan" || Array.isArray(event.calls) && event.calls.length)) {
         const itemId = `${runId}:note:${event.seq}`;
         out.push({ v, id: id("note"), type: "text.delta", itemId, delta: event.detail },
           { v, id: id("note-done"), type: "text.done", itemId });

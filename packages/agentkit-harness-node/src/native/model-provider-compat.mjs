@@ -1,5 +1,6 @@
 // Frozen Chat Completions request policy, ported from the pinned Python
 // model_proxy.compat and transform.model-effort-map/v2. No IO or retries here.
+import { FINAL_SUBMISSION_TOOL } from '@kingsoftcloud/agentkit-harness-core';
 import { admitInlineReasoningPolicy, resolveCompatibilityRule } from './model-inline-reasoning.mjs';
 import { ProtocolError } from './model-normalize.mjs';
 
@@ -44,29 +45,30 @@ export function applyAnthropicThinking(payload, profile, binding) {
 }
 
 export function admitProviderCompatibilityPolicy(override) {
-  return { contract: 'provider-compat/v4', rule: admitInlineReasoningPolicy(override).rule };
+  return { contract: 'provider-compat/v5', rule: admitInlineReasoningPolicy(override).rule };
 }
 
 export function resolveProviderCompatibility(policy, binding) {
   if (!policy) return null;
-  if (!['provider-compat/v1', 'provider-compat/v2', 'provider-compat/v3', 'provider-compat/v4'].includes(policy.contract)) throw new ProtocolError('invalid_provider_compatibility_policy');
+  const version = ['provider-compat/v1', 'provider-compat/v2', 'provider-compat/v3', 'provider-compat/v4', 'provider-compat/v5'].indexOf(policy.contract) + 1;
+  if (!version) throw new ProtocolError('invalid_provider_compatibility_policy');
   const rule = resolveCompatibilityRule(policy.rule, binding);
   const name = String(binding.model ?? '').trim().toLowerCase();
   const kimi = ['kspmas-gateway', 'moonshot'].includes(rule)
     && ['kimi-k2.7-code', 'kimi-k2.7-code-highspeed'].includes(name);
-  const modern = ['provider-compat/v3', 'provider-compat/v4'].includes(policy.contract);
+  const modern = version >= 3;
   const reasoningRequired = modern && rule === 'kspmas-gateway' && name === 'glm-5.3-flash';
   const disabledEfforts = mandatory.has(name) || reasoningRequired ? [] : name === 'claude-haiku-5-5' ? ['low', 'medium', 'high'] : null;
   return { rule, supportsUsage: !strict.has(rule), supportsThinking: !strict.has(rule) && !kimi,
-    supportsToolArgumentStreaming: ['provider-compat/v2', 'provider-compat/v3', 'provider-compat/v4'].includes(policy.contract)
+    supportsToolArgumentStreaming: version >= 2
       && ['zai', 'kspmas-gateway'].includes(rule) && incrementalToolModels.has(normalized(binding.model)),
-    reasoningRequired, modern,
+    reasoningRequired, modern, firstToolLowEffort: version >= 5 && reasoningRequired,
     // This route already uses the supported non-thinking mode for tool work.
     // A bounded summary has no tools: omitting the switch can instead select
     // the provider's default high reasoning and consume its whole output cap.
     // Freeze this purpose-specific default only on new admissions; mandatory
     // thinking models and explicit caller choices remain authoritative.
-    compactionThinkingOff: policy.contract === 'provider-compat/v4' && rule === 'kspmas-gateway' && !kimi,
+    compactionThinkingOff: version >= 4 && rule === 'kspmas-gateway' && !kimi,
     // Only the observed provider/model dialects may seal without [DONE].
     finishOnEof: modern && ['permissive', 'kspmas-gateway'].includes(rule)
       && ['minimax-m3', 'minimax-m2.5'].includes(name),
@@ -105,7 +107,11 @@ export function applyProviderChatCompatibility(payload, request, binding) {
   }
   const model = binding.model, name = normalized(model);
   const requested = options.reasoningEffort ?? result.reasoning_effort ?? null;
+  const mode = options.thinkingMode ?? result.thinking?.type;
   let effort = requested;
+  if (requested === null && mode === undefined && compat.firstToolLowEffort && request.beforeFirstTool
+    && !request.finalizationOnly && result.tool_choice !== 'none'
+    && result.tools?.some(tool => tool.type === 'function' && tool.function?.name !== FINAL_SUBMISSION_TOOL)) effort = 'low';
   if (requested === null && options.controllerReasoningPolicy === 'disclosed-delegate/v1'
     && ['zai', 'kspmas-gateway'].includes(compat.rule) && name.startsWith('glm-5.3')
     && result.tools?.some(tool => tool.type === 'function' && tool.function?.name === 'delegate_task')) effort = 'low';
@@ -119,7 +125,6 @@ export function applyProviderChatCompatibility(payload, request, binding) {
     result.stream_options = { ...result.stream_options }; delete result.stream_options.include_usage;
     if (!Object.keys(result.stream_options).length) delete result.stream_options;
   }
-  const mode = options.thinkingMode ?? result.thinking?.type;
   if (mode === 'disabled' && compat.reasoningRequired) throw new ProtocolError('model_thinking_disable_unsupported');
   const mayDisable = compat.supportsThinking && (compat.disabledEfforts === null || compat.disabledEfforts.includes(effort));
   const summaryOff = request.purpose === 'compaction' && requested === null && compat.rule === 'kspmas-gateway' && name === 'glm-5.3-flash';

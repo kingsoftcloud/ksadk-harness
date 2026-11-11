@@ -112,7 +112,7 @@ export function nativeChildRoles(spec = {}, { childAllocationPolicy } = {}) {
 
 /** Bind every child to a declared role and its own scoped tool state. */
 export async function createNativeChildren({ roles, scope, sessionId, store, tools, hasSkills, hasMcp, mcpBinding, skillBinding, skillInstructions, workspaceContext, instructionTimeoutRecovery,
-  resolveModel, bindTools, verificationFactory, fileWorkspaces, commandResource, isClosed, onStream, a2aBinding, waitForChildReceipt, mediaSources = new Map(), artifactPolicy, artifactFactory, sourceReadPolicy, childTaskPolicy, childPlanPolicy, childAllocationPolicy, childCapabilityPolicy, outputRecoveryPolicy, outputRestartPolicy, approvalOutcomePolicy, conversationPresentation, toolExecutionPolicy, toolAdmissionPolicy, providerRecoveryPolicy, modelSurface, goalContractFactory = ({ goal }) => ({ objective: goal }) }) {
+  resolveModel, bindTools, verificationFactory, fileWorkspaces, commandResource, isClosed, onStream, detachSignal, a2aBinding, waitForChildReceipt, mediaSources = new Map(), artifactPolicy, artifactFactory, sourceReadPolicy, childTaskPolicy, childPlanPolicy, childAllocationPolicy, childCapabilityPolicy, outputRecoveryPolicy, outputRestartPolicy, approvalOutcomePolicy, conversationPresentation, toolExecutionPolicy, toolAdmissionPolicy, providerRecoveryPolicy, modelSurface, goalContractFactory = ({ goal }) => ({ objective: goal }), restrictTools }) {
   if (!roles.length) return null;
   if (workspaceContext !== undefined) {
     validateNativeWorkspaceContext(workspaceContext);
@@ -124,9 +124,9 @@ export async function createNativeChildren({ roles, scope, sessionId, store, too
   invariant(toolAdmissionPolicy === undefined || toolAdmissionPolicy === 'discover-before-retry/v1', 'studio_native_child_admission_policy_invalid');
   invariant(toolExecutionPolicy === undefined || toolExecutionPolicy === 'owner-execution/v1', 'studio_native_child_execution_policy_invalid');
   invariant(providerRecoveryPolicy === undefined || providerRecoveryPolicy === 'provider-recovery/v2', 'native_child_provider_recovery_policy_invalid');
-  invariant(outputRecoveryPolicy === undefined || ['response-boundary/v2', 'response-boundary/v3'].includes(outputRecoveryPolicy), 'studio_native_child_output_policy_invalid');
+  invariant(outputRecoveryPolicy === undefined || ['response-boundary/v2', 'response-boundary/v3', 'response-boundary/v4', 'response-boundary/v5'].includes(outputRecoveryPolicy), 'studio_native_child_output_policy_invalid');
   invariant(outputRestartPolicy === undefined || ['per-response/v1', 'per-response/v2'].includes(outputRestartPolicy)
-    && ['response-boundary/v2', 'response-boundary/v3'].includes(outputRecoveryPolicy), 'native_child_output_restart_policy_invalid');
+    && ['response-boundary/v2', 'response-boundary/v3', 'response-boundary/v4', 'response-boundary/v5'].includes(outputRecoveryPolicy), 'native_child_output_restart_policy_invalid');
   invariant(approvalOutcomePolicy === undefined || approvalOutcomePolicy === 'owner-outcome/v1', 'native_child_approval_outcome_policy_invalid');
   if (conversationPresentation !== undefined) validateConversationPresentation(conversationPresentation);
   invariant(childTaskPolicy === undefined || childTaskPolicy === CHILD_TASK_POLICY, 'studio_native_child_task_policy_invalid');
@@ -187,14 +187,16 @@ export async function createNativeChildren({ roles, scope, sessionId, store, too
     ? createStudioNativeChildMerge({ scope, sessionId, store, roles, fileWorkspaces, isClosed,
       previousPublication: previousChildPublication, authorize: async () => 'allow' }) : null;
   const readers = createNativeChildResultTools({ scope, childScopes: roles.map(childScope), store, roles: roles.map(role => role.name) });
-  const owner = createNativeChildOwner({ scope, onStream, childScopes: roles.map(childScope), store,
+  const owner = createNativeChildOwner({ scope, onStream, detachSignal, childScopes: roles.map(childScope), store,
     ...(childCapabilityPolicy ? { admitRequirements: args => admitChildCapabilities(
       [...bindings].map(([role, bound]) => ({ role, tools: bound.tools.map(tool => tool.name).sort() })), args.role, args.required_tools) } : {}),
     ...(childAllocationPolicy ? { childAllocationPolicy } : {}),
     ...(waitForChildReceipt ? { canWaitForReceipt: record => !!nativeA2aReceiptWaitSource(record), waitForIdle: waitForChildReceipt } : {}),
     resolveChild: async request => {
-      const role = byName.get(request.role), bound = bindings.get(request.role);
-      invariant(role && bound, 'studio_native_child_role_unbound');
+      const role = byName.get(request.role), available = bindings.get(request.role);
+      invariant(role && available, 'studio_native_child_role_unbound');
+      const bound = restrictTools ? { ...available, tools: restrictTools(available.tools,
+        store.authority(request.parent.scope, request.parent.runId).configuration) } : available;
       const args = request.call.arguments;
       const refs = args.media ?? [];
       invariant(Array.isArray(refs) && refs.length <= 20 && refs.every(ref => ref && typeof ref === 'object'
@@ -299,8 +301,10 @@ export async function createNativeChildren({ roles, scope, sessionId, store, too
           input: ports.input, store, scope: child, sessionId: request.childSessionId, tools: bound.tools }), verification } };
     },
     restoreChild: async ({ identity, configuration, binding }) => {
-      const bound = bindings.get(binding.role), role = byName.get(binding.role);
+      const available = bindings.get(binding.role), role = byName.get(binding.role);
       const parent = store.load(binding.parent.scope, binding.parent.runId);
+      const bound = available && restrictTools
+        ? { ...available, tools: restrictTools(available.tools, parent.configuration) } : available;
       const call = parent.intents.find(item => item.operationKey === binding.parentOperationKey)?.payload.calls
         ?.find(item => item.callId === binding.parentToolCallId);
       invariant(call && role, 'studio_native_child_restore_binding_changed');
@@ -324,6 +328,7 @@ export async function createNativeChildren({ roles, scope, sessionId, store, too
       // Reconstruct the same normalized profile, rather than comparing it to
       // the Host's deliberately partial input and rejecting every live child.
       const profile = bound && configure({ profile: bound.model.profile, contract: configuration.contract,
+        limits: { effectTimeoutMs: configuration.limits.effectTimeoutMs },
         hostBindingDigest: configuration.hostBindingDigest }).profile;
       invariant(bound && role && canonical(configuration.tools) === canonical(bound.tools)
         && configuration.outputRecoveryPolicy === outputRecoveryPolicy

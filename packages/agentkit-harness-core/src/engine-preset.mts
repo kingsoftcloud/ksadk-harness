@@ -13,9 +13,11 @@ import { invariant } from './values.mjs';
  * Hosts must not copy the returned literals into their own source. */
 export const ENGINE_PRESET_CONTRACT = 'agentkit.engine-preset/v1';
 export const OFFICIAL_ENGINE_PRESET = 'official';
+const EXPERIMENTAL_REASONING_STALL_PRESET = 'experimental-reasoning-stall';
 
 /** Bump when the meaning of `official` changes for new Runs. */
-const OFFICIAL_REVISION = 1;
+const OFFICIAL_REVISION = 3;
+const EXPERIMENTAL_REASONING_STALL_REVISION = 1;
 
 /** Largest single response the engine asks for by default. Long greenfield
  * edits need roughly 30k tokens in one response; smaller requests exhaust
@@ -25,7 +27,7 @@ const MINIMUM_REQUEST_OUTPUT_TOKENS = 1024;
 
 export interface EnginePresetRequest {
   preset?: string;
-  /** Host-declared model call budget; null or undefined means unbounded. */
+  /** Host-declared model call budget. Accepted for host compatibility. */
   maxModelCalls?: number | null;
 }
 
@@ -44,22 +46,23 @@ export interface EnginePreset {
 }
 
 export function listEnginePresets(): readonly string[] {
-  return Object.freeze([OFFICIAL_ENGINE_PRESET]);
+  return Object.freeze([OFFICIAL_ENGINE_PRESET, EXPERIMENTAL_REASONING_STALL_PRESET]);
 }
 
 export function resolveEnginePreset(request: EnginePresetRequest = {}): EnginePreset {
   invariant(request !== null && typeof request === 'object' && !Array.isArray(request)
     && Object.keys(request).every(key => ['preset', 'maxModelCalls'].includes(key)), 'invalid_engine_preset_request');
   const preset = request.preset ?? OFFICIAL_ENGINE_PRESET;
-  invariant(preset === OFFICIAL_ENGINE_PRESET, 'unknown_engine_preset');
+  const experimental = preset === EXPERIMENTAL_REASONING_STALL_PRESET;
+  invariant(preset === OFFICIAL_ENGINE_PRESET || experimental, 'unknown_engine_preset');
   const maxModelCalls = request.maxModelCalls ?? null;
   invariant(maxModelCalls === null || Number.isSafeInteger(maxModelCalls) && maxModelCalls >= 1, 'invalid_engine_preset_request');
   return {
-    contract: ENGINE_PRESET_CONTRACT, preset, revision: OFFICIAL_REVISION,
+    contract: ENGINE_PRESET_CONTRACT, preset,
+    revision: experimental ? EXPERIMENTAL_REASONING_STALL_REVISION : OFFICIAL_REVISION,
     policies: {
       providerRecoveryPolicy: 'provider-recovery/v2',
-      // v3: truncated commentary is unfinished work while tools remain available.
-      outputRecoveryPolicy: 'response-boundary/v3',
+      outputRecoveryPolicy: experimental ? 'response-boundary/v4' : 'response-boundary/v5',
       // v2: an admitted tool step ends the truncation streak and exhaustion pauses.
       outputRestartPolicy: 'per-response/v2',
       toolExecutionPolicy: 'owner-execution/v1',
@@ -71,8 +74,7 @@ export function resolveEnginePreset(request: EnginePresetRequest = {}): EnginePr
       // Results are the answer plus the artifacts it names.
       deliveryScopePolicy: 'answer-artifacts/v2',
     },
-    // Short bounded Runs cannot afford a full restart of the output budget.
-    limits: { maxOutputRestarts: maxModelCalls === null || maxModelCalls >= 20 ? 1 : 0 },
+    limits: { maxOutputRestarts: 0 },
     toolOptions: { executionTimeoutPolicy: 'dispatch/v2', workspaceEditPolicy: 'zcode-match/v2' },
   };
 }

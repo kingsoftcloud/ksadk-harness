@@ -34,7 +34,7 @@ async function observeWhileLive(operation, signal) {
  * an environment/profile fallback. This service does not advertise model tools.
  */
 export function createNativeChildOwner({ scope, childScopes = [scope], store, resolveChild, restoreChild, waitForIdle, canWaitForReceipt, onStream, now = Date.now,
-  childAllocationPolicy, admitRequirements, owner = `native-children-${randomUUID()}` }) {
+  childAllocationPolicy, admitRequirements, detachSignal, owner = `native-children-${randomUUID()}` }) {
   const parentScope = copy(scope), entries = new Map();
   scopeKey(parentScope);
   check(childAllocationPolicy === undefined || childAllocationPolicy === CHILD_ALLOCATION_POLICY, 'invalid_child_owner_allocation_policy');
@@ -120,15 +120,16 @@ export function createNativeChildOwner({ scope, childScopes = [scope], store, re
     entry.error = null;
     entry.promise = (async () => {
       for (;;) {
-        const snapshot = await entry.kernel.runUntilIdle(entry.scope, entry.runId);
+        const snapshot = await entry.kernel.runUntilIdle(entry.scope, entry.runId, { detachSignal });
         if (terminal(snapshot.phase)) { entry.ports.tools.settleQuestions?.(snapshot); return; }
         const record = store.load(entry.scope, entry.runId);
         if (!canWaitForReceipt?.(record) || !entry.admitted()) return;
         const idle = new AbortController(); entry.idle = idle;
         try {
+          const signal = detachSignal ? AbortSignal.any([idle.signal, detachSignal]) : idle.signal;
           const command = await observeWhileLive(Promise.resolve().then(() => waitForIdle({
-            snapshot: copy(snapshot), tools: entry.ports.tools, signal: idle.signal,
-          })), idle.signal);
+            snapshot: copy(snapshot), tools: entry.ports.tools, signal,
+          })), signal);
           idle.signal.throwIfAborted();
           check(entry.admitted() && same(store.load(entry.scope, entry.runId).snapshot, snapshot), 'child_idle_authority_lost');
           if (!command) return;
@@ -628,6 +629,9 @@ export function createNativeChildOwner({ scope, childScopes = [scope], store, re
         'child_detach_worker_not_idle');
       }
       for (const entry of owned) entries.delete(entry.runId);
+    },
+    async drain() {
+      await Promise.all([...entries.values()].map(entry => entry.promise));
     },
     async closeRun(request) {
       check(same(request.scope, parentScope), 'child_parent_scope_mismatch');

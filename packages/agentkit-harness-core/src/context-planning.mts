@@ -13,7 +13,7 @@ import { defaultToolPruningThreshold, projectOldToolResults, toolPruningIdleElap
 import { summaryContinuityInstructions, validSummaryContinuity } from './summary-continuity.mjs';
 import { responseBoundaryRecovery, responseContinuationPairs } from './response-continuation.mjs';
 import { verificationModelView } from './model-surface.mjs';
-import { currentInstructionContribution } from './context-contributions.mjs';
+import { currentInstructionContribution, hostInstructionContribution } from './context-contributions.mjs';
 import { projectBackgroundCommands } from './background-contract.mjs';
 
 export interface ContextCounters {
@@ -88,10 +88,12 @@ function composeContext(messages: Message[], summary: string, continuity: Object
   const host: Message = { role: 'system', kind: 'execution_continuity', content: canonical(continuity) };
   const historical: Message[] = summary ? [contextSummaryMessage(summary)] : [];
   const split = messages.findIndex(message => message.role !== 'system');
+  const instructions = contributions.filter(message => message.role === 'system');
+  const data = contributions.filter(message => message.role !== 'system');
   if (placement === 'after-history/v1') return [...messages.slice(0, split < 0 ? messages.length : split),
-    ...contributions, ...historical, ...messages.slice(split < 0 ? messages.length : split), ...currentInstructions, host];
+    ...instructions, ...data, ...historical, ...messages.slice(split < 0 ? messages.length : split), ...currentInstructions, host];
   return [...messages.slice(0, split < 0 ? messages.length : split),
-    ...(continuity.operatorGuidancePolicy === 'journaled-system/v1' ? [] : [host]), ...contributions, ...historical,
+    ...(continuity.operatorGuidancePolicy === 'journaled-system/v1' ? [] : [host]), ...instructions, ...data, ...historical,
     ...messages.slice(split < 0 ? messages.length : split), ...currentInstructions];
 }
 function activeIndexes(snapshot: RunSnapshot, state: ContextPlanningState, config: RunConfiguration, digest: (value: unknown) => string): number[] {
@@ -284,7 +286,8 @@ export async function planNativeContext(snapshot: RunSnapshot, config: RunConfig
   const state = copy(snapshot.contextState ?? emptyState());
   const requiredContributions = inputContributions.filter(message => currentInstructionContribution(message, config));
   const optionalContributions = inputContributions.filter(message => !currentInstructionContribution(message, config));
-  invariant(inputContributions.every(message => message.role === 'user' && message.kind === 'context_contribution'
+  invariant(inputContributions.every(message => (message.role === 'user' || hostInstructionContribution(message, config))
+    && message.kind === 'context_contribution'
     && Object.keys(message).every(key => ['role', 'kind', 'content'].includes(key))), 'context_contribution_invalid');
   if (policies.forRun(config).review.reviewPending(snapshot)) {
     const active = activeIndexes(snapshot, state, config, digest).map(index => copy(snapshot.messages[index]!));

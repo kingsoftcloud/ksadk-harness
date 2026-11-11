@@ -146,7 +146,8 @@ export function reduceCommand(snapshot: RunSnapshot, command: RunCommand, pendin
       if (snapshot.phase !== 'paused') reason = 'not_paused';
       else changes = { phase: snapshot.resumePhase ?? 'preparing_context', resumePhase: null,
         ...(snapshot.reason === 'output_budget_exhausted' && bindings.configuration?.outputRestartPolicy === 'per-response/v2'
-          ? { reason: null, continuations: 0, outputRestarts: 0 } : {}),
+          ? { reason: null, continuations: 0, outputRestarts: 0,
+            ...(snapshot.reasoningStallRetry ? { reasoningStallRetry: false } : {}) } : {}),
         ...(bindings.configuration?.approvalOutcomePolicy === APPROVAL_OUTCOME_POLICY
           && ['approval_rejected', 'approval_cancelled', 'approval_unavailable'].includes(snapshot.reason ?? '') ? { reason: null } : {}),
         ...(['provider_unavailable', 'context_summary_unavailable', 'context_source_unavailable', 'child_paused']

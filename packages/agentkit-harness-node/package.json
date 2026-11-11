@@ -1,6 +1,6 @@
 {
   "name": "@kingsoftcloud/agentkit-harness-node",
-  "version": "0.0.16",
+  "version": "0.0.17",
   "private": false,
   "type": "module",
   "description": "Standalone Native Harness Node adapters: a durable SQLite run store, a one-request model HTTP port, and a minimal versioned JSON-RPC 2.0 over NDJSON process entry. Reuses the shared Native adapter implementations and externalizes @kingsoftcloud/agentkit-harness-core; depends on no Studio/DSH code at runtime.",
@@ -10,6 +10,15 @@
     "./native/engine-runtime": "./src/native/engine-runtime.mjs",
     "./native/engine-server": "./src/native/engine-server.mjs",
     "./native/engine-client": "./src/native/engine-client.mjs",
+    "./native/managed-kernel": "./src/native/native-managed-kernel.mjs",
+    "./native/managed-kernel-http": "./src/native/native-managed-kernel-http.mjs",
+    "./native/managed-scoped-control": "./src/native/native-managed-scoped-control.mjs",
+    "./native/teams-callback-authority": "./src/native/native-teams-callback-authority.mjs",
+    "./native/teams-context-contract": "./src/native/native-teams-context-contract.mjs",
+    "./native/kernel-events": "./src/native/native-kernel-events.mjs",
+    "./native/terminal-failure": "./src/native/native-terminal-failure.mjs",
+    "./native/kernel-permit": "./src/native/native-kernel-permit.mjs",
+    "./native/teams-json": "./src/native/native-teams-json.mjs",
     "./native/a2a-tools": "./src/native/a2a-tools.mjs",
     "./native/artifact-codec": "./src/native/artifact-codec.mjs",
     "./native/artifact-store": "./src/native/artifact-store.mjs",
@@ -131,6 +140,7 @@
   },
   "bin": {
     "agentkit-engine": "./src/native/engine-server.mjs",
+    "agentkit-engine-service": "./src/native/engine-service.mjs",
     "agentkit-native-rpc": "./dist/rpc-entry.mjs"
   },
   "files": [
@@ -144,7 +154,7 @@
     "src/package-integrity.mjs"
   ],
   "dependencies": {
-    "@kingsoftcloud/agentkit-harness-core": "0.0.16",
+    "@kingsoftcloud/agentkit-harness-core": "0.0.17",
     "@astral-sh/ruff-wasm-nodejs": "0.16.8",
     "parse5": "7.3.0",
     "playwright-core": "1.58.2",

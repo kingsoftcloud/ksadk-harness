@@ -5,8 +5,8 @@ import { configure, resolveEnginePreset, presetRequestOutputTokens, listEnginePr
 import { fixture, tool } from './fixtures.mjs';
 import { outputRecoveryMode } from '../dist/output-recovery.mjs';
 
-test('the official preset is the default and is the only published name', () => {
-  assert.deepEqual([...listEnginePresets()], [OFFICIAL_ENGINE_PRESET]);
+test('the official preset is the default and the reasoning experiment is explicit', () => {
+  assert.deepEqual([...listEnginePresets()], [OFFICIAL_ENGINE_PRESET, 'experimental-reasoning-stall']);
   const preset = resolveEnginePreset();
   assert.equal(preset.contract, ENGINE_PRESET_CONTRACT);
   assert.equal(preset.preset, 'official');
@@ -20,13 +20,13 @@ test('the official preset is the default and is the only published name', () => 
 test('preset policies form a configuration the kernel admits', () => {
   const preset = resolveEnginePreset();
   const { config } = fixture({ ...preset.policies, limits: preset.limits, tools: [tool(), ...enginePresetToolDefinitions(preset)] });
-  assert.equal(config.outputRecoveryPolicy, 'response-boundary/v3');
+  assert.equal(config.outputRecoveryPolicy, 'response-boundary/v5');
   assert.equal(config.outputRestartPolicy, 'per-response/v2');
   assert.equal(config.toolErrorRecoveryPolicy, 'diagnose-before-repeat/v2');
   assert.equal(config.toolErrorRecoveryModelCalls, 10);
   // Every preset policy survives normalization unchanged, so a host may digest it before or after.
   for (const [key, value] of Object.entries(preset.policies)) assert.deepEqual(config[key], value, key);
-  assert.equal(config.limits.maxOutputRestarts, 1);
+  assert.equal(config.limits.maxOutputRestarts, 0);
 });
 
 test('a preset Run resumes the task after truncated commentary instead of sealing it', () => {
@@ -38,10 +38,13 @@ test('a preset Run resumes the task after truncated commentary instead of sealin
   assert.equal(outputRecoveryMode(snapshot, config, true, truncated), 'task_resume');
 });
 
-test('short bounded Runs do not restart the output budget', () => {
-  assert.equal(resolveEnginePreset({ maxModelCalls: 19 }).limits.maxOutputRestarts, 0);
-  assert.equal(resolveEnginePreset({ maxModelCalls: 20 }).limits.maxOutputRestarts, 1);
-  assert.equal(resolveEnginePreset({ maxModelCalls: null }).limits.maxOutputRestarts, 1);
+test('neither preset resets the output allowance automatically', () => {
+  for (const preset of listEnginePresets()) {
+    for (const maxModelCalls of [19, 20, null]) {
+      assert.equal(resolveEnginePreset({ preset, maxModelCalls }).limits.maxOutputRestarts, 0);
+    }
+  }
+  assert.equal(resolveEnginePreset({ preset: 'experimental-reasoning-stall' }).policies.outputRecoveryPolicy, 'response-boundary/v4');
 });
 
 test('request output budget follows the model, the window and an explicit choice', () => {

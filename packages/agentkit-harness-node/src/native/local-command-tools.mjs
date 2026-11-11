@@ -11,7 +11,7 @@ import { checkGovernedCommand, LOCAL_COMMAND_POLICY, GOVERNED_COMMAND_POLICY } f
 import { checkPlanCommand, PLAN_COMMAND_POLICY } from './command-plan.mjs';
 import { commandFailureEvidence, commandExceptionCause } from './local-command-evidence.mjs';
 import { captureCommandWorkspace, commandWorkspaceChange } from './command-workspace-observation.mjs';
-import { LOCAL_COMMAND_SHELL, shellCommandArgv } from './command-shell.mjs';
+import { ISOLATED_COMMAND_SHELL, LOCAL_COMMAND_SHELL, shellCommandArgv } from './command-shell.mjs';
 
 export const LOCAL_COMMAND_TOOLS_CONTRACT = 'agentkit.local-command-tools/v1';
 export const LOCAL_COMMAND_PROGRESS_CONTRACT = 'agentkit.local-command-progress/v1';
@@ -58,7 +58,7 @@ function utf8Preview(text, maxBytes) {
  */
 export function createLocalCommandTransport({ workspaceRoot, stateRoot, sessionId, settings = {}, sourceEnv = {},
   authorize, resolveOwnedCommand, captureWorkspace, artifacts, assertAuthority = () => true,
-  durableForeground = false, outputPolicy = null, environmentPolicy = null } = {}) {
+  durableForeground = false, outputPolicy = null, environmentPolicy = null, shellPolicy = LOCAL_COMMAND_SHELL } = {}) {
   invariant(typeof authorize === 'function' && typeof resolveOwnedCommand === 'function'
     && typeof captureWorkspace === 'function' && typeof assertAuthority === 'function'
     && typeof durableForeground === 'boolean', 'local_command_host_capabilities_missing');
@@ -70,6 +70,7 @@ export function createLocalCommandTransport({ workspaceRoot, stateRoot, sessionI
   const envPolicy = localEnvironmentPolicy(environmentPolicy);
   if (outPolicy) durableForeground = true;
   const root = realpathSync(workspaceRoot), policy = localControlSettings(settings), definitions = localCommandToolDefinitions(policy);
+  shellCommandArgv(':', shellPolicy, { workspaceRoot: root, cwd: root });
   // Under persisted-stream/v1 the automatic foreground receipt uses a bounded
   // window matching previewBytes (clamped to the 4..65536 UTF-8 cursor range).
   // Explicit read_command_output retains its own independent pagination.
@@ -164,9 +165,11 @@ export function createLocalCommandTransport({ workspaceRoot, stateRoot, sessionI
       if (decision !== 'allow') return decision?.status === 'approval_required' && typeof decision.interactionId === 'string'
         ? decision : errorResult('policy_denied');
       if (request.call.name === 'sandbox_status') return { status: 'ok', content: { ok: true, backend: 'local_process', enabled: true,
-        isolated: false, sandbox_id: `local_process:${sessionId}`, timeout_seconds: policy.wallSeconds,
-        boundary: 'Shares Host filesystem, allowlisted environment and network. Not an OS security sandbox.',
-        shell: '/bin/bash', shell_policy: LOCAL_COMMAND_SHELL,
+        isolated: shellPolicy === ISOLATED_COMMAND_SHELL, sandbox_id: `local_process:${sessionId}`, timeout_seconds: policy.wallSeconds,
+        boundary: shellPolicy === ISOLATED_COMMAND_SHELL
+          ? 'Only the workspace and temporary files are writable. The command has no Host process or network access.'
+          : 'Shares Host filesystem, allowlisted environment and network. Not an OS security sandbox.',
+        shell: '/bin/bash', shell_policy: shellPolicy,
         contracts: [LOCAL_COMMAND_TOOLS_CONTRACT, LOCAL_PROCESS_CONTRACT, LOCAL_COMMAND_POLICY, GOVERNED_COMMAND_POLICY] } };
       if (request.call.name === 'read_command_output' || request.call.name === 'stop_command') {
         const owned = resolveOwnedCommand(request, args.task_id);
@@ -207,7 +210,7 @@ export function createLocalCommandTransport({ workspaceRoot, stateRoot, sessionI
         dispatched = true;
         const operationKey = request.operationKey, expectedTaskId = store.commandId(operationKey);
         known = { content: { backend: 'sandbox/local_process', task_id: expectedTaskId } };
-        const handle = await store.start({ operationKey, command, cwd, env, settings: policy, shellPolicy: LOCAL_COMMAND_SHELL,
+        const handle = await store.start({ operationKey, command, cwd, env, settings: policy, shellPolicy, workspaceRoot: root,
           outputPolicy: outPolicy, environmentPolicy: envPolicy,
           timeoutMs: deadline(args.background ? args.background_timeout : args.timeout), assertCurrent: guard });
         if (!args.background) {
@@ -258,7 +261,7 @@ export function createLocalCommandTransport({ workspaceRoot, stateRoot, sessionI
           ? { backgroundCommandFinished: true } : {}) };
       } else {
         dispatched = true;
-        const result = await runBoundedProcess({ argv: shellCommandArgv(command, LOCAL_COMMAND_SHELL), cwd, env, settings: policy, signal: request.signal,
+        const result = await runBoundedProcess({ argv: shellCommandArgv(command, shellPolicy, { workspaceRoot: root, cwd }), cwd, env, settings: policy, signal: request.signal,
           timeoutMs: deadline(args.timeout), onOutput: progress });
         const incomplete = result.controls.status === 'failed' || !!result.cleanupError;
         const resourceReason = result.exitCode === -osConstants.signals.SIGXCPU ? 'cpu_time'

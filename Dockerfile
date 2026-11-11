@@ -11,10 +11,10 @@ RUN --mount=type=cache,target=/root/.npm npm install --ignore-scripts --omit=dev
 
 FROM ${NODE_IMAGE}
 WORKDIR /opt/harness
-COPY --from=build /runtime/node_modules ./node_modules
 RUN apt-get update && apt-get install -y --no-install-recommends bubblewrap ca-certificates git python3 \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /data/state /data/workspace && chown node:node /data /data/state /data/workspace
+COPY --from=build /runtime/node_modules ./node_modules
 USER node
 ENV AGENTKIT_ENGINE_SERVICE_HOST=0.0.0.0
 EXPOSE 8787

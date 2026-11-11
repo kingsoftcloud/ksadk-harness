@@ -151,18 +151,19 @@ const HOST_TOOL_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
  * The engine only advertises them and forwards calls; the host executes and
  * authorizes. A read-only tool may be re-run after a crash; any other tool is
  * never replayed by the engine. */
-export function admitHostTools(tools, reserved, durableApprovals = false) {
+export function admitHostTools(tools, reserved, durableApprovals = false, hostReceipts = false) {
   invariant(tools === undefined || Array.isArray(tools) && tools.length <= HOST_TOOL_LIMIT, 'engine_host_tools_invalid');
   const seen = new Set();
   return (tools ?? []).map(tool => {
     invariant(tool && typeof tool === 'object' && !Array.isArray(tool)
-      && Object.keys(tool).every(key => ['name', 'description', 'parameters', 'readOnly', 'timeoutMs', 'deferred', 'effectProtocol'].includes(key))
+      && Object.keys(tool).every(key => ['name', 'description', 'parameters', 'readOnly', 'timeoutMs', 'deferred', 'effectProtocol', 'receiptObservation'].includes(key))
       && typeof tool.name === 'string' && HOST_TOOL_NAME.test(tool.name) && !reserved.has(tool.name) && !seen.has(tool.name)
       && typeof tool.description === 'string' && tool.description.length <= 4000
       && tool.parameters && typeof tool.parameters === 'object' && !Array.isArray(tool.parameters) && tool.parameters.type === 'object'
       && (tool.readOnly === undefined || typeof tool.readOnly === 'boolean')
       && (tool.deferred === undefined || typeof tool.deferred === 'boolean')
       && (tool.effectProtocol === undefined || tool.effectProtocol === ENGINE_HOST_EFFECT && tool.readOnly !== true)
+      && (tool.receiptObservation === undefined || hostReceipts && tool.receiptObservation === true && tool.effectProtocol === ENGINE_HOST_EFFECT)
       && (tool.timeoutMs === undefined || Number.isSafeInteger(tool.timeoutMs) && tool.timeoutMs >= 1000 && tool.timeoutMs <= 600000),
     'engine_host_tools_invalid');
     seen.add(tool.name);
@@ -170,7 +171,7 @@ export function admitHostTools(tools, reserved, durableApprovals = false) {
     return { name: tool.name, description: tool.description || `Host tool ${tool.name}`, parameters: structuredClone(tool.parameters),
       readOnly, concurrentSafe: readOnly, permissions: [], timeoutMs: tool.timeoutMs ?? 120000,
       contextRole: 'none', observationRole: 'none', progressObservation: false, contextRetention: 'normal',
-      recoveryPolicy: readOnly ? 'safe-read/v1' : 'manual',
+      recoveryPolicy: readOnly ? 'safe-read/v1' : tool.receiptObservation ? 'receipt-observation/v1' : 'manual',
       ...(tool.effectProtocol ? { hostEffectProtocol: tool.effectProtocol,
         ...(durableApprovals ? { approvalPolicy: DURABLE_APPROVAL } : {}) } : {}),
       ...(tool.deferred ? { discovery: { deferred: true } } : {}) };
@@ -182,7 +183,7 @@ export function admitHostTools(tools, reserved, durableApprovals = false) {
  * `callHostTool({ runId, callId, name, arguments, signal })` executes a host
  * tool and resolves to `{ status: 'ok' | 'error', content }`. */
 export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, scope, model, authorize, callHostTool,
-  callHostContext, callHostHook, callHostVerification, owner = `engine-${process.pid}`,
+  callHostContext, callHostHook, callHostVerification, callHostReceipt, owner = `engine-${process.pid}`,
   fetchImpl = fetch, sourceEnv = process.env, commandSandbox, subAgents, runStore } = {}) {
   invariant(text(workspaceRoot) && text(stateDir) && text(sessionId) && typeof authorize === 'function'
     && scope && ['tenantId', 'workspaceId', 'userId', 'agentId'].every(key => text(scope[key])), 'engine_runtime_invalid');
@@ -274,7 +275,11 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
         ? preflight(request, dispatch) : dispatch();
     },
     checkPlanMode: async request => (ownerOf(request).checkPlanMode ?? (async () => true))(request),
-    observeReceipt: request => (route.get(request?.call?.name) ?? workspace).observeReceipt?.(request),
+    observeReceipt(request) {
+      if (ownerOf(request) === hostPort && request.definition?.hostEffectProtocol === ENGINE_HOST_EFFECT
+        && request.definition.recoveryPolicy === 'receipt-observation/v1') return callHostReceipt?.(request);
+      return (route.get(request?.call?.name) ?? workspace).observeReceipt?.(request);
+    },
     repairWorkspace: request => workspace.repairWorkspace(request),
   };
   const context = bindNativeContext({ description, context: {}, ...nativeContextDefaults(undefined) });
@@ -372,7 +377,7 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
     const policy = admitEngineToolPolicy(toolPolicy, durableApprovals);
     invariant(!policy || internal.every(name => !policy.rules.has(name) || policy.rules.get(name) === 'inherit'),
       'engine_tool_policy_internal_control_unsupported');
-    const hosted = restrictEngineTools(admitHostTools(hostTools, reserved, durableApprovals), policy, DURABLE_APPROVAL);
+    const hosted = restrictEngineTools(admitHostTools(hostTools, reserved, durableApprovals, typeof callHostReceipt === 'function'), policy, DURABLE_APPROVAL);
     const builtins = restrictEngineTools(durableApprovals ? bound.map(tool => route.get(tool.name) === workspace && tool.readOnly
       ? tool : { ...tool, approvalPolicy: DURABLE_APPROVAL }) : bound, policy, DURABLE_APPROVAL);
     const childControls = durableApprovals ? restrictEngineTools(childDefinitions, policy, DURABLE_APPROVAL) : [];

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.0.19 - 2026-11-12
+
+- Stream live reasoning, tool drafts, and checklist progress in independent
+  Runs. Fold completed work and keep recoverable edit diagnostics available
+  inside the expanded history.
+- Show web deliverables, file changes and screenshot evidence for completed
+  Runs. Limit file evidence to committed effects of the current Run and
+  serve interactive previews from a separate local origin.
+- Let a read-only delivery status request preserve the running host's
+  registered approval and tool callbacks.
+
 ## 0.0.18
 
 - Run Harness as a separately installed HTTP service with its own model

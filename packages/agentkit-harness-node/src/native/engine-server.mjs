@@ -27,7 +27,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import * as readline from 'node:readline';
 import { setTimeout as wait } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { isNativeError, TOOL_RECEIPT_OBSERVATION_CONTRACT } from '@kingsoftcloud/agentkit-harness-core';
+import { currentDeliveryManifest, FINAL_SUBMISSION_TOOL, isNativeError, TOOL_RECEIPT_OBSERVATION_CONTRACT } from '@kingsoftcloud/agentkit-harness-core';
 import { publicErrorMessage } from '@kingsoftcloud/agentkit-harness-core/error-presentation';
 import { createEngineRuntime, engineApprovalSubject, ENGINE_APPROVAL_CONTRACT, ENGINE_EXECUTION_POLICY,
   ENGINE_INPUT_IMAGES } from './engine-runtime.mjs';
@@ -37,17 +37,23 @@ import { ENGINE_CONTEXT } from './engine-context.mjs';
 import { ENGINE_HOOKS } from './engine-hooks.mjs';
 import { ENGINE_HOST_EFFECT, hostReceiptReply, hostReceiptSource, waitForHostReceipt } from './engine-host-effects.mjs';
 import { ENGINE_VERIFICATION } from './engine-verification.mjs';
+import { nativeTodoPlan } from './activity-status.mjs';
+import { engineDeliveryEvidence } from './engine-delivery-evidence.mjs';
 export { ENGINE_VIEW_CONTRACT };
 
 export const ENGINE_PROTOCOL = 'agentkit.engine/v1';
 export const ENGINE_EVENT_SCHEMA = 'agentkit.engine-event/v1';
+const THINKING_PAGE_CHARS = 8192;
+const THINKING_HISTORY_CHARS = 128 * 1024;
 const METHODS = ['initialize', 'run/start', 'run/status', 'run/events', 'run/resume', 'run/cancel', 'ui/view', 'shutdown'];
 const DURABLE_APPROVAL_METHOD = 'run/approve';
 const HOST_OBSERVATIONS_METHOD = 'run/host-observations';
 const ERRORS = { parse: -32700, request: -32600, method: -32601, params: -32602, internalError: -32603,
   notInitialized: -32010, runNotFound: -32011, runBusy: -32012 };
 const text = value => typeof value === 'string' && value.trim().length > 0;
+const toolName = /^[A-Za-z][A-Za-z0-9_.:/-]{0,127}$/;
 const sleep = ms => new Promise(done => setTimeout(done, ms));
+const publicRequestId = operationKey => createHash('sha256').update(operationKey).digest('hex');
 
 /** The engine's own task view, built by agentkit-harness-ui into this package's dist. */
 let viewCache;
@@ -67,14 +73,35 @@ function packageVersion() {
 
 /** Stable, host-renderable projection. Engine-internal payloads stay in the Run
  * store; a host renders `kind`, `title` and `detail` without knowing each kind. */
-export function projectEngineEvent(event, requiredVerification = false) {
+export function projectEngineEvent(event, requiredVerification = false, thinkingPresentation = false) {
   const payload = event.payload ?? {}, base = { schema: ENGINE_EVENT_SCHEMA, seq: event.seq, kind: event.kind };
+  const modelRequest = thinkingPresentation && typeof payload.operationKey === 'string'
+    ? { requestId: publicRequestId(payload.operationKey) } : {};
   switch (event.kind) {
-    case 'model.completed': return { ...base, category: 'model', title: payload.kind ?? 'model',
+    case 'todo.initialized':
+    case 'todo.updated':
+      return { ...base, category: 'todo',
+        ...(thinkingPresentation && Array.isArray(payload.todos) ? { plan: nativeTodoPlan(payload.todos) } : {}) };
+    case 'effect.prepared':
+    case 'effect.settled':
+      return thinkingPresentation && payload.kind === 'model' ? { ...base, category: 'model', title: 'request', ...modelRequest }
+        : { ...base, category: 'effect' };
+    case 'model.completed':
+    case 'model.stream_interrupted': {
+      let thinking = '';
+      for (const { event: display } of thinkingPresentation ? payload.displayStream?.records ?? [] : []) {
+        if (display?.kind !== 'thinking' || typeof display.text !== 'string') continue;
+        thinking += display.text.slice(0, THINKING_HISTORY_CHARS - thinking.length);
+        if (thinking.length === THINKING_HISTORY_CHARS) break;
+      }
+      if (event.kind === 'model.stream_interrupted') return { ...base, category: 'model', ...(text(thinking) ? { thinking, ...modelRequest } : {}) };
+      return { ...base, category: 'model', title: payload.kind ?? 'model',
+      ...(text(thinking) ? { thinking, ...modelRequest } : {}),
       ...(text(payload.text) && !(requiredVerification && payload.kind === 'final_candidate') ? { detail: payload.text } : {}),
       ...(Array.isArray(payload.toolCalls) && payload.toolCalls.length ? { tools: payload.toolCalls.map(call => call.name),
         calls: payload.toolCalls.map(call => ({ callId: call.callId, name: call.name, arguments: bounded(call.arguments) })) } : {}),
       ...(payload.usage ? { usage: { inputTokens: payload.usage.inputTokens, outputTokens: payload.usage.outputTokens } } : {}) };
+    }
     case 'tool.completed': return { ...base, category: 'tool', title: payload.name, status: payload.status,
       ...(text(payload.callId) ? { callId: payload.callId } : {}), ...(payload.content === undefined ? {} : { result: bounded(payload.content) }) };
     case 'approval.requested': return { ...base, category: 'approval', title: payload.name, status: 'pending',
@@ -108,6 +135,28 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
   const frames = readline.createInterface({ input, crlfDelay: Infinity });
   const send = frame => output.write(`${JSON.stringify(frame)}\n`);
   const pending = new Map(), active = new Map(), driven = new Set(), receiptWaits = new Map();
+  const liveModelDisplay = new Map();
+  function captureModelDisplay({ runId, operationKey }, event) {
+    if (!['thinking', 'tool_delta'].includes(event.kind)) return;
+    let current = liveModelDisplay.get(runId);
+    if (current?.operationKey !== operationKey) {
+      current = { operationKey, id: randomUUID(), text: '', end: 0, tools: new Map(), draftRevision: 0 };
+      liveModelDisplay.set(runId, current);
+    }
+    if (event.kind === 'thinking') {
+      current.end += event.text.length;
+      current.text = (current.text + event.text).slice(-THINKING_HISTORY_CHARS);
+      return;
+    }
+    // A draft has no call ID, argument data, or authority to execute.
+    const { index, name } = event.metadata ?? {};
+    if (!Number.isSafeInteger(index) || index < 0 || !current.tools.has(index) && current.tools.size >= 16) return;
+    if (name === FINAL_SUBMISSION_TOOL) return;
+    const label = typeof name === 'string' && toolName.test(name) ? name : current.tools.get(index) ?? 'tool';
+    if (current.tools.get(index) === label) return;
+    current.tools.set(index, label);
+    current.draftRevision++;
+  }
   let host = null, runtime = null, runtimePromise, closing = false;
   const viewRef = viewStore ? viewStore.archive(engineView()) : null;
 
@@ -217,7 +266,7 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
         if (!detachOnShutdown || !controller.signal.aborted)
           log(`run ${runId} stopped: ${isNativeError(error) ? error.code : publicErrorMessage(error)}`);
       })
-      .finally(() => active.delete(runId));
+      .finally(() => { active.delete(runId); liveModelDisplay.delete(runId); });
     active.set(runId, { controller, done });
   };
   const lookup = runId => {
@@ -240,7 +289,9 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
     async initialize(params) {
       const offered = Array.isArray(params?.protocolVersions) ? params.protocolVersions : [];
       if (!offered.includes(ENGINE_PROTOCOL)) throw rpcError(ERRORS.params, 'no common protocol version', { supported: [ENGINE_PROTOCOL] });
-      host = { name: text(params.host?.name) ? params.host.name : 'unknown',
+      // A history reader can open a cold session without replacing the
+      // callbacks and approval authority of a concurrent execution owner.
+      if (params.host?.observeOnly !== true || !host) host = { name: text(params.host?.name) ? params.host.name : 'unknown',
         services: { approvals: params.services?.approvals === true, tools: params.services?.tools === true,
           context: detachOnShutdown && params.services?.context === ENGINE_CONTEXT,
           hooks: detachOnShutdown && params.services?.hooks === ENGINE_HOOKS,
@@ -251,7 +302,7 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
           durableApprovals: detachOnShutdown && params.services?.durableApprovals === true } };
       runtimePromise ??= createEngineRuntime({ workspaceRoot: startup.workspace, stateDir: startup.stateDir, sessionId: startup.sessionId,
         scope: startup.scope, authorize, callHostTool, callHostContext, callHostHook, callHostVerification, callHostReceipt, fetchImpl, sourceEnv: env,
-        commandSandbox: startup.commandSandbox,
+        commandSandbox: startup.commandSandbox, onStream: captureModelDisplay,
         subAgents: detachOnShutdown ? startup.subAgents : undefined,
         model: { ...startup.model, apiKey: async () => env[startup.model.apiKeyEnv] ?? '' } })
         .catch(error => { runtimePromise = null; throw error; });
@@ -259,7 +310,7 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
       return { protocolVersion: ENGINE_PROTOCOL, engine: { name: '@kingsoftcloud/agentkit-harness-node', version: packageVersion(), ...runtime.info() },
         capabilities: { methods: detachOnShutdown ? [...METHODS, DURABLE_APPROVAL_METHOD,
           ...(host.services.toolEffects ? [HOST_OBSERVATIONS_METHOD] : [])] : METHODS,
-          eventSchema: ENGINE_EVENT_SCHEMA, hostServices: ['approvals', 'tools'],
+          eventSchema: ENGINE_EVENT_SCHEMA, liveThinking: true, liveToolDrafts: true, hostServices: ['approvals', 'tools'],
           approvals: host.services.durableApprovals ? 'durable' : host.services.approvals ? 'host' : startup.approval,
           hostTools: host.services.tools, toolPolicy: ENGINE_TOOL_POLICY, executionPolicy: ENGINE_EXECUTION_POLICY,
           ...(detachOnShutdown ? { scopedHostRequests: true } : {}),
@@ -301,7 +352,12 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
       if (!params.hostContext?.sources?.length && !params.hostHooks?.hooks?.length && !hostEffects && !params.hostVerification) drive(runId);
       return { ...status(runId), preset: started.preset, hostTools: started.hostTools, existing: false };
     },
-    async 'run/status'(params) { requireRun(params); return status(params.runId); },
+    async 'run/status'(params) {
+      requireRun(params);
+      const rest = status(params.runId);
+      return params.deliveryPresentation === true && rest.phase === 'completed' && text(rest.finalText)
+        ? { ...rest, deliveryEvidence: engineDeliveryEvidence(runtime.load(params.runId)) } : rest;
+    },
     async [HOST_OBSERVATIONS_METHOD](params) {
       if (!host.services.toolEffects) throw rpcError(ERRORS.method, 'host observations unavailable');
       requireRun(params);
@@ -319,15 +375,45 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
         if (!idle || hasReceipt || runtime.pendingCommands(runId).length) drive(runId);
       }
       const cursor = Number.isSafeInteger(params.cursor) && params.cursor >= 0 ? params.cursor : 0;
+      const thinkingPresentation = typeof params.thinkingCursor === 'string';
+      const draftPresentation = typeof params.toolDraftCursor === 'string';
+      const thinkingCursor = thinkingPresentation ? /^([\da-f-]{36}):(\d{1,16})$/.exec(params.thinkingCursor) : null;
       const deadline = Date.now() + Math.min(Math.max(Number(params.waitMs) || 0, 0), 30000);
       // The wait reads only the journal suffix; the Run record is loaded once, on return.
       for (;;) {
         const running = active.has(params.runId), events = runtime.events(params.runId, cursor);
-        if (events.length || !running || Date.now() >= deadline) {
+        const live = (thinkingPresentation || draftPresentation) && running ? liveModelDisplay.get(runId) : null;
+        let thinking, toolDraft;
+        if (live) {
+          const first = live.end - live.text.length;
+          const after = thinkingCursor?.[1] === live.id ? Number(thinkingCursor[2]) : first;
+          const start = Math.max(first, after);
+          const draftCursor = `${live.id}:${live.draftRevision}`;
+          const hasThinking = thinkingPresentation && start < live.end;
+          const hasDraft = draftPresentation && live.draftRevision > 0 && draftCursor !== params.toolDraftCursor;
+          if ((hasThinking || hasDraft) && runtime.authority(runId).snapshot.pendingIntent === live.operationKey) {
+            if (hasThinking) {
+              const chunk = live.text.slice(start - first, start - first + THINKING_PAGE_CHARS);
+              thinking = { id: live.id, cursor: `${live.id}:${start + chunk.length}`, text: chunk };
+            }
+            if (hasDraft) toolDraft = { cursor: draftCursor, requestId: publicRequestId(live.operationKey),
+              tools: [...live.tools].map(([index, name]) => ({ index, name })) };
+          }
+        }
+        if (events.length || thinking || toolDraft || !running || Date.now() >= deadline) {
           const next = events.length ? events.at(-1).seq : cursor;
           if (next > (seen.get(params.runId) ?? 0)) seen.set(params.runId, next);
-          return { events: events.map(event => projectEngineEvent(event, !!configuration.hostVerification)), cursor: next,
-            terminal: runtime.terminal(runtime.authority(runId).snapshot), running: active.has(runId) };
+          const { snapshot } = runtime.authority(runId);
+          return { events: events.map(event => {
+            const projected = projectEngineEvent(event, !!configuration.hostVerification, thinkingPresentation || draftPresentation);
+            if (projected.kind !== 'run.terminal' || projected.title !== 'completed' || !text(projected.detail)) return projected;
+            const artifacts = currentDeliveryManifest(snapshot)?.artifacts;
+            return { ...projected, ...(artifacts?.length ? { deliverables: artifacts } : {}),
+              ...((thinkingPresentation || draftPresentation) ? { deliveryEvidence: engineDeliveryEvidence(runtime.load(runId)) } : {}) };
+          }), cursor: next,
+            ...(thinking ? { thinking } : {}),
+            ...(toolDraft ? { toolDraft } : {}),
+            terminal: runtime.terminal(snapshot), running: active.has(runId) };
         }
         await sleep(250);
       }

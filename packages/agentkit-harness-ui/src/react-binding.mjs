@@ -483,13 +483,128 @@ function ScrollEnd({ reducedMotion, renderChildren, type, props }) {
 }
 
 
+  function WebDelivery({ path, seq, resolve, zh }) {
+    const [preview, setPreview] = useState(null);
+    const [pending, setPending] = useState(false);
+    const [failed, setFailed] = useState(false);
+    const lifetime = useRef(null);
+    useEffect(() => {
+      const controller = new AbortController();
+      lifetime.current = controller;
+      void resolve({ path, seq }, controller.signal).then(delivery => {
+        if (!controller.signal.aborted) setPreview(delivery);
+      }).catch(() => {});
+      return () => controller.abort();
+    }, [path, seq, resolve]);
+    if (!preview?.href) return null;
+    const filename = path.split('/').at(-1);
+    const openLabel = zh ? `打开 ${filename}` : `Open ${filename}`;
+    const openSidebar = async () => {
+      const signal = lifetime.current.signal;
+      setFailed(false);
+      setPending(true);
+      try { await preview.openInSidebar(signal); }
+      catch { if (!signal.aborted) setFailed(true); }
+      finally { if (!signal.aborted) setPending(false); }
+    };
+    const newTab = (label, ariaLabel) => createElement('a', { href: preview.href, target: '_blank', rel: 'noopener noreferrer',
+      'aria-label': ariaLabel }, label);
+    return createElement('div', { className: 'harness-delivery', 'data-testid': 'web-delivery' },
+      createElement('span', { className: 'harness-delivery-icon' },
+        createElement('svg', { viewBox: '0 0 24 24', width: 20, height: 20, fill: 'none', stroke: 'currentColor',
+          strokeWidth: 1.5, 'aria-hidden': true },
+        createElement('circle', { cx: 12, cy: 12, r: 9 }), createElement('ellipse', { cx: 12, cy: 12, rx: 4, ry: 9 }),
+        createElement('path', { d: 'M3 12h18' }))),
+      createElement('span', { className: 'harness-delivery-name' },
+        createElement('strong', { title: path }, filename),
+        createElement('small', null, zh ? '网站 · HTML' : 'Website · HTML')),
+      preview.openInSidebar ? createElement('div', { className: 'harness-delivery-actions' },
+        createElement('button', { type: 'button', disabled: pending, onClick: openSidebar, 'aria-label': openLabel },
+          pending ? (zh ? '正在打开…' : 'Opening…') : (zh ? '打开' : 'Open')),
+        createElement('details', { className: 'harness-delivery-menu' },
+          createElement('summary', { 'aria-label': zh ? '更多打开方式' : 'More ways to open' },
+            createElement('svg', { width: 14, height: 14, viewBox: '0 0 24 24', 'aria-hidden': true, fill: 'none', stroke: 'currentColor' },
+              createElement('path', { d: 'm6 9 6 6 6-6', strokeWidth: 2 }))),
+          newTab(zh ? '在新标签页打开' : 'Open in a new tab')),
+        failed ? createElement('span', { role: 'status' }, zh ? '无法打开侧栏预览' : 'Could not open the sidebar preview') : null)
+        : newTab(zh ? '打开' : 'Open', openLabel));
+  }
+
+  function DeliveryEvidence({ seq, load, openFile, zh }) {
+    const [evidence, setEvidence] = useState(null);
+    useEffect(() => {
+      const controller = new AbortController();
+      void load(seq, controller.signal).then(value => {
+        if (!controller.signal.aborted) setEvidence(value);
+      }).catch(() => {});
+      return () => controller.abort();
+    }, [seq, load]);
+    if (!evidence) return null;
+    const { files, screenshots, truncated } = evidence;
+    const counts = file => Number.isSafeInteger(file.added) && file.added >= 0
+      && Number.isSafeInteger(file.removed) && file.removed >= 0;
+    const delta = (added, removed) => createElement('span', { className: 'harness-delivery-delta' },
+      createElement('span', null, `+${added}`), createElement('span', null, `−${removed}`));
+    const total = files.length && !truncated && files.every(counts)
+      ? delta(files.reduce((sum, file) => sum + file.added, 0), files.reduce((sum, file) => sum + file.removed, 0)) : null;
+    const label = zh ? `${files.length}${truncated ? '+' : ''} 个文件已更改`
+      : `${files.length}${truncated ? '+' : ''} ${files.length === 1 ? 'file' : 'files'} changed`;
+    return createElement(React.Fragment, null,
+      files.length ? createElement('details', { className: 'harness-delivery-changes', 'data-testid': 'delivery-changes' },
+        createElement('summary', null, label, total),
+        createElement('ul', null, ...files.map(file => createElement('li', { key: file.path },
+          file.deleted || !openFile ? createElement('span', null, file.path)
+            : createElement('button', { type: 'button', onClick: () => openFile({ path: file.path, kind: 'file' }) }, file.path),
+          counts(file) ? delta(file.added, file.removed) : null)))) : null,
+      ...screenshots.map(({ path, href }) => createElement('a', { key: path, className: 'harness-delivery-image',
+        'data-testid': 'delivery-screenshot', href, target: '_blank', rel: 'noopener noreferrer' },
+      createElement('img', { src: href, alt: path.split('/').at(-1), loading: 'lazy' }))));
+  }
+
+  function HarnessTurn({ state, reply, onCopy, onBranch, assistantActions, containerProps, deliveries, resolveWebDelivery,
+    deliverySeq, loadDeliveryEvidence, locale = 'zh-CN', ...timeline }) {
+    const [copyState, setCopyState] = useState(null);
+    const answer = state.items.find(item => item.id === state.finalAnswerId);
+    const copy = async () => {
+      try {
+        const text = answer.sourceMessageId ? state.items.filter(item => item.kind === 'text'
+          && item.sourceMessageId === answer.sourceMessageId).map(item => item.text).join('\n\n') : answer.text;
+        await (onCopy ? onCopy(text) : navigator.clipboard.writeText(text));
+        setCopyState('copied');
+      } catch { setCopyState('failed'); }
+    };
+    const zh = locale.startsWith('zh');
+    const copyLabel = copyState === 'copied' ? (zh ? '已复制' : 'Copied') : (zh ? '复制回复' : 'Copy reply');
+    const branchLabel = zh ? '从这里新建分支' : 'Branch from here';
+    const button = (label, onClick, path) => createElement('button', { type: 'button', title: label, 'aria-label': label, onClick },
+      createElement('svg', { viewBox: '0 0 24 24', width: 16, height: 16, fill: 'none', stroke: 'currentColor',
+        strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true }, createElement('path', { d: path })));
+    const clock = reply?.time ?? state.taskEndedAt;
+    return createElement('article', { ...containerProps, className: 'harness-turn', 'data-testid': 'harness-turn' },
+      createElement(HarnessTimeline, { state, onCopy, locale, ...timeline }),
+      state.taskState === 'failed' && state.taskError
+        ? createElement('p', { className: 'harness-turn-error', role: 'alert' }, state.taskError) : null,
+      ...(answer?.kind === 'text' && !answer.streaming && resolveWebDelivery ? (deliveries ?? []).map(delivery =>
+        createElement(WebDelivery, { key: JSON.stringify([delivery.seq, delivery.path]), ...delivery, resolve: resolveWebDelivery, zh })) : []),
+      answer?.kind === 'text' && !answer.streaming && deliverySeq !== undefined && loadDeliveryEvidence
+        ? createElement(DeliveryEvidence, { key: deliverySeq, seq: deliverySeq, load: loadDeliveryEvidence, openFile: timeline.onOpenFile, zh }) : null,
+      answer?.kind === 'text' && !answer.streaming ? createElement('div', { className: 'harness-reply-actions',
+        role: 'group', 'aria-label': zh ? '回复操作' : 'Reply actions' },
+      button(copyLabel, copy, copyState === 'copied' ? 'm5 12 4 4L19 6' : 'M8 8h11v12H8zM5 16H4V4h11v1'),
+      assistantActions,
+      reply?.branchable && onBranch ? button(branchLabel, () => onBranch(reply.seq), 'M5 19 19 5m-6 0h6v6M5 10v9h9') : null,
+      typeof clock === 'number' && Number.isFinite(clock) ? createElement('time', { dateTime: new Date(clock).toISOString() },
+        new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit', hour12: false }).format(clock)) : null,
+      copyState === 'failed' ? createElement('span', { role: 'status' }, zh ? '无法复制' : 'Unable to copy') : null) : null);
+  }
+
   function SubagentPane({ state, loading, error, omittedRows = 0, omittedChars = 0, labels = {}, ...timeline }) {
     return React.createElement('section', { className: 'harness-subagent-pane', 'data-testid': 'subagent-pane', 'aria-readonly': true },
       error ? React.createElement('p', { role: 'alert' }, error) : loading ? React.createElement('p', { role: 'status' }, labels.childSyncing || 'Syncing') : null,
       omittedRows || omittedChars ? React.createElement('p', { className: 'harness-subagent-window-notice' }, labels.childOmitted || 'Earlier rows or long fields are omitted in this observation window.') : null,
       state ? React.createElement(HarnessTimeline, { state, labels, ...timeline }) : null);
   }
-  return { HarnessTimeline, SubagentPane };
+  return { HarnessTimeline, HarnessTurn, SubagentPane };
 }
 
 export { buildViewModel, styles };

@@ -3,7 +3,7 @@ import { installNativeCommandPane } from './native-command-pane.mjs';
 import { createHarnessComponents } from '@kingsoftcloud/agentkit-harness-ui/react-binding';
 import { createMarkdownComponents, markdownStyles } from '@kingsoftcloud/agentkit-harness-ui/markdown';
 import { createStatusPanelComponents, statusPanelStyles } from '@kingsoftcloud/agentkit-harness-ui/status-panel';
-import { nativeStatusPanelModel } from './state/native-status-panel.mjs';
+import { engineStatusPanelModel, nativeStatusPanelModel } from './state/native-status-panel.mjs';
 import { nativeTaskWorkspaceRoot, taskWorkspaceFileTarget } from './state/task-links.mjs';
 import { resolveNativeRuntimeRoute, nativeRuntimeRouteInput } from './state/native-runtime-route.mjs';
 import { createNativeTaskReadModel } from './state/native-task-read-model.mjs';
@@ -27,11 +27,11 @@ const labels = { result: '执行结果', thought: '思考', running: '执行中'
   toolPreparing: '正在生成工具参数', previewStopped: '工具参数生成已中断' };
 
 /** Only the transport adapter and runtime controls belong to Studio. */
-export function installTaskTimeline(ctx, { ui, hostRemote, resolveAgentFromPreset }) {
+export function installTaskTimeline(ctx, { ui, hostRemote, resolveAgentFromPreset, isIndependentPreset, resolveWebDelivery, loadDeliveryEvidence }) {
   if (typeof resolveAgentFromPreset !== 'function') throw TypeError('The host preset-to-Agent resolver is required');
   const { React, ReactDOM } = ui;
   const { createElement: h, useMemo, useEffect, useLayoutEffect, useState, useRef } = React;
-  const { HarnessTimeline } = createHarnessComponents(React);
+  const { HarnessTurn } = createHarnessComponents(React);
   const { ConversationStatusPanel } = createStatusPanelComponents(React, ReactDOM);
   const { MarkdownResponse } = createMarkdownComponents(React, ReactDOM);
   const commandPane = installNativeCommandPane(ctx, { React, hostRemote });
@@ -40,7 +40,8 @@ export function installTaskTimeline(ctx, { ui, hostRemote, resolveAgentFromPrese
       onOpenExternalUrl: url => { if (['http:', 'https:'].includes(new URL(url).protocol)) window.open(url, '_blank', 'noopener,noreferrer'); },
       onOpenFileLink: onOpenFile && (({ href }) => { const target = taskWorkspaceFileTarget(href, cwd); if (target) onOpenFile(target); }) }, text) });
   const markdownLabels = { copyCode: '复制代码', copied: '已复制', wrapLines: '自动换行', languageLabel: '代码' };
-  function TaskView({ sessionId, useHarnessEvents, useSession, useSessions, useProjection, cwd, openFile, fallback, statusPanel }) {
+  function TaskView({ sessionId, useHarnessEvents, useSession, useSessions, useProjection, cwd, openFile, openExternalLink,
+    branchAt, renderAssistantActions, turnAnchors, fallback, statusPanel }) {
     const [variant, setVariant] = useState(() => {
       try { const saved = localStorage.getItem('native.status-panel.variant'); return ['auto', 'mini', 'panel'].includes(saved) ? saved : 'auto'; }
       catch { return 'auto'; }
@@ -71,6 +72,10 @@ export function installTaskTimeline(ctx, { ui, hostRemote, resolveAgentFromPrese
     const error = localError ?? readSnapshot?.error;
     const projector = useMemo(() => createSessionTaskProjector({ sessionId }), [sessionId]);
     const tasks = useMemo(() => projector.project(eventWindow), [projector, eventWindow]);
+    const resolveDelivery = useMemo(() => resolveWebDelivery
+      ? (delivery, signal) => resolveWebDelivery(sessionId, delivery, signal) : undefined, [sessionId]);
+    const loadEvidence = useMemo(() => loadDeliveryEvidence
+      ? (seq, signal) => loadDeliveryEvidence(sessionId, seq, signal) : undefined, [sessionId]);
     useEffect(() => {
       let active = true;
       setProjectionError(null);
@@ -84,7 +89,7 @@ export function installTaskTimeline(ctx, { ui, hostRemote, resolveAgentFromPrese
       const controller = new AbortController();
       const generation = ++routeGeneration.current;
       setRoute({ key: routeKey, kind: 'loading', agentId: null, generation }); setError(null);
-      if (routeReady) void resolveNativeRuntimeRoute({ hostRemote, presetId, resolveAgentFromPreset, signal: controller.signal })
+      if (routeReady) void resolveNativeRuntimeRoute({ hostRemote, presetId, resolveAgentFromPreset, isIndependentPreset, signal: controller.signal })
         .then(next => { if (!controller.signal.aborted) setRoute({ ...next, key: routeKey, generation }); })
         .catch(failure => { if (!controller.signal.aborted) setRoute({ key: routeKey, kind: 'error', agentId: null, generation,
           error: failure.message || '无法读取当前会话的运行时' }); });
@@ -110,7 +115,9 @@ export function installTaskTimeline(ctx, { ui, hostRemote, resolveAgentFromPrese
       setCommandObservations([]);
       if (nativeAgent) return commandPane.subscribe({ agentId: nativeAgent, sessionId }, setCommandObservations);
     }, [nativeAgent, sessionId]);
-    const panelModel = useMemo(() => nativeStatusPanelModel(status, childTasks, commandObservations), [status, childTasks, commandObservations]);
+    const engineRoute = route.key === routeKey && route.kind === 'engine';
+    const panelModel = useMemo(() => engineRoute ? engineStatusPanelModel(tasks, running)
+      : nativeStatusPanelModel(status, childTasks, commandObservations), [engineRoute, tasks, running, status, childTasks, commandObservations]);
     useEffect(() => {
       if (nativeAgent) for (const terminal of panelModel.terminals)
         commandPane.register({ ...terminal, agentId: nativeAgent, sessionId });
@@ -121,7 +128,8 @@ export function installTaskTimeline(ctx, { ui, hostRemote, resolveAgentFromPrese
       if (!target) { setError('文件链接不在执行工作区或位置无效'); return; }
       void Promise.resolve(openFile(target.path)).catch(failure => setError(failure.message || '无法打开文件'));
     };
-    const panelVisible = nativeAgent && (panelModel.git || panelModel.plan || panelModel.agents.length || panelModel.terminals.length || panelModel.isRunning);
+    const panelVisible = (nativeAgent || engineRoute) && Boolean(panelModel.git || panelModel.plan
+      || panelModel.agents.length || panelModel.terminals.length || panelModel.isRunning);
     useLayoutEffect(() => {
       // The presentation owns the summary seat while routing/loading too.
       // Lack of polled data is not permission to paint the resident Todo dock.
@@ -147,7 +155,7 @@ export function installTaskTimeline(ctx, { ui, hostRemote, resolveAgentFromPrese
     if (route.kind === 'error') return h('div', { role: 'alert', 'data-testid': 'task-runtime-error' },
       h('p', null, route.error), h('button', { type: 'button', onClick: () => setRouteAttempt(value => value + 1) }, '重试加载'));
     if (route.kind === 'other') return fallback;
-    if (!observation) return readSnapshot?.phase === 'error'
+    if (route.kind === 'native' && !observation) return readSnapshot?.phase === 'error'
       ? h('div', { role: 'alert', 'data-testid': 'task-observation-error' }, h('p', null, readSnapshot.error),
         h('button', { type: 'button', onClick: () => void readerRef.current?.refresh() }, '重试加载任务过程'))
       : h('div', { role: 'status', 'data-testid': 'task-observation-loading' }, '正在同步任务过程…');
@@ -160,16 +168,19 @@ export function installTaskTimeline(ctx, { ui, hostRemote, resolveAgentFromPrese
           onOpenSubagent: openSubagent,
           onOpenTerminal: terminal => commandPane.open({ ...terminal, agentId: nativeAgent, sessionId }),
           onOpenSubagentDirectory: () => childPane.openDirectory({ agentId: nativeAgent, parentSessionId: sessionId }) })), statusPanel.target) : null,
-      ...presented.map(({ turn, state }) => h(HarnessTimeline, { key: turn,
-        state, labels, locale: 'zh-CN', showPlanDock: false, theme: theme.active.colorScheme,
+      ...presented.map(({ turn, state, reply, deliveries, deliverySeq }) => h(HarnessTurn, { key: turn,
+        state, reply, onBranch: branchAt, assistantActions: reply?.messageId ? renderAssistantActions?.(reply.messageId) : null,
+        deliveries, resolveWebDelivery: resolveDelivery, deliverySeq, loadDeliveryEvidence: loadEvidence,
+        containerProps: { 'data-chat-anchor-key': turnAnchors?.get(turn), 'data-chat-paging-anchor': true },
+        labels, locale: 'zh-CN', showPlanDock: !statusPanel, theme: theme.active.colorScheme,
         workspaceRoot: executionRoot,
         onOpenFile: ({ path }) => openWorkspaceFile(path),
         onOpenSubagent: openSubagent,
-        onCopy: text => { void Promise.resolve().then(() => navigator.clipboard.writeText(text)).catch(() => setError('无法复制，请检查剪贴板权限')); },
+        onCopy: text => navigator.clipboard.writeText(text),
         renderText: (text, { streaming }) => h(MarkdownResponse, { streaming, theme: theme.active.colorScheme, scopeKey: sessionId + ':' + executionRoot,
           labels: markdownLabels,
           onCopyCode: text => navigator.clipboard.writeText(text),
-          onOpenExternalUrl: url => { if (['http:', 'https:'].includes(new URL(url).protocol)) window.open(url, '_blank', 'noopener,noreferrer'); },
+          onOpenExternalUrl: openExternalLink ?? (url => { if (['http:', 'https:'].includes(new URL(url).protocol)) window.open(url, '_blank', 'noopener,noreferrer'); }),
           onOpenFileLink: ({ href }) => openWorkspaceFile(href) }, text) })),
       ...(pending ?? []).filter(item => item.placement === 'transcript').map(item => h('p', { key: item.requestId, 'aria-label': '待发送输入' }, item.text)),
       error ? h('p', { role: 'alert' }, error) : null,

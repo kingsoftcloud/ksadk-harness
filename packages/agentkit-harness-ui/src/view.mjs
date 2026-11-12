@@ -19,6 +19,8 @@ import { latestSummaryLine } from './summary-playback.mjs';
 import { visibleItems, isWaitingForFirstToken, planProgress, DEFAULT_LABELS } from "./project.mjs";
 import { latestNonEmptyLine, truncateText } from "./summary.mjs";
 import { renderTool } from "./renderers.mjs";
+import { isRetryableEditFailure } from "./tool-error.mjs";
+import { toolIdentity } from "./tool-identity.mjs";
 import { activityGroups, activityGroupSummary } from './activity-groups.mjs';
 import { conversationWorkSegments, completedWorkLabel } from './work-segments.mjs';
 
@@ -167,17 +169,23 @@ export function buildViewModel(state, options = {}) {
     "data-testid": "harness-timeline",
     "data-has-user-input": String(items.some(item => item.kind === 'text' && item.role === 'user')),
     role: "log",
-    "aria-label": opts.ariaLabel,
-    "aria-busy": isWaitingForFirstToken(state) ? "true" : "false",
+    "aria-label": options.ariaLabel ?? (String(opts.locale ?? '').startsWith('zh') ? '任务过程' : opts.ariaLabel),
+    "aria-busy": (isWaitingForFirstToken(state) || state.taskState === "running" && state.modelRequestActive) ? "true" : "false",
     ...(opts.rootProps || {}),
   }, ...rootChildren);
 }
 
 function timelineList(state, items, opts) {
   const kids = [];
-  if (isWaitingForFirstToken(state)) kids.push(waitingPlaceholder(opts));
-  const segments = conversationWorkSegments(state, items);
+  const modelActive = state.taskState === "running" && state.modelRequestActive;
+  if (!modelActive && isWaitingForFirstToken(state)) kids.push(waitingPlaceholder(opts));
+  const transcript = state.taskState === 'running' ? items.filter(item =>
+    !(item.kind === 'tool' && item.status === 'failed' && toolIdentity(item.name).family === 'edit'
+      && isRetryableEditFailure(item.error))) : items;
+  const segments = conversationWorkSegments(state, transcript);
   for (const [index, segment] of segments.entries()) {
+    const showModelActivity = modelActive && index === segments.length - 1
+      && !segment.process.some(item => item.streaming && ["thought", "tool-preview"].includes(item.kind));
     kids.push(...renderTimelineItems(segment.inputs, opts));
     if (segment.collapsible) {
       const open = Boolean(opts.historyOpen?.get(segment.id));
@@ -186,11 +194,13 @@ function timelineList(state, items, opts) {
           h('span', {}, completedWorkLabel(state, opts.locale)), chevronIcon('harness-work-history-chevron')),
         open ? h('div', { className: 'harness-work-items harness-work-history-content', 'data-testid': 'work-history-content' },
           ...renderTimelineItems(segment.process, opts)) : null));
-    } else if (segment.process.length) kids.push(h('div', { className: 'harness-work-items', 'data-testid': 'work-process' },
+    } else if (segment.process.length || showModelActivity) kids.push(h('div', { className: 'harness-work-items', 'data-testid': 'work-process' },
       ...renderTimelineItems(segment.process, opts, state.taskState === 'running'
-        && index === segments.length - 1 && segment.following.length === 0)));
+        && index === segments.length - 1 && segment.following.length === 0),
+      showModelActivity ? modelActivity(opts) : null));
     kids.push(...renderTimelineItems(segment.following, opts));
   }
+  if (modelActive && !segments.length) kids.push(modelActivity(opts));
   if (!kids.length && opts.emptyState) kids.push(opts.emptyState);
   if (opts.following === false) kids.push(jumpToLatest(opts));
   return h("div", { className: "harness-timeline", "data-testid": "harness-timeline-list" }, ...kids);
@@ -258,6 +268,12 @@ function textBlock(item, opts) {
     "data-item-id": item.id,
     "data-streaming": streaming ? "true" : "false",
   }, h("span", { className: "harness-text-content" }, text));
+}
+
+function modelActivity(opts) {
+  return h("div", { className: "harness-thought-summary harness-model-activity", role: "status", "data-testid": "model-thinking" },
+    brainIcon("harness-thought-icon"),
+    h("span", { className: "harness-thought-label harness-thought-label-streaming" }, opts.labels.thinking));
 }
 
 function thoughtBlock(item, opts) {

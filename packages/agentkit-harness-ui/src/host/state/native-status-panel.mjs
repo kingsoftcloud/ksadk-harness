@@ -1,3 +1,9 @@
+export function engineStatusPanelModel(tasks, running) {
+  const latest = tasks.findLast(task => task.state.planSummary);
+  const plan = latest?.state.plan ? { items: latest.state.plan, ...latest.state.planSummary } : null;
+  return { git: null, plan, terminals: [], agents: [], isRunning: Boolean(running) };
+}
+
 /** Host facts adapted to the independent status presentation. No execution capability. */
 export function nativeStatusPanelModel(status, children = [], commandObservations = []) {
   const activity = status?.activity;

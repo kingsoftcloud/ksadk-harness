@@ -21,6 +21,7 @@ export const EventType = Object.freeze({
   TaskStarted: "task.started",
   TaskState: "task.state",
   TaskFinished: "task.finished",
+  ModelRequest: "model.request",
   TextDelta: "text.delta",
   TextDone: "text.done",
   ThinkingStart: "thinking.start",
@@ -162,6 +163,9 @@ function normalizePayload(type, event) {
         ...(hostTime(event.startedAt) !== null ? { startedAt: event.startedAt } : {}) };
     case EventType.TaskState:
       return { state: requiredChoice(event.state, TASK_STATES, "task state"), reason: str(event.reason) || null, message: str(event.message) || null };
+    case EventType.ModelRequest:
+      if (typeof event.active !== "boolean") throw new TypeError("model request requires an active flag");
+      return { active: event.active, itemId: str(event.itemId) };
     case EventType.TaskFinished: {
       const outcome = requiredChoice(event.outcome, TASK_OUTCOMES, "task outcome");
       if (event.executionState !== undefined && (event.executionState !== TaskState.Interrupted || outcome !== TaskOutcome.Unverified))
@@ -223,7 +227,8 @@ function normalizePayload(type, event) {
         after: { kind: marker.after.kind, ...(marker.after.id ? { id: marker.after.id } : {}) } } };
     }
     case EventType.PlanUpdated:
-      return { items: Array.isArray(event.items) ? event.items.map(normalizePlanItem).filter(Boolean) : [] };
+      return { items: Array.isArray(event.items) ? event.items.map(normalizePlanItem).filter(Boolean) : [],
+        completedCount: event.completedCount, totalCount: event.totalCount };
     default:
       return {};
   }

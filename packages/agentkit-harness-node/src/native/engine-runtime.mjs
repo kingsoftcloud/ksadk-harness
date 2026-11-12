@@ -184,7 +184,7 @@ export function admitHostTools(tools, reserved, durableApprovals = false, hostRe
  * tool and resolves to `{ status: 'ok' | 'error', content }`. */
 export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, scope, model, authorize, callHostTool,
   callHostContext, callHostHook, callHostVerification, callHostReceipt, owner = `engine-${process.pid}`,
-  fetchImpl = fetch, sourceEnv = process.env, commandSandbox, subAgents, runStore } = {}) {
+  fetchImpl = fetch, sourceEnv = process.env, commandSandbox, subAgents, runStore, onStream } = {}) {
   invariant(text(workspaceRoot) && text(stateDir) && text(sessionId) && typeof authorize === 'function'
     && scope && ['tenantId', 'workspaceId', 'userId', 'agentId'].every(key => text(scope[key])), 'engine_runtime_invalid');
   const root = realpathSync(resolve(workspaceRoot));
@@ -362,7 +362,7 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
       return engineUserObservations(store, request.scope, snapshot, { indexes });
     }),
     artifacts, background, ...(children ? { children: children.owner } : {}) };
-  const kernel = new NativeKernel({ store, owner, digest, ports });
+  const kernel = new NativeKernel({ store, owner, digest, ports, onStream });
 
   function prepareRun({ runId, objective, conversation, inputImages, hostInstructions = '', hostTools, toolPolicy,
     hostContext, hostHooks, hostVerification, executionPolicy, preset: presetName, maxModelCalls = null,

@@ -135,6 +135,8 @@ test("read renderer does not repeat the path three times: kind label, leaf chip,
   const pathMatches = txt.match(/src\/a\.ts/g) || [];
   assert.equal(pathMatches.length, 1, "full path shown once, not three times");
   assert.equal(textOf(findByTestId(tree, "tool-title")), "Read", "kind label carries no path");
+  const rootFile = { ...s.items[0], display: { kind: "file_read", path: "a.ts" } };
+  assert.equal(findByTestId(render(rootFile, { workspaceRoot: "/repo" }), "read-file-path"), null);
 });
 
 test("search renderer (Grep) shows a Find {query} summary, not a file path, and stays non-toggleable", () => {

@@ -18,7 +18,7 @@ import { initialState, reduceAll } from "../reducer.mjs";
 import { engineEventsToTimeline, ENGINE_VIEW_CONTRACT } from "./adapter.mjs";
 
 const VERSION = globalThis.__ENGINE_VIEW_VERSION__ ?? "dev";
-const { HarnessTimeline } = createHarnessComponents(React);
+const { HarnessTurn } = createHarnessComponents(React);
 const post = message => { try { window.parent.postMessage({ contract: ENGINE_VIEW_CONTRACT, ...message }, "*"); } catch { /* detached */ } };
 
 function App() {
@@ -48,7 +48,7 @@ function App() {
     observer.observe(root);
     return () => { window.removeEventListener("message", onMessage); observer.disconnect(); };
   }, []);
-  return React.createElement(HarnessTimeline, { state: view.state, theme: view.theme, autoFollow: false });
+  return React.createElement(HarnessTurn, { state: view.state, theme: view.theme, autoFollow: false, styleSheet: null });
 }
 
 createRoot(document.getElementById("root")).render(React.createElement(App));

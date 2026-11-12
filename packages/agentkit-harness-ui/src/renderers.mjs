@@ -122,9 +122,9 @@ function toolShell(item, opts, { icon, summary, body, canToggle = true, defaultO
   if (canToggle) summaryKids.push(chevronIcon("harness-tool-chevron"));
   const visibleBody = open && canToggle ? (typeof body === 'function' ? body() : body) : [];
   const bodyKids = Array.isArray(visibleBody) ? visibleBody : [visibleBody];
-  if (error && open && canToggle) bodyKids.push(h("div", {
+  if (error && open && canToggle) bodyKids.unshift(h("div", {
     className: "harness-tool-error", role: "alert", "data-testid": "tool-error",
-  }, error));
+  }, errorSummary === error ? error : [errorSummary, h("div", {}, error)]));
   const detailsProps = canToggle ? {
     open, className: "harness-tool-details", "data-testid": "tool-details",
     "data-call-id": item.callId, "aria-expanded": open,
@@ -322,9 +322,7 @@ function readFileRenderer(item, opts) {
     ? (opts.labels && opts.labels.readReading || "Reading")
     : (opts.labels && opts.labels.readKind || "Read");
   const canOpen = Boolean(opts.onOpenFile) && meta.entryType === "file";
-  // Primary content is the file chip itself; the kind label precedes it. The
-  // path is NOT duplicated in the title — only the leaf shows in the chip and
-  // the workspace-relative path shows once as the secondary.
+  // Show the file chip once. Keep relative context for nested files.
   const summary = [
     h("span", {
       className: running
@@ -335,11 +333,12 @@ function readFileRenderer(item, opts) {
     fileChip(path, fileName, canOpen, opts, "read-chip", "read-file-name",
       { kind: meta.entryType === "directory" ? "directory" : "file", callId: item.callId, path }),
   ];
-  if (path) summary.push(h("span", {
+  const relativePath = path ? workspaceRelative(path, opts.workspaceRoot) : "";
+  if (relativePath && relativePath !== fileName) summary.push(h("span", {
     className: "harness-tool-secondary harness-read-path",
     "data-testid": "read-file-path",
     title: path,
-  }, workspaceRelative(path, opts.workspaceRoot)));
+  }, relativePath));
   // Read is a one-line chip; it does not toggle. A failed read surfaces its
   // error inline via the shell, and an optional inspect action lets the host
   // open the result/details (the public result-inspection action).

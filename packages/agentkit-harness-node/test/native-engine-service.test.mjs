@@ -12,6 +12,97 @@ import { ENGINE_CONTEXT } from '../src/native/engine-context.mjs';
 import { ENGINE_HOST_EFFECT } from '../src/native/engine-host-effects.mjs';
 import { ENGINE_EXECUTION_POLICY } from '../src/native/engine-runtime.mjs';
 import { ENGINE_VERIFICATION } from '../src/native/engine-verification.mjs';
+import { engineDeliveryEvidence } from '../src/native/engine-delivery-evidence.mjs';
+
+test('delivery evidence uses committed effects from the current Run, not inherited paths', () => {
+  const tools = ['write_workspace_file', 'run_command', 'browser_inspect_workspace'];
+  const receipt = (operationKey, content) => ({ operationKey, status: 'committed', result: { results: [{ status: 'ok', ...content }] } });
+  const record = {
+    snapshot: { goalRevision: 1, workspaceModifiedPaths: ['previous.txt'],
+      deliveryManifest: { goalRevision: 1, artifacts: [{ kind: 'file', path: 'declared.png' }] } },
+    intents: tools.map((name, index) => ({ operationKey: String(index), kind: 'tool', payload: { calls: [{ name }] } })),
+    receipts: [
+      receipt('0', { workspaceChangedPaths: ['app.js'], content: { path: 'app.js', diff_additions: 10, diff_deletions: 0 } }),
+      receipt('1', { workspaceChangedPaths: ['app.js', 'index.html', '../outside'] }),
+      receipt('2', { content: { screenshot_path: '.artifacts/preview.png' } }),
+    ],
+  };
+  assert.deepEqual(engineDeliveryEvidence(record), { files: [{ path: 'app.js' }, { path: 'index.html' }],
+    screenshots: ['declared.png', '.artifacts/preview.png'], truncated: false });
+});
+
+test('a live cursor delivers reasoning and tool drafts before the model response settles', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'native-engine-thinking-'));
+  const workspace = join(root, 'workspace');
+  mkdirSync(workspace);
+  const reasoning = 'first\n' + 'a'.repeat(10000) + '\nlast';
+  const encoder = new TextEncoder();
+  let stream, modelCalls = 0;
+  const frame = (delta, finish_reason = null) => encoder.encode(`data: ${JSON.stringify({
+    id: 'thinking-fixture', choices: [{ index: 0, delta, finish_reason }],
+  })}\n\n`);
+  const token = 'fixture-thinking-service-token';
+  const service = createEngineService({ token, startup: { workspace, stateDir: join(root, 'ledger'), approval: 'deny',
+    scope: { tenantId: 'fixture', workspaceId: 'workspace', userId: 'user', agentId: 'agent' },
+    model: { name: 'fixture', baseUrl: 'https://example.test/v1', apiKeyEnv: 'FIXTURE_KEY' } },
+    env: { FIXTURE_KEY: 'fixture-key' }, fetchImpl: async () => new Response(new ReadableStream({
+      start(controller) {
+        if (modelCalls++ === 0) {
+          stream = controller;
+          controller.enqueue(frame({ reasoning_content: reasoning }));
+        } else {
+          controller.enqueue(frame({ content: 'Finished.' }, 'stop'));
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+        }
+      },
+    }), { headers: { 'content-type': 'text/event-stream' } }),
+  });
+  t.after(async () => { await service.close(); await rm(root, { recursive: true, force: true }); });
+  await new Promise(resolve => service.server.listen(0, '127.0.0.1', resolve));
+  const url = 'http://127.0.0.1:' + service.server.address().port + '/v1/sessions/thinking/rpc';
+  let id = 0;
+  async function rpc(method, params) {
+    const response = await fetch(url, { method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: String(++id), method, params }) });
+    const reply = await response.json();
+    assert.ok(reply.result, JSON.stringify(reply.error));
+    return reply.result;
+  }
+  await rpc('initialize', { protocolVersions: ['agentkit.engine/v1'] });
+  const runId = 'thinking-run';
+  await rpc('run/start', { runId, objective: 'Answer the fixture.' });
+  let cursor = 0, thinkingCursor = '', toolDraftCursor = '', received = '', requestId;
+  async function poll() {
+    const page = await rpc('run/events', { runId, cursor, thinkingCursor, toolDraftCursor, waitMs: 500 });
+    cursor = page.cursor;
+    if (page.thinking) { thinkingCursor = page.thinking.cursor; received += page.thinking.text; }
+    if (page.toolDraft) toolDraftCursor = page.toolDraft.cursor;
+    requestId ??= page.events.find(event => event.kind === 'effect.prepared' && event.category === 'model')?.requestId;
+    return page;
+  }
+  for (let n = 0; n < 10 && received.length < reasoning.length; n++) await poll();
+  assert.equal(received, reasoning);
+  const before = cursor;
+  assert.equal((await poll()).thinking, undefined, 'an acknowledged live chunk is not repeated');
+  assert.equal(cursor, before);
+  stream.enqueue(frame({ tool_calls: [{ index: 0, id: 'call-fixture', type: 'function',
+    function: { name: 'read_workspace_file', arguments: '{"path":"fixture.txt' } }] }));
+  const { toolDraft } = await poll();
+  assert.equal(cursor, before);
+  assert.deepEqual(toolDraft, { cursor: toolDraftCursor, requestId, tools: [{ index: 0, name: 'read_workspace_file' }] });
+  stream.enqueue(frame({ tool_calls: [{ index: 0, function: { arguments: '"}' } }] }));
+  stream.enqueue(frame({}, 'tool_calls'));
+  stream.enqueue(encoder.encode('data: [DONE]\n\n'));
+  stream.close();
+  const events = [];
+  for (let n = 0; n < 10 && !events.some(event => event.kind === 'run.terminal'); n++)
+    events.push(...(await poll()).events);
+  const completed = events.find(event => event.kind === 'model.completed');
+  assert.match(requestId, /^[a-f0-9]{64}$/);
+  assert.equal(completed?.requestId, requestId);
+  assert.equal(completed?.thinking, reasoning);
+});
 
 test('required verification repairs an unsupported answer, survives restart and rejects an unbound reply', async t => {
   const root = mkdtempSync(join(tmpdir(), 'native-host-verification-'));
@@ -224,6 +315,8 @@ test('a host effect waits for exact approval and receives only original user obs
   assert.equal(hello.capabilities.hostToolEffects, ENGINE_HOST_EFFECT);
   assert.equal((await rpc('run/start', start)).result.running, false);
   assert((await rpc('run/host-observations', { runId })).error);
+  const { result: observer } = await rpc('initialize', { protocolVersions, host: { observeOnly: true } });
+  assert.equal(observer.capabilities.hostToolEffects, ENGINE_HOST_EFFECT);
 
   async function callback() {
     const polling = fetch(base + 'host-requests?waitMs=2500&runId=' + runId, { headers }).then(r => r.json());

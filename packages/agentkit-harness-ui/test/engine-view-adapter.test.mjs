@@ -1,15 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { engineEventsToTimeline } from "../src/engine-view/adapter.mjs";
+import { engineEventsToTimeline, engineWebDeliveries } from "../src/engine-view/adapter.mjs";
 import { initialState, reduceAll } from "../src/reducer.mjs";
 import { buildViewModel } from "../src/view.mjs";
+import { engineStatusPanelModel } from "../src/host/state/native-status-panel.mjs";
+import { toolErrorSummary } from "../src/tool-error.mjs";
 
 const e = (seq, kind, extra = {}) => ({ schema: "agentkit.engine-event/v1", seq, kind, category: kind.split(".")[0], ...extra });
 const run = [
   e(1, "run.started"),
   e(5, "model.completed", { title: "tool_calls", detail: "Writing the file now.", tools: ["write_workspace_file"],
     calls: [{ callId: "c1", name: "write_workspace_file", arguments: { path: "out.txt", content: "hi" } }] }),
-  e(7, "tool.completed", { title: "write_workspace_file", status: "ok", callId: "c1", result: { ok: true } }),
+  e(7, "tool.completed", { title: "write_workspace_file", status: "ok", callId: "c1",
+    result: { ok: true, path: "out.txt", diff_additions: 1, diff_deletions: 0 } }),
   e(8, "model.failure_observed", { detail: "transport_error", status: "retrying" }),
   e(9, "effect.prepared"),
   e(12, "run.terminal", { title: "completed", status: "unverified", detail: "Created out.txt." }),
@@ -25,6 +28,7 @@ test("an engine run becomes a replay-safe timeline the shared reducer renders", 
   assert.deepEqual(state.items.map(item => [item.kind, item.kind === "tool" ? item.status : item.text]),
     [["text", "Writing the file now."], ["tool", "completed"], ["text", "Created out.txt."]]);
   assert.equal(state.items[1].name, "write_workspace_file"); assert.deepEqual(state.items[1].input, { path: "out.txt", content: "hi" });
+  assert.deepEqual(state.items[1].display.files[0].changeStat, { added: 1, removed: 0 });
   assert.equal(state.taskOutcome, "unverified");
   assert.ok(JSON.stringify(buildViewModel(state)).includes("Created out.txt."));
 });
@@ -42,4 +46,89 @@ test("failures, pauses and unknown events map conservatively", () => {
   // A completed task never claims verification it did not report.
   assert.equal(engineEventsToTimeline([e(1, "run.terminal", { title: "completed" })])[0].outcome, "completed");
   assert.equal(engineEventsToTimeline([e(1, "run.terminal", { title: "completed", status: "unverified" })])[0].outcome, "unverified");
+});
+
+test("the model request shows a thinking indicator only while it is pending", () => {
+  let state = reduceAll(initialState(), [
+    ...engineEventsToTimeline([e(1, "run.started")]),
+    { v: 1, id: "user", itemId: "prompt", type: "text.done", role: "user", text: "Run a task." },
+  ]);
+  const showsThinking = () => JSON.stringify(buildViewModel(state)).includes('"data-testid":"model-thinking"');
+  const apply = (...events) => { state = reduceAll(state, engineEventsToTimeline(events)); };
+
+  apply(e(2, "effect.prepared"));
+  assert.equal(showsThinking(), false, "workspace activity does not imply a model request");
+  const request = { category: "model", title: "request", requestId: "a".repeat(64) };
+  apply(e(3, "effect.prepared", request));
+  assert.equal(showsThinking(), true);
+  assert.deepEqual(state.items.map(item => item.role), ["user"]);
+  const thought = state.modelThinkingId;
+  state = reduceAll(state, [{ v: 1, id: "live", itemId: thought, type: "thinking.delta", delta: "Live preview" }]);
+  assert.equal(showsThinking(), false, "the rolling thought replaces the indicator");
+  apply(e(4, "effect.settled", request), e(5, "model.completed", { ...request, thinking: "Complete thought" }));
+  assert.equal(showsThinking(), false);
+  assert.deepEqual(state.items.filter(item => item.kind === "thought").map(item => [item.id, item.streaming, item.text]),
+    [[thought, false, "Complete thought"]]);
+  apply(e(6, "effect.prepared", { ...request, requestId: "b".repeat(64) }));
+  assert.equal(showsThinking(), true, "a later model call has its own indicator");
+  apply(e(7, "run.terminal", { title: "canceled", status: "canceled" }));
+  assert.equal(showsThinking(), false);
+});
+
+test("independent runs display the last committed checklist, including after refresh", () => {
+  const pending = { content: "Validate the game", status: "pending" };
+  const [receipt, plan, clear] = [
+    e(1, "tool.completed", { callId: "todo", title: "TodoWrite", status: "ok", result: { todos: [pending] } }),
+    e(2, "todo.updated", { plan: { items: [{ ...pending, status: "completed", id: "stable" }], completedCount: 3, totalCount: 4 } }),
+    e(3, "todo.updated", { plan: null }),
+  ];
+  const panel = (...events) => engineStatusPanelModel([{ state: reduceAll(initialState(), engineEventsToTimeline(events)) },
+    { state: initialState() }], true);
+  assert.equal(panel(receipt).plan.items[0].content, pending.content);
+  assert.deepEqual(panel(receipt, plan).plan, {
+    items: [{ ...pending, status: "completed", id: "stable", priority: null }],
+    completedCount: 3, totalCount: 4, omittedItems: 3,
+  });
+  assert.equal(panel(receipt, plan, clear).plan, null);
+});
+
+test("a batch edit error retains the failed item index and reason", () => {
+  const [event] = engineEventsToTimeline([e(1, "tool.completed", { callId: "edit", title: "multi_edit_workspace_file", status: "error",
+    result: { error_type: "snippet_not_found", failed_edit_index: 2, nearby_candidates: [{ text: "file content" }] } })]);
+  assert.equal(toolErrorSummary(event.error, { locale: "zh-CN" }), "第 3 项找不到原文，本批修改未写入");
+  assert.equal(Object.hasOwn(event.error, "nearby_candidates"), false);
+});
+
+test("retryable edit errors stay in history and final submissions do not hold the process open", () => {
+  const frames = [
+    e(1, "run.started"),
+    e(2, "model.completed", { calls: [{ callId: "edit", name: "multi_edit_workspace_file" }] }),
+    e(3, "tool.completed", { callId: "edit", title: "multi_edit_workspace_file", status: "error",
+      result: { error_type: "snippet_not_found", failed_edit_index: 2 } }),
+    e(4, "model.completed", { detail: "重新读取原文后修正。", calls: [{ callId: "retry", name: "edit_workspace_file" }] }),
+    e(5, "tool.completed", { callId: "retry", title: "edit_workspace_file", status: "ok" }),
+    e(6, "model.completed", { calls: [{ callId: "submission", name: "submit_final_output" }] }),
+    e(7, "run.terminal", { title: "completed", status: "unverified", detail: "可打开 `starark.html`。" }),
+  ];
+  const state = events => reduceAll(initialState(), engineEventsToTimeline(events));
+  const running = JSON.stringify(buildViewModel(state(frames.slice(0, 5)), { locale: "zh-CN" }));
+  assert.match(running, /重新读取原文后修正/);
+  assert.doesNotMatch(running, /找不到原文/);
+  const finished = state(frames);
+  assert.equal(finished.items.find(item => item.callId === "edit")?.status, "failed");
+  assert.ok(!finished.items.some(item => item.callId === "submission"));
+  const folded = JSON.stringify(buildViewModel(finished));
+  assert.match(folded, /work-history-toggle/);
+  assert.doesNotMatch(folded, /重新读取原文后修正|找不到原文/);
+  assert.match(JSON.stringify(buildViewModel(finished, { locale: "zh-CN", historyOpen: new Map([["work:run:start", true]]) })),
+    /找不到原文/);
+});
+
+test("web delivery prefers the committed manifest and supports earlier final answers", () => {
+  const final = e(10, "run.terminal", { title: "completed",
+    detail: "打开 `starark.html`，请忽略 `../other.html` 和 [外部链接](https://example.com/x.html)。" });
+  assert.deepEqual(engineWebDeliveries(final), [{ path: "starark.html" }]);
+  assert.deepEqual(engineWebDeliveries({ ...final, deliverables: [{ kind: "web", root: "site", path: "site/pages/index.html" }] }),
+    [{ path: "site/pages/index.html", root: "site" }]);
+  assert.deepEqual(engineWebDeliveries({ ...final, title: "failed" }), []);
 });

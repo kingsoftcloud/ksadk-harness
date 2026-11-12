@@ -2,7 +2,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { constants, closeSync, fstatSync, lstatSync, openSync, readSync, readdirSync, realpathSync, statSync } from 'node:fs';
-import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { allowsWorkspaceBrowserUrl } from './browser-workspace-policy.mjs';
 
 const within = (root, path) => path === root || path.startsWith(root + sep);
@@ -65,11 +65,18 @@ export function resolveBrowserWorkspaceEntry(root, path) {
 }
 
 export async function createBrowserWorkspaceServer({ root, path, maxFileBytes = 32 * 1024 * 1024,
-  maxFiles = 4096, signal } = {}) {
+  maxFiles = 4096, signal, interactivePreview = false, projectRoot, previewHost } = {}) {
   signal?.throwIfAborted();
   if (!Number.isSafeInteger(maxFileBytes) || maxFileBytes < 1 || maxFileBytes > 2 ** 30
     || !Number.isSafeInteger(maxFiles) || maxFiles < 1 || maxFiles > 65536) fail('browser_server_limits_invalid');
-  const { workspace, entry, servedRoot } = resolveBrowserWorkspaceEntry(root, path);
+  const { workspace, entry, servedRoot: entryDirectory } = resolveBrowserWorkspaceEntry(root, path);
+  const servedRoot = projectRoot === undefined ? entryDirectory : bound(workspace, resolve(workspace, safeRelative(projectRoot)));
+  if (!within(servedRoot, entry) || !statSync(servedRoot).isDirectory()) fail('workspace_path_outside_scope');
+  const entryPath = relative(servedRoot, entry).split(sep);
+  const visible = path => path.split('/').every(part => !part.startsWith('.') && !ignored.has(part));
+  if (interactivePreview && (!visible(path) || !visible(relative(workspace, entry).split(sep).join('/')))) fail('workspace_path_invalid');
+  if (previewHost !== undefined && !/^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d{1,5})?$/i.test(previewHost))
+    fail('browser_preview_host_invalid');
   const prefix = `/${randomBytes(24).toString('hex')}/`, generated = new Map();
   let origin, closed = false, closing;
 
@@ -91,7 +98,12 @@ export async function createBrowserWorkspaceServer({ root, path, maxFileBytes = 
     walk(servedRoot); return digest.digest('hex');
   }
 
-  const initialRevision = revision();
+  const initialRevision = interactivePreview ? null : revision();
+  const frameAncestors = previewHost ? `http://${previewHost} https://${previewHost}` : "'none'";
+  const previewHeaders = interactivePreview ? {
+    'content-security-policy': `default-src 'none'; script-src 'self' 'unsafe-inline' https:; style-src 'self' 'unsafe-inline' https:; img-src 'self' https: data: blob:; font-src 'self' https: data:; media-src 'self' https: data: blob:; connect-src 'self'; worker-src 'self' blob:; frame-ancestors ${frameAncestors}; base-uri 'self'; form-action 'none'`,
+    'cross-origin-opener-policy': 'same-origin', 'cross-origin-resource-policy': 'same-origin', 'referrer-policy': 'no-referrer',
+  } : {};
   const server = createServer((request, response) => {
     const reply = (status, text) => { response.writeHead(status, { 'content-type': 'text/plain; charset=utf-8',
       'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }); response.end(text); };
@@ -102,6 +114,7 @@ export async function createBrowserWorkspaceServer({ root, path, maxFileBytes = 
       const raw = request.url;
       if (!raw?.startsWith(prefix)) return reply(403, 'Outside browser page');
       const rawPath = raw.split('?')[0], pathname = decodeURIComponent(rawPath.slice(prefix.length));
+      if (interactivePreview && !visible(pathname)) return reply(403, 'Outside browser page');
       const lexical = resolve(servedRoot, pathname ? safeRelative(pathname) : '.');
       if (!within(servedRoot, lexical)) return reply(403, 'Outside browser page');
       let target = bound(servedRoot, lexical);
@@ -116,8 +129,9 @@ export async function createBrowserWorkspaceServer({ root, path, maxFileBytes = 
         }
       }
       const { bytes, target: actual } = readBoundFile(servedRoot, target, maxFileBytes);
+      if (interactivePreview && !visible(relative(servedRoot, actual).split(sep).join('/'))) return reply(403, 'Outside browser page');
       response.writeHead(200, { 'content-type': types[extname(actual).toLowerCase()] ?? 'application/octet-stream',
-        'content-length': bytes.length, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
+        'content-length': bytes.length, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', ...previewHeaders });
       response.end(request.method === 'HEAD' ? undefined : bytes);
     } catch (error) {
       const status = error.code === 'browser_file_too_large' ? 413
@@ -135,7 +149,8 @@ export async function createBrowserWorkspaceServer({ root, path, maxFileBytes = 
       const ready = () => { server.off('error', error); resolve(); };
       server.once('error', error); server.once('listening', ready); server.listen(0, '127.0.0.1');
     });
-    origin = `http://127.0.0.1:${server.address().port}`;
+    const hostname = interactivePreview ? `preview-${randomBytes(12).toString('hex')}.localhost` : '127.0.0.1';
+    origin = `http://${hostname}:${server.address().port}`;
     signal?.throwIfAborted();
   } catch (error) { server.close(); server.closeAllConnections(); throw error; }
 
@@ -149,7 +164,7 @@ export async function createBrowserWorkspaceServer({ root, path, maxFileBytes = 
   };
   const abort = () => { void close().catch(() => {}); };
   signal?.addEventListener('abort', abort, { once: true });
-  return { workspace, servedRoot, entry, origin, url: `${origin}${prefix}${encodeURIComponent(basename(entry))}`, initialRevision,
+  return { workspace, servedRoot, entry, origin, url: `${origin}${prefix}${entryPath.map(encodeURIComponent).join('/')}`, initialRevision,
     revision, close,
     allows(value) {
       return allowsWorkspaceBrowserUrl(value, { origin, prefix, closed });

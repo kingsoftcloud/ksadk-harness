@@ -186,12 +186,14 @@ export function createSessionTaskProjector({ sessionId } = {}) {
       const message = data.message;
       const text = textOf(message?.content); let value;
       try { value = JSON.parse(text); } catch { /* plain tool result */ }
+      const name = task.items.find(item => item.callId === message?.toolCallId)?.name;
       const display = data.meta?.contract === 'agentkit.workspace-display/v1' ? data.meta.display
-        : commandDisplay(task.items.find(item => item.callId === message?.toolCallId)?.name, value);
+        : commandDisplay(name, value);
+      const workspaceObservation = (name === 'read_workspace_file' || name === 'search_workspace_files') && value?.ok === true;
       if (dispositions.has(`${turn}:${message?.toolCallId}`)) emit('tool.state', { callId: message.toolCallId, status: 'not_dispatched' });
       else if (uncertainFact(data.meta?.nativeOutcome, message?.toolCallId, turn, sessionId) || value?.status === 'uncertain') emit('tool.state', { callId: message?.toolCallId, status: 'uncertain', message: '执行结果未知，需要核对回执' });
       else emit(message?.isError ? 'tool.error' : 'tool.result', { callId: message?.toolCallId,
-        ...(message?.isError ? { error: text } : { result: text,
+        ...(message?.isError ? { error: text } : { result: workspaceObservation ? value : text,
           ...(display ? { display } : {}) }) });
     }
     if (event.type === 'turn/end') {
@@ -199,6 +201,7 @@ export function createSessionTaskProjector({ sessionId } = {}) {
       if (replies.has(turn)) replies.set(turn, { ...replies.get(turn), time: event.time, seq: event.seq,
         branchable: reason?.kind === 'completed' });
       if (engine?.terminal && (task.finalAnswerId || !finalAnswers.get(turn) || reason?.kind !== 'completed')) return;
+      if (engine && task.taskState === 'paused' && task.taskReason === 'provider_unavailable' && reason?.kind === 'error') return;
       const interruption = reason?.kind === 'error' && typeof reason.error?.code === 'string'
         && Object.hasOwn(nativeInterruptionMessages, reason.error.code) ? nativeInterruptionMessages[reason.error.code] : null;
       const outcome = interruption ? 'unverified' : reason?.kind === 'completed' ? 'unverified' : reason?.kind === 'blocked' ? 'blocked'

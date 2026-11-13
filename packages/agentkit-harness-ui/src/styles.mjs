@@ -99,6 +99,8 @@ export const styles = `
 }
 .harness-tool-summary:hover .harness-tool-chevron,
 .harness-thought-summary:hover .harness-thought-chevron { opacity: 1; }
+.harness-tool-read .harness-tool-chevron { opacity: 0.65; }
+.harness-tool-read .harness-tool-summary:is(:hover, :focus-visible) .harness-tool-chevron { opacity: 1; }
 .harness-tool-details[open] .harness-tool-chevron,
 .harness-thought-details[open] .harness-thought-chevron { transform: rotate(90deg); opacity: 1; }
 @media (prefers-reduced-motion: reduce) {
@@ -149,8 +151,11 @@ export const styles = `
 .harness-tool-detail-line { display: flex; gap: 6px; }
 .harness-tool-detail-line dt { color: var(--harness-fg-muted); min-width: 8ch; }
 .harness-tool-detail-line dd { margin: 0; word-break: break-all; }
+.harness-search-matches { margin: 6px 0; padding-inline-start: 1.5em; font-size: 0.85rem; overflow-wrap: anywhere; }
+.harness-search-legacy-result { margin: 6px 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.85rem; }
 .harness-tool-progress { color: var(--harness-running); font-size: 0.85rem; }
 .harness-tool-error { color: var(--harness-fg-muted); font-size: 0.85rem; }
+.harness-tool-error-inline { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .harness-tool-result { margin-top: 6px; }
 .harness-tool-result > summary { cursor: pointer; color: var(--harness-fg-muted); font-size: 0.8rem; }
 
@@ -195,7 +200,6 @@ export const styles = `
 .harness-file-chip-static:hover { color: var(--harness-fg-muted); text-decoration: none; }
 .harness-file-icon { font-size: 0.85rem; }
 .harness-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.harness-read-path { font-size: 0.78rem; }
 
 /* ── diff count + inline diff (edit) ─────────────────────────────────── */
 .harness-diff-count { display: inline-flex; gap: 4px; align-items: center; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.78rem; }

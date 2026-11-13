@@ -34,7 +34,7 @@ function errorValue(error) {
 const errorCode = value => value?.error_type ?? value?.code ?? value?.error_code ?? value?.error?.code;
 
 export function isRetryableEditFailure(error) {
-  return ['snippet_not_found', 'ambiguous_edit'].includes(errorCode(errorValue(error)));
+  return ['invalid_arguments', 'snippet_not_found', 'ambiguous_edit'].includes(errorCode(errorValue(error)));
 }
 
 export const isCommandPolicyBlock = error => errorCode(errorValue(error)) === 'command_policy_blocked';

@@ -167,6 +167,31 @@ test("retryable edit errors stay in history and final submissions do not hold th
     /找不到原文/);
 });
 
+test("an edit argument error stays out of live progress and is available in expanded history", () => {
+  const frames = [
+    e(1, "run.started"),
+    e(2, "model.completed", { calls: [{ callId: "edit", name: "multi_edit_workspace_file" }] }),
+    e(3, "tool.completed", { callId: "edit", title: "multi_edit_workspace_file", status: "error",
+      result: { code: "invalid_arguments", executed: false } }),
+    e(4, "model.completed", { calls: [{ callId: "retry", name: "multi_edit_workspace_file", arguments: { path: "starark/test/harness.js" } }] }),
+    e(5, "tool.completed", { callId: "retry", title: "multi_edit_workspace_file", status: "ok" }),
+  ];
+  const render = (events, options) => JSON.stringify(buildViewModel(
+    reduceAll(initialState(), engineEventsToTimeline(events)), { locale: "zh-CN", ...options }));
+  const validationError = /工具参数校验未通过/;
+  assert.doesNotMatch(render(frames), validationError);
+  assert.match(render(frames), /harness\.js/);
+  const finished = [...frames, e(6, "run.terminal", { title: "completed", detail: "修改完成。" })];
+  assert.doesNotMatch(render(finished), validationError);
+  assert.match(render(finished, {
+    historyOpen: new Map([["work:run:start", true]]),
+    toolOpen: new Map([["activity:changes:edit", true]]),
+  }), validationError);
+  const failed = [...frames.slice(0, 3), e(4, "run.terminal", { title: "failed" })];
+  assert.doesNotMatch(render(failed), validationError);
+  assert.match(render(failed, { historyOpen: new Map([["work:run:start", true]]) }), validationError);
+});
+
 test("web delivery prefers the committed manifest and supports earlier final answers", () => {
   const final = e(10, "run.terminal", { title: "completed",
     detail: "打开 `starark.html`，请忽略 `../other.html` 和 [外部链接](https://example.com/x.html)。" });

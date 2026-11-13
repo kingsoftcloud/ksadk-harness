@@ -114,7 +114,8 @@ export function projectEngineEvent(event, requiredVerification = false, thinking
     case 'completion.delivery_review_completed':
       return { ...base, category: 'model', ...(payload.usage ? { usage: modelUsage(payload.usage) } : {}) };
     case 'tool.completed': return { ...base, category: 'tool', title: payload.name, status: payload.status,
-      ...(text(payload.callId) ? { callId: payload.callId } : {}), ...(payload.content === undefined ? {} : { result: bounded(payload.content) }) };
+      ...(text(payload.callId) ? { callId: payload.callId } : {}),
+      ...(payload.content === undefined ? {} : { result: boundedToolResult(payload.name, payload.content) }) };
     case 'approval.requested': return { ...base, category: 'approval', title: payload.name, status: 'pending',
       callId: payload.callId, interactionId: payload.interactionId,
       ...(payload.source === 'child_tool' ? { approvalContract: ENGINE_APPROVAL_CONTRACT,
@@ -158,6 +159,40 @@ function bounded(value) {
   const encoded = typeof value === 'string' ? value : JSON.stringify(value);
   if (encoded.length <= PREVIEW_CHARS) return typeof value === 'string' ? value : JSON.parse(encoded);
   return { truncated: true, preview: encoded.slice(0, PREVIEW_CHARS), chars: encoded.length };
+}
+
+function boundedToolResult(name, value) {
+  const result = bounded(value);
+  if (typeof result?.preview !== 'string' || value?.ok !== true) return result;
+  // Keep the actual range and match locations when the raw result exceeds the
+  // event budget. Source lines can otherwise crowd out all of that metadata.
+  let observation;
+  if (name === 'read_workspace_file') {
+    const range = value.read_range;
+    observation = {
+      start_line: Number.isSafeInteger(range?.start) ? range.start : undefined,
+      end_line: Number.isSafeInteger(range?.end) ? range.end : undefined,
+      line_count: Number.isSafeInteger(value.line_count) ? value.line_count : undefined,
+    };
+  } else if (name === 'search_workspace_files' && Array.isArray(value.results)) {
+    const locations = [];
+    let locationBudget = 2200;
+    for (const hit of value.results.slice(0, 12)) {
+      if (typeof hit?.path !== 'string' || !Number.isSafeInteger(hit.line)) continue;
+      const location = { path: hit.path, line: hit.line };
+      const size = JSON.stringify(location).length + 1;
+      if (size > locationBudget) continue;
+      locations.push(location);
+      locationBudget -= size;
+    }
+    observation = {
+      searched_path: typeof value.searched_path === 'string' && value.searched_path.length <= 512 ? value.searched_path : undefined,
+      match_count: Number.isSafeInteger(value.match_count) ? value.match_count : undefined,
+      results: locations,
+      locations_truncated: value.truncated === true || locations.length < value.results.length,
+    };
+  } else return result;
+  return { ...result, ...observation, preview: result.preview.slice(0, PREVIEW_CHARS - JSON.stringify(observation).length) };
 }
 
 export async function serveEngine({ input, output, log = () => {}, startup, env = process.env, fetchImpl = fetch, detachOnShutdown = false, viewStore }) {

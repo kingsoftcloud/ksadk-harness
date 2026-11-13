@@ -7,12 +7,30 @@ import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import test from 'node:test';
 import { createEngineService } from '../src/native/engine-service.mjs';
+import { projectEngineEvent } from '../src/native/engine-server.mjs';
 import { createEngineViewStore } from '../src/native/engine-view-store.mjs';
 import { ENGINE_CONTEXT } from '../src/native/engine-context.mjs';
 import { ENGINE_HOST_EFFECT } from '../src/native/engine-host-effects.mjs';
 import { ENGINE_EXECUTION_POLICY } from '../src/native/engine-runtime.mjs';
 import { ENGINE_VERIFICATION } from '../src/native/engine-verification.mjs';
 import { deliveryNetChanges, engineDeliveryEvidence } from '../src/native/engine-delivery-evidence.mjs';
+
+test('oversized workspace observations retain actual read ranges and bounded search locations', () => {
+  const project = (name, content) => projectEngineEvent({ kind: 'tool.completed', seq: 1,
+    payload: { name, callId: 'fixture', status: 'ok', content } }).result;
+  const read = project('read_workspace_file', { ok: true, content: 'x'.repeat(10000),
+    read_range: { start: 7, end: 24 }, line_count: 18 });
+  assert.equal(read.truncated, true);
+  assert.deepEqual([read.start_line, read.end_line, read.line_count], [7, 24, 18]);
+
+  const search = project('search_workspace_files', { ok: true, searched_path: 'src', match_count: 50,
+    results: Array.from({ length: 50 }, (_, index) => ({ path: 'src/a.ts', line: index + 1, text: 'x'.repeat(1000) })) });
+  assert.equal(search.truncated, true);
+  assert.equal(search.searched_path, 'src');
+  assert.equal(search.match_count, 50);
+  assert.equal(search.results.length, 12);
+  assert.deepEqual(search.results[0], { path: 'src/a.ts', line: 1 });
+});
 
 test('delivery evidence uses committed effects from the current Run, not inherited paths', () => {
   const tools = ['write_workspace_file', 'run_command', 'browser_inspect_workspace'];

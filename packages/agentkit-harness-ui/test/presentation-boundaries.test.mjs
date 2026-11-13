@@ -22,13 +22,14 @@ test('tool argument drafts share the tool renderer without execution authority, 
   assert.doesNotMatch(html, /data-call-id=|data-testid="edit-diff"|data-status=|private-preview-key|unfinished code/);
 });
 
-test('static file reads expose errors without redundant detail or disclosure buttons', () => {
+test('collapsed file reads expose errors with a single detail disclosure', () => {
   const value = state([{ type: 'task.started', taskId: 'read' },
     { type: 'tool.scheduled', callId: 'r', name: 'read_workspace_file', input: { path: 'missing.txt' } },
     { type: 'tool.error', callId: 'r', error: 'File was not found' }]);
   const html = renderToStaticMarkup(React.createElement(HarnessTimeline, { state: value, styleSheet: null, onInspectTool() {} }));
   assert.match(html, /File was not found/); assert.doesNotMatch(html, /data-action="inspect-tool"/);
-  assert.doesNotMatch(html, /<summary/);
+  assert.match(html, /aria-expanded="false"/);
+  assert.equal((html.match(/<summary\b/g) || []).length, 1);
 });
 
 test('the independent inspector renders only the selected observation and redacts structured secrets', () => {

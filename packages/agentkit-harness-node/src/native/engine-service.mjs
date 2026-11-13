@@ -78,14 +78,17 @@ function openSession(sessionId, startup, env, fetchImpl, log, viewStore) {
       resolve(frame);
     }
   });
-  const takeHostRequests = runId => {
-    pruneHostRequests(Date.now());
+  const takeHostRequests = (runId, receiver) => {
+    const now = Date.now();
+    pruneHostRequests(now);
     const ready = [];
     for (const request of hostRequests.values()) {
-      if (!request.claimed && (runId === undefined || request.frame.params?.runId === runId)) {
-        request.claimed = true;
-        ready.push(request.frame);
-      }
+      if (runId !== undefined && request.frame.params?.runId !== runId) continue;
+      if (request.claimed && (!receiver || request.receiver !== receiver || now < request.redeliverAt)) continue;
+      request.claimed = true;
+      request.receiver = receiver;
+      request.redeliverAt = now + 500;
+      ready.push(request.frame);
     }
     return ready;
   };
@@ -97,8 +100,8 @@ function openSession(sessionId, startup, env, fetchImpl, log, viewStore) {
         input.write(JSON.stringify(frame) + '\n');
       });
     },
-    async takeHostRequests(runId, waitMs, response) {
-      const available = takeHostRequests(runId);
+    async takeHostRequests(runId, waitMs, response, receiver) {
+      const available = takeHostRequests(runId, receiver);
       if (available.length || !waitMs || response.destroyed) return available;
       return new Promise(resolve => {
         const finish = frames => {
@@ -110,7 +113,7 @@ function openSession(sessionId, startup, env, fetchImpl, log, viewStore) {
         const cancel = () => finish([]);
         const notify = stopped => {
           if (stopped || response.destroyed) return cancel();
-          const ready = takeHostRequests(runId);
+          const ready = takeHostRequests(runId, receiver);
           if (ready.length) finish(ready);
         };
         const timer = setTimeout(cancel, waitMs);
@@ -202,7 +205,11 @@ export function createEngineService({ startup, token, env = process.env, fetchIm
         const search = new URLSearchParams(query);
         const runId = search.get('runId') ?? undefined;
         const waitMs = Math.min(Math.max(Number(search.get('waitMs')) || 0, 0), 5000);
-        const requests = await session.takeHostRequests(runId, waitMs, response);
+        // Existing hosts use one-shot delivery. Only a Run-scoped client
+        // that deduplicates execution by frame ID can request redelivery.
+        const requestedReceiver = search.get('receiver');
+        const receiver = runId !== undefined && /^[a-f0-9-]{36}$/.test(requestedReceiver ?? '') ? requestedReceiver : null;
+        const requests = await session.takeHostRequests(runId, waitMs, response, receiver);
         return respond(response, 200, { requests });
       }
       if (query !== undefined) return respond(response, 400, { error: 'invalid_query' });

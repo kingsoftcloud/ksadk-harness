@@ -385,7 +385,20 @@ for (const deny of [false, true]) test(deny
     }
     assert.fail('Run did not reach the expected state: ' + JSON.stringify(last));
   }
-  const first = await callback();
+  const first = deny ? await (async () => {
+    const receiver = 'c34f85e0-e381-4884-aba9-5619573d7981';
+    const poll = async (id, waitMs = '0') => (await (await fetch(base + 'host-requests?' + new URLSearchParams({
+      runId, waitMs, receiver: id,
+    }), { headers })).json()).requests;
+    const firstDelivery = poll(receiver, '2500');
+    await rpc('run/events', { runId, cursor: 0, follow: true });
+    const [lost] = await firstDelivery;
+    assert.equal(lost.method, 'host/callTool');
+    await sleep(550);
+    assert.deepEqual(await poll('57b94515-d068-49b0-9f1a-c1b9d2ebd6a2'), []);
+    assert.deepEqual(await poll(receiver), [lost]);
+    return lost;
+  })() : await callback();
   const observations = first.params.effect.observations;
   assert.deepEqual(observations.map(item => [item.sourceRunId, item.content]), [[runId, 'current-user-input']]);
   assert.equal(first.params.effect.approved, false);

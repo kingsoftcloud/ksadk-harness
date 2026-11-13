@@ -483,7 +483,7 @@ function ScrollEnd({ reducedMotion, renderChildren, type, props }) {
 }
 
 
-  function WebDelivery({ path, seq, resolve, zh }) {
+  function WebDelivery({ path, seq, resolve, zh, application = false }) {
     const [preview, setPreview] = useState(null);
     const [pending, setPending] = useState(false);
     const [failed, setFailed] = useState(false);
@@ -491,13 +491,13 @@ function ScrollEnd({ reducedMotion, renderChildren, type, props }) {
     useEffect(() => {
       const controller = new AbortController();
       lifetime.current = controller;
-      void resolve({ path, seq }, controller.signal).then(delivery => {
+      void resolve({ path, seq, application }, controller.signal).then(delivery => {
         if (!controller.signal.aborted) setPreview(delivery);
       }).catch(() => {});
       return () => controller.abort();
-    }, [path, seq, resolve]);
+    }, [path, seq, resolve, application]);
     if (!preview?.href) return null;
-    const filename = path.split('/').at(-1);
+    const filename = application ? (zh ? '运行中的应用' : 'Running application') : path.split('/').at(-1);
     const openLabel = zh ? `打开 ${filename}` : `Open ${filename}`;
     const openSidebar = async () => {
       const signal = lifetime.current.signal;
@@ -517,7 +517,7 @@ function ScrollEnd({ reducedMotion, renderChildren, type, props }) {
         createElement('path', { d: 'M3 12h18' }))),
       createElement('span', { className: 'harness-delivery-name' },
         createElement('strong', { title: path }, filename),
-        createElement('small', null, zh ? '网站 · HTML' : 'Website · HTML')),
+        createElement('small', null, application ? path : zh ? '网站 · HTML' : 'Website · HTML')),
       preview.openInSidebar ? createElement('div', { className: 'harness-delivery-actions' },
         createElement('button', { type: 'button', disabled: pending, onClick: openSidebar, 'aria-label': openLabel },
           pending ? (zh ? '正在打开…' : 'Opening…') : (zh ? '打开' : 'Open')),
@@ -530,17 +530,17 @@ function ScrollEnd({ reducedMotion, renderChildren, type, props }) {
         : newTab(zh ? '打开' : 'Open', openLabel));
   }
 
-  function DeliveryEvidence({ seq, load, openFile, zh }) {
+  function DeliveryEvidence({ seq, load, openFile, resolveWebDelivery, deliveries, zh }) {
     const [evidence, setEvidence] = useState(null);
     useEffect(() => {
       const controller = new AbortController();
+      if (!load || seq === undefined) return;
       void load(seq, controller.signal).then(value => {
         if (!controller.signal.aborted) setEvidence(value);
       }).catch(() => {});
       return () => controller.abort();
     }, [seq, load]);
-    if (!evidence) return null;
-    const { files, screenshots, truncated } = evidence;
+    const { files = [], screenshots = [], truncated, application } = evidence ?? {};
     const counts = file => Number.isSafeInteger(file.added) && file.added >= 0
       && Number.isSafeInteger(file.removed) && file.removed >= 0;
     const delta = (added, removed) => createElement('span', { className: 'harness-delivery-delta' },
@@ -550,6 +550,10 @@ function ScrollEnd({ reducedMotion, renderChildren, type, props }) {
     const label = zh ? `${files.length}${truncated ? '+' : ''} 个文件已更改`
       : `${files.length}${truncated ? '+' : ''} ${files.length === 1 ? 'file' : 'files'} changed`;
     return createElement(React.Fragment, null,
+      ...(resolveWebDelivery ? [
+        ...(application ? [{ path: application.path, seq, application: true }] : []),
+        ...(deliveries ?? []).filter(delivery => delivery.path !== application?.path),
+      ].map(delivery => createElement(WebDelivery, { key: delivery.path, ...delivery, resolve: resolveWebDelivery, zh })) : []),
       files.length ? createElement('details', { className: 'harness-delivery-changes', 'data-testid': 'delivery-changes' },
         createElement('summary', null, label, total),
         createElement('ul', null, ...files.map(file => createElement('li', { key: file.path },
@@ -584,10 +588,9 @@ function ScrollEnd({ reducedMotion, renderChildren, type, props }) {
       createElement(HarnessTimeline, { state, onCopy, locale, ...timeline }),
       state.taskState === 'failed' && state.taskError
         ? createElement('p', { className: 'harness-turn-error', role: 'alert' }, state.taskError) : null,
-      ...(answer?.kind === 'text' && !answer.streaming && resolveWebDelivery ? (deliveries ?? []).map(delivery =>
-        createElement(WebDelivery, { key: JSON.stringify([delivery.seq, delivery.path]), ...delivery, resolve: resolveWebDelivery, zh })) : []),
-      answer?.kind === 'text' && !answer.streaming && deliverySeq !== undefined && loadDeliveryEvidence
-        ? createElement(DeliveryEvidence, { key: deliverySeq, seq: deliverySeq, load: loadDeliveryEvidence, openFile: timeline.onOpenFile, zh }) : null,
+      answer?.kind === 'text' && !answer.streaming && (resolveWebDelivery || loadDeliveryEvidence)
+        ? createElement(DeliveryEvidence, { key: deliverySeq, seq: deliverySeq, load: loadDeliveryEvidence, deliveries,
+          openFile: timeline.onOpenFile, resolveWebDelivery, zh }) : null,
       answer?.kind === 'text' && !answer.streaming ? createElement('div', { className: 'harness-reply-actions',
         role: 'group', 'aria-label': zh ? '回复操作' : 'Reply actions' },
       button(copyLabel, copy, copyState === 'copied' ? 'm5 12 4 4L19 6' : 'M8 8h11v12H8zM5 16H4V4h11v1'),

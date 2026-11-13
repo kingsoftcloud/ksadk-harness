@@ -12,7 +12,7 @@ import { ENGINE_CONTEXT } from '../src/native/engine-context.mjs';
 import { ENGINE_HOST_EFFECT } from '../src/native/engine-host-effects.mjs';
 import { ENGINE_EXECUTION_POLICY } from '../src/native/engine-runtime.mjs';
 import { ENGINE_VERIFICATION } from '../src/native/engine-verification.mjs';
-import { engineDeliveryEvidence } from '../src/native/engine-delivery-evidence.mjs';
+import { deliveryNetChanges, engineDeliveryEvidence } from '../src/native/engine-delivery-evidence.mjs';
 
 test('delivery evidence uses committed effects from the current Run, not inherited paths', () => {
   const tools = ['write_workspace_file', 'run_command', 'browser_inspect_workspace'];
@@ -29,6 +29,22 @@ test('delivery evidence uses committed effects from the current Run, not inherit
   };
   assert.deepEqual(engineDeliveryEvidence(record), { files: [{ path: 'app.js' }, { path: 'index.html' }],
     screenshots: ['declared.png', '.artifacts/preview.png'], truncated: false });
+});
+
+test('delivery line counts compare the opening and final content and omit reverted paths', () => {
+  const file = text => ({ text, digest: createHash('sha256').update(text).digest('hex') });
+  const net = deliveryNetChanges({
+    'a.txt': file('unchanged\nold\n'), 'reverted.txt': file('same\n'),
+    'deleted.txt': file('gone\n'), 'binary.png': { digest: 'old' },
+  }, {
+    'a.txt': file('unchanged\nnew\n'), 'reverted.txt': file('same\n'),
+    'binary.png': { digest: 'new' }, 'created.txt': file('one\ntwo'),
+  });
+  assert.deepEqual(net('a.txt'), { path: 'a.txt', added: 1, removed: 1 });
+  assert.equal(net('reverted.txt'), null);
+  assert.deepEqual(net('deleted.txt'), { path: 'deleted.txt', added: 0, removed: 1, deleted: true });
+  assert.deepEqual(net('binary.png'), { path: 'binary.png' });
+  assert.deepEqual(net('created.txt'), { path: 'created.txt', added: 2, removed: 0 });
 });
 
 test('a live cursor delivers reasoning and tool drafts before the model response settles', async t => {
@@ -551,7 +567,9 @@ test('the network service owns Runs, host callbacks and durable session state', 
   await service.close();
   await start();
   await initialize('first');
-  const restored = (await rpc('first', 'run/status', { runId: 'run-1' })).result;
+  const restored = (await rpc('first', 'run/status', { runId: 'run-1', deliveryPresentation: true })).result;
+  assert.deepEqual(restored.deliveryEvidence, { files: [{ path: 'out.txt', added: 1, removed: 0 }],
+    screenshots: [], truncated: false, basis: 'run-net-diff/v1' });
   assert.equal(restored.finalText, 'Done.');
   assert.deepEqual(restored.view, view);
   await assertView();

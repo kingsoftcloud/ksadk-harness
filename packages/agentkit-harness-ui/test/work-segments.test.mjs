@@ -32,21 +32,31 @@ test('completion collapses the process, retains the final answer, and row expans
   assert.deepEqual(buildViewModel(replay([...events,{type:'task.finished',outcome:'unverified',finalAnswerId:'answer',endedAt:134000}]),{locale:'zh-CN'}),tree);
 });
 
-test('running, failure, interruption and cancellation never conceal work as a delivered answer',()=>{
+test('terminal work folds without promoting progress into an answer; active and blocked work remains visible',()=>{
   for(const ending of [null,{outcome:'failed',error:'actual failure'},{outcome:'cancelled'},
     {outcome:'blocked'},{outcome:'unverified'}, {outcome:'unverified',executionState:'interrupted'}]){
     const state=replay([...events,...ending?[{type:'task.finished',finalAnswerId:ending.outcome==='unverified'&& !ending.executionState?undefined:'answer',...ending}]:[]]);
     const tree=buildViewModel(state,{locale:'zh-CN'});
-    assert.equal(findByTestId(tree,'work-history'),null);assert.match(textOf(tree),/Checking the actual source/);
+    const history = findByTestId(tree, 'work-history');
+    if (!ending || ending.outcome === 'blocked') {
+      assert.equal(history, null);
+      assert.match(textOf(tree), /Checking the actual source/);
+    } else {
+      assert.equal(history.props.open, false);
+      assert.doesNotMatch(textOf(tree), /Checking the actual source|Final source-grounded answer/);
+    }
   }
 });
 
-test('unknown tool outcomes stay visible even when a Host declares a finished answer',()=>{
+test('unknown tool outcomes remain accessible in collapsed history after the answer',()=>{
   const state=replay([...events.filter(event=>event.type!=='tool.result'),{type:'tool.state',callId:'read',status:'uncertain'},
     {type:'task.finished',outcome:'completed',finalAnswerId:'answer'}]);
   const tree=buildViewModel(state,{locale:'zh-CN'});
-  assert.equal(findByTestId(tree,'work-history'),null);
-  assert.equal(findAllByTestId(tree,'tool-block').length,1);
+  const history = findByTestId(tree, 'work-history');
+  assert.equal(history.props.open, false);
+  assert.match(textOf(tree), /Final source-grounded answer/);
+  const expanded = buildViewModel(state, { historyOpen: new Map([[history.props['data-item-id'], true]]) });
+  assert.equal(findByTestId(expanded, 'tool-block').props['data-status'], 'uncertain');
 });
 
 test('steering inputs remain visible and every text block from the final message stays outside history',()=>{

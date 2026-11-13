@@ -133,7 +133,7 @@ export const styles = `
   max-width: 50ch;
 }
 .harness-tool-secondary { font-size: 0.8rem; color: var(--harness-fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40ch; }
-.harness-tool-status { font-size: 0.8rem; color: var(--harness-fg-muted); text-transform: lowercase; }
+.harness-tool-status { flex-shrink: 0; white-space: nowrap; font-size: 0.8rem; color: var(--harness-fg-muted); text-transform: lowercase; }
 .harness-tool-status-running { color: var(--harness-running); }
 .harness-tool-status-completed { display: none; }
 .harness-tool-details-static > summary { cursor: default; list-style: none; }

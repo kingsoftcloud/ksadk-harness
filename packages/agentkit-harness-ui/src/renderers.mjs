@@ -23,7 +23,7 @@ import { truncateText, latestNonEmptyLine, redactValue, boundedDetailLines } fro
 import { parseDiffHunks, countChangeStat, inferOperationKind } from "./diff.mjs";
 import { extractCommand, extractOutput } from "./terminal.mjs";
 import { toolIdentity, localizedToolTitle } from './tool-identity.mjs';
-import { toolErrorSummary } from './tool-error.mjs';
+import { commandPolicyBlockReason, isCommandPolicyBlock, toolErrorSummary } from './tool-error.mjs';
 
 /** Tool-name → renderer classification. Host tool names vary across runtimes. */
 
@@ -84,17 +84,15 @@ const toolIsLive = item => item.kind === 'tool-preview' ? item.streaming === tru
  * own title span), the primary/secondary content, the status word, and a
  * chevron that rotates when the body is open.
  *
- * Error placement preserves the reason for non-toggleable tools too: a read or
- * search that cannot expand still surfaces its redacted error inline in the
- * summary (role=alert), so the failure is never hidden behind a missing toggle.
+ * Policy-blocked commands put the reason inside the disclosure.
  */
-function toolShell(item, opts, { icon, summary, body, canToggle = true, defaultOpen, actions = [], summaryAction }) {
+function toolShell(item, opts, { icon, summary, body, canToggle = true, defaultOpen, actions = [], summaryAction, commandBlocked = false }) {
   const status = item.status;
   const provisional = item.kind === 'tool-preview';
   const streaming = toolIsLive(item);
   if (provisional) { canToggle = false; summaryAction = undefined; actions = []; }
   const error = status === ToolStatus.Failed && item.error ? redactError(item.error) : null;
-  // Plain static read failures are already fully visible inline. Structured
+  // Plain static failures are already fully visible inline. Structured
   // failures retain a disclosure for the original bounded diagnostic evidence.
   if (error && !canToggle && toolErrorSummary(item.error, opts) !== error) { canToggle = true; defaultOpen = false; }
   const open = resolveOpen(item, opts, defaultOpen == null ? streaming : defaultOpen, canToggle);
@@ -105,7 +103,7 @@ function toolShell(item, opts, { icon, summary, body, canToggle = true, defaultO
   const errorSummary = error ? toolErrorSummary(item.error, opts) : null;
   // Non-toggleable tools have no body to expand into, so their error must live
   // in the summary; toggleable tools show it inline only when collapsed.
-  const showInlineError = error && (canToggle ? !open : true);
+  const showInlineError = error && !commandBlocked && (canToggle ? !open : true);
   if (showInlineError) summaryKids.push(h("span", {
     className: "harness-tool-error harness-tool-error-inline",
     role: "alert",
@@ -115,16 +113,18 @@ function toolShell(item, opts, { icon, summary, body, canToggle = true, defaultO
     className: `harness-tool-status harness-tool-status-${status}`,
     "data-testid": "tool-status",
     "data-status": status,
-  }, statusLabel(status, opts)));
+  }, commandBlocked ? (String(opts.locale).startsWith("zh") ? "未执行" : "Not executed") : statusLabel(status, opts)));
   for (const action of actions) {
     if (action) summaryKids.push(action);
   }
   if (canToggle) summaryKids.push(chevronIcon("harness-tool-chevron"));
   const visibleBody = open && canToggle ? (typeof body === 'function' ? body() : body) : [];
   const bodyKids = Array.isArray(visibleBody) ? visibleBody : [visibleBody];
+  const blockedReason = commandBlocked ? commandPolicyBlockReason(item.error) : null;
   if (error && open && canToggle) bodyKids.unshift(h("div", {
     className: "harness-tool-error", role: "alert", "data-testid": "tool-error",
-  }, errorSummary === error ? error : [errorSummary, h("div", {}, error)]));
+  }, commandBlocked ? [errorSummary, blockedReason ? h("div", {}, blockedReason) : null]
+    : errorSummary === error ? error : [errorSummary, h("div", {}, error)]));
   const detailsProps = canToggle ? {
     open, className: "harness-tool-details", "data-testid": "tool-details",
     "data-call-id": item.callId, "aria-expanded": open,
@@ -201,6 +201,7 @@ function executeRenderer(item, opts) {
   // One extractor handles both normalized event displays (fullText) and
   // Host observation snapshots (stdout/stderr). An empty alias must not hide
   // real streaming bytes supplied through the other supported representation.
+  const commandBlocked = item.status === ToolStatus.Failed && isCommandPolicyBlock(item.error);
   const stdout = out.stdout;
   const hasOutput = Boolean(stdout || out.stderr || out.exit != null);
   const title = localizedToolTitle(item.name, toolTitle(item.name, item.input) || item.name, opts.locale);
@@ -217,7 +218,7 @@ function executeRenderer(item, opts) {
   }, truncateText(command, { maxLines: 1, maxChars: 80 })));
 
   const body = [commandBlock(item.callId, command, cwd, opts),
-    outputBlock(item.callId, { stdout, stderr: out.stderr, exit: out.exit, cwd, running, hasOutput }, opts)];
+    commandBlocked ? null : outputBlock(item.callId, { stdout, stderr: out.stderr, exit: out.exit, cwd, running, hasOutput }, opts)];
   // A host progress message (e.g. "running 4 tests") is shown as a live status
   // line under the command, above the output. The reducer never invents it.
   if (item.progress && item.status !== ToolStatus.Completed) {
@@ -228,7 +229,7 @@ function executeRenderer(item, opts) {
     }, item.progress));
   }
 
-  return toolShell(item, opts, { icon: terminalIcon("harness-tool-kind-icon"), summary, body, canToggle: true, defaultOpen: false });
+  return toolShell(item, opts, { icon: terminalIcon("harness-tool-kind-icon"), summary, body, canToggle: true, defaultOpen: false, commandBlocked });
 }
 
 function commandBlock(callId, command, cwd, opts) {

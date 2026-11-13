@@ -18,7 +18,7 @@ import { publicErrorMessage, publicErrorCode, publicFailureContent } from '@king
  */
 import { createHash } from 'node:crypto';
 import {
-  chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync,
+  chmodSync, closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readdirSync,
   readFileSync, readlinkSync, readSync, realpathSync, rmdirSync, statSync,
   unlinkSync,
 } from 'node:fs';
@@ -59,6 +59,8 @@ const READ_ONLY = new Set([
 
 const OBSERVE_MAX_ENTRIES = 2048;
 const OBSERVE_MAX_HASHED = 64 * 1024 * 1024;
+const DELIVERY_MAX_FILE_BYTES = 128 * 1024;
+const DELIVERY_MAX_TEXT_BYTES = 4 * 1024 * 1024;
 
 class CaptureError extends Error {
   constructor(reason) { super(reason); this.code = reason; this.name = 'CaptureError'; }
@@ -1331,9 +1333,9 @@ export function createNativeWorkspaceTools({
     return 'sha256:' + captureStable(real).digest;
   }
 
-  function captureStable(real) {
-    const first = captureInventory(real);
-    const second = captureInventory(real);
+  function captureStable(real, delivery = false) {
+    const first = captureInventory(real, false, delivery);
+    const second = captureInventory(real, delivery, delivery);
     if (first.digest !== second.digest
       || first.entryCount !== second.entryCount
       || !entriesEqual(first.entries, second.entries)) {
@@ -1342,13 +1344,14 @@ export function createNativeWorkspaceTools({
     return second;
   }
 
-  function captureInventory(real) {
+  function captureInventory(real, delivery = false, ignoreGit = false) {
     const hash = createHash('sha256');
     hash.update('ksadk.directory-workspace/v1\0');
-    const state = { entries: 0, hashedBytes: 0, list: [], byPath: Object.create(null) };
+    const state = { entries: 0, hashedBytes: 0, list: [], byPath: Object.create(null),
+      delivery: delivery ? Object.create(null) : null, deliveryBytes: 0, ignoreGit };
     scanDir(real, '', hash, state);
     state.list.sort();
-    return { digest: hash.digest('hex'), entryCount: state.entries, entries: state.list, byPath: state.byPath };
+    return { digest: hash.digest('hex'), entryCount: state.entries, entries: state.list, byPath: state.byPath, delivery: state.delivery };
   }
 
   /** Compare two sorted entry-identity lists for exact equality. */
@@ -1364,6 +1367,7 @@ export function createNativeWorkspaceTools({
     try { dirents = readdirSync(dir, { withFileTypes: true }); } catch { throw new CaptureError('capture_failed'); }
     dirents.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     for (const d of dirents) {
+      if (!rel && state.ignoreGit && d.name === '.git') continue;
       const entryRel = rel ? `${rel}/${d.name}` : d.name;
       if (entryRel.includes('\\') || entryRel.includes('\0')) throw new CaptureError('unsupported_workspace_path');
       state.entries += 1;
@@ -1391,7 +1395,11 @@ export function createNativeWorkspaceTools({
       } else if (info.isFile()) {
         if (state.hashedBytes + Number(info.size) > OBSERVE_MAX_HASHED) throw new CaptureError('capture_limit_exceeded');
         const fileHash = createHash('sha256');
-        const fd = openSync(abs, 'r');
+        const size = Number(info.size);
+        const deliveryFile = state.delivery;
+        const retained = deliveryFile && size <= DELIVERY_MAX_FILE_BYTES && state.deliveryBytes + size <= DELIVERY_MAX_TEXT_BYTES
+          ? Buffer.alloc(size) : null;
+        const fd = openSync(abs, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
         let readBytes = 0;
         try {
           let remaining = Number(info.size);
@@ -1399,6 +1407,7 @@ export function createNativeWorkspaceTools({
           while (remaining > 0) {
             const n = readSync(fd, buf, 0, Math.min(buf.length, remaining), null);
             if (n === 0) break; // short read: file shrank under us
+            if (retained) buf.copy(retained, readBytes, 0, n);
             readBytes += n;
             state.hashedBytes += n;
             if (state.hashedBytes > OBSERVE_MAX_HASHED) throw new CaptureError('capture_limit_exceeded');
@@ -1415,6 +1424,15 @@ export function createNativeWorkspaceTools({
         const fileDigest = fileHash.digest();
         hash.update('\0file\0');
         hash.update(fileDigest);
+        if (deliveryFile) {
+          state.delivery[entryRel] = { digest: fileDigest.toString('hex') };
+          if (retained && !retained.includes(0)) {
+            try {
+              state.delivery[entryRel].text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(retained);
+              state.deliveryBytes += size;
+            } catch { /* Binary files carry their identity only. */ }
+          }
+        }
         state.list.push(`${entryRel}\tfile\t${before}\t${fileDigest.toString('hex')}`);
       } else {
         throw new CaptureError('unsupported_workspace_entry');
@@ -1589,6 +1607,12 @@ export function createNativeWorkspaceTools({
     }),
     // Host-only change capture for a governed command. It shares the bounded,
     // stable observer; paths remain structured even when names contain tabs.
+    captureDelivery() {
+      checkRootBoundary();
+      const captured = captureStable(pinnedRootReal, true);
+      checkRootBoundary();
+      return captured.delivery;
+    },
     capture(request) {
       if (request.sessionId !== store.sessionId) throw new CaptureError('workspace_session_mismatch');
       checkRootBoundary(); const captured = captureStable(pinnedRootReal);

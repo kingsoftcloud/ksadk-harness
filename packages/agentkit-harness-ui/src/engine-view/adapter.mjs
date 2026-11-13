@@ -34,7 +34,8 @@ function toolFailure(result, name) {
   const code = result?.error_type ?? result?.code ?? result?.error_code;
   const message = result?.error_message ?? result?.message;
   if (!text(code)) return { message: text(message) ? message : `工具 ${name ?? ""} 未成功`.trim() };
-  return { code, ...(text(message) ? { message } : {}),
+  const reason = code === 'command_policy_blocked' && result?.executed === false ? result.finding?.detail : undefined;
+  return { code, ...(text(reason) ? { message: reason } : text(message) ? { message } : {}),
     ...(Number.isSafeInteger(result.failed_edit_index) && result.failed_edit_index >= 0
       ? { failed_edit_index: result.failed_edit_index } : {}) };
 }

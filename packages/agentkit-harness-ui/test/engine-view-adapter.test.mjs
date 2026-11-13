@@ -132,3 +132,19 @@ test("web delivery prefers the committed manifest and supports earlier final ans
     [{ path: "site/pages/index.html", root: "site" }]);
   assert.deepEqual(engineWebDeliveries({ ...final, title: "failed" }), []);
 });
+
+test("a policy-blocked terminal call shows one status and reveals its reason on demand", () => {
+  const state = reduceAll(initialState(), engineEventsToTimeline([
+    e(1, "run.started"),
+    e(2, "model.completed", { calls: [{ callId: "blocked", name: "run_command", arguments: { command: "example command" } }] }),
+    e(3, "tool.completed", { callId: "blocked", title: "run_command", status: "error", result: {
+      error_type: "command_policy_blocked", executed: false, exit_code: 126, finding: { detail: "Example rule requires approval" },
+    } }),
+  ]));
+  const render = options => JSON.stringify(buildViewModel(state, { locale: "zh-CN", ...options }));
+  assert.match(render(), /未执行/);
+  assert.doesNotMatch(render(), /执行失败|Example rule|exit 126/);
+  const expanded = render({ toolOpen: new Map([["blocked", true]]) });
+  assert.match(expanded, /Example rule requires approval/);
+  assert.doesNotMatch(expanded, /command_policy_blocked|exit 126/);
+});

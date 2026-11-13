@@ -32,6 +32,14 @@ export function isRetryableEditFailure(error) {
   return ['snippet_not_found', 'ambiguous_edit'].includes(errorCode(errorValue(error)));
 }
 
+export const isCommandPolicyBlock = error => errorCode(errorValue(error)) === 'command_policy_blocked';
+
+export function commandPolicyBlockReason(error) {
+  const value = errorValue(error);
+  const reason = value?.finding?.detail ?? value?.message ?? value?.error_message;
+  return typeof reason === 'string' ? redactError(reason) : null;
+}
+
 /** Detailed evidence remains expandable; compact rows do not dump wire JSON. */
 export function toolErrorSummary(error, { locale } = {}) {
   const value = errorValue(error);

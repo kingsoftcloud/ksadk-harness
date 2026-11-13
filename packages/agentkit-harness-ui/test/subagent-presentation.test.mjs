@@ -25,7 +25,7 @@ test('parent completion is not reopened by a child still running in the backgrou
 });
 test('the independent child pane is read only and ordinary completion adds no status row', () => {
   const value = state([{ type: 'task.started', taskId: 'child' }, { type: 'text.done', itemId: 'answer', text: 'Observed child answer' },
-    { type: 'task.finished', outcome: 'unverified', verificationRequired: false }]);
+    { type: 'task.finished', outcome: 'unverified', finalAnswerId: 'answer', verificationRequired: false }]);
   const html = renderToStaticMarkup(React.createElement(SubagentPane, { state: value, styleSheet: null }));
   assert.match(html, /aria-readonly="true"/); assert.match(html, /Observed child answer/);
   assert.doesNotMatch(html, /status-line|contenteditable|<textarea|type="submit"/);

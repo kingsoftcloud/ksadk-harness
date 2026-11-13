@@ -38,7 +38,6 @@ import { ENGINE_HOOKS } from './engine-hooks.mjs';
 import { ENGINE_HOST_EFFECT, hostReceiptReply, hostReceiptSource, waitForHostReceipt } from './engine-host-effects.mjs';
 import { ENGINE_VERIFICATION } from './engine-verification.mjs';
 import { nativeTodoPlan } from './activity-status.mjs';
-import { engineDeliveryEvidence } from './engine-delivery-evidence.mjs';
 export { ENGINE_VIEW_CONTRACT };
 
 export const ENGINE_PROTOCOL = 'agentkit.engine/v1';
@@ -356,7 +355,7 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
       requireRun(params);
       const rest = status(params.runId);
       return params.deliveryPresentation === true && rest.phase === 'completed' && text(rest.finalText)
-        ? { ...rest, deliveryEvidence: engineDeliveryEvidence(runtime.load(params.runId)) } : rest;
+        ? { ...rest, deliveryEvidence: runtime.deliveryEvidence(params.runId) } : rest;
     },
     async [HOST_OBSERVATIONS_METHOD](params) {
       if (!host.services.toolEffects) throw rpcError(ERRORS.method, 'host observations unavailable');
@@ -409,7 +408,7 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
             if (projected.kind !== 'run.terminal' || projected.title !== 'completed' || !text(projected.detail)) return projected;
             const artifacts = currentDeliveryManifest(snapshot)?.artifacts;
             return { ...projected, ...(artifacts?.length ? { deliverables: artifacts } : {}),
-              ...((thinkingPresentation || draftPresentation) ? { deliveryEvidence: engineDeliveryEvidence(runtime.load(runId)) } : {}) };
+              ...((thinkingPresentation || draftPresentation) ? { deliveryEvidence: runtime.deliveryEvidence(runId) } : {}) };
           }), cursor: next,
             ...(thinking ? { thinking } : {}),
             ...(toolDraft ? { toolDraft } : {}),

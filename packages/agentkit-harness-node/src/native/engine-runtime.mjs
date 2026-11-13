@@ -18,6 +18,7 @@ import { admitChatUsagePolicy } from './model-chat-usage.mjs';
 import { validateMediaBlock } from './model-media.mjs';
 import { admitProviderCompatibilityPolicy } from './model-provider-compat.mjs';
 import { bindNativeContext, nativeContextDefaults } from './context-profile.mjs';
+import { createEngineDeliveryJournal, engineDeliveryEvidence } from './engine-delivery-evidence.mjs';
 import { createNativeWorkspaceTools } from './workspace-tools.mjs';
 import { createNativeLocalCommandTools } from './local-command-tools.mjs';
 import { createOwnedCommandResolver } from './owned-command.mjs';
@@ -202,6 +203,7 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
   const executionOptions = { modern: true, resourceProfile: 'local-development/v2' };
   const local = execution.localExecution(executionOptions);
   const workspace = createNativeWorkspaceTools({ workspaceRoot: root, stateDir: join(stateDir, 'workspace'), sessionId, authorize: decide });
+  const deliveries = createEngineDeliveryJournal(join(stateDir, 'delivery'), () => workspace.captureDelivery());
   const commands = createNativeLocalCommandTools({ workspaceRoot: root, stateRoot: join(stateDir, 'commands'), sessionId,
     settings: local.settings, sourceEnv: local.environment, outputPolicy: local.outputPolicy, environmentPolicy: local.environmentPolicy,
     shellPolicy: commandSandbox,
@@ -432,6 +434,7 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
   /** Admit a new Run. The Run freezes the preset and instructions it starts with. */
   function start(input) {
     const { identity, configuration, preset, hostTools } = prepareRun(input);
+    try { deliveries.begin(input.runId); } catch { /* Optional presentation evidence. */ }
     kernel.start(initialSnapshot(identity, configuration, digest(configuration)), configuration);
     return { runId: input.runId, preset, hostTools };
   }
@@ -450,6 +453,9 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
     start, prepareRun, ports,
     async run(runId, options) {
       const snapshot = await kernel.runUntilIdle(scope, runId, options);
+      if (terminal(snapshot.phase)) {
+        try { deliveries.seal(store.load(scope, runId)); } catch { /* Preserve the completed Run. */ }
+      }
       if (children && terminal(snapshot.phase)) await children.owner.releaseRun({ scope, runId });
       return snapshot;
     },
@@ -468,6 +474,10 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
           || tool.hostEffectProtocol === ENGINE_HOST_EFFECT)) ? { requiresUserApproval: true } : {}),
         ...(snapshot.childApproval ? { childRunId: snapshot.childApproval.childRunId } : {}),
         ...(subject ? { subject } : {}) };
+    },
+    deliveryEvidence(runId) {
+      const record = store.load(scope, runId);
+      try { return deliveries.read(record); } catch { return engineDeliveryEvidence(record); }
     },
     load: runId => store.load(scope, runId),
     completedHostObservations: record => completedHostObservations(store, scope, record),

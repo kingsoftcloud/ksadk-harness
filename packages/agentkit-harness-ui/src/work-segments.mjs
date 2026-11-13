@@ -11,6 +11,7 @@ export function conversationWorkSegments(state, items) {
   }
   if (segment.inputs.length || segment.work.length) segments.push(segment);
   const closed = ['completed', 'unverified'].includes(state.taskState) && !state.taskError;
+  const ended = closed || ['failed', 'cancelled', 'interrupted'].includes(state.taskState);
   return segments.map((segment, index) => {
     const rows = segment.work;
     const candidate = rows.find(item => item.id === state.finalAnswerId)
@@ -19,9 +20,8 @@ export function conversationWorkSegments(state, items) {
     const answerIndex = final ? rows.findIndex(item => item.kind === 'text' && (item.id === final.id
       || final.sourceMessageId && item.sourceMessageId === final.sourceMessageId)) : -1;
     const process = answerIndex >= 0 ? rows.slice(0, answerIndex) : rows;
-    const unresolved = rows.some(item => item.kind === 'tool' && ['scheduled', 'running', 'waiting', 'uncertain', 'interrupted'].includes(item.status));
     return { ...segment, process, following: answerIndex >= 0 ? rows.slice(answerIndex) : [],
-      collapsible: closed && answerIndex >= 0 && process.length > 0 && !unresolved };
+      collapsible: ended && process.length > 0 };
   });
 }
 

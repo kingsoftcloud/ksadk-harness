@@ -27,7 +27,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import * as readline from 'node:readline';
 import { setTimeout as wait } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { currentDeliveryManifest, FINAL_SUBMISSION_TOOL, isNativeError, TOOL_RECEIPT_OBSERVATION_CONTRACT } from '@kingsoftcloud/agentkit-harness-core';
+import { currentDeliveryManifest, FINAL_SUBMISSION_TOOL, isApprovalDenialReason, isNativeError, TOOL_RECEIPT_OBSERVATION_CONTRACT } from '@kingsoftcloud/agentkit-harness-core';
 import { publicErrorMessage } from '@kingsoftcloud/agentkit-harness-core/error-presentation';
 import { createEngineRuntime, engineApprovalSubject, ENGINE_APPROVAL_CONTRACT, ENGINE_EXECUTION_POLICY,
   ENGINE_INPUT_IMAGES } from './engine-runtime.mjs';
@@ -429,13 +429,16 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
       requireRun(params);
       if (!detachOnShutdown || !text(params.interactionId) || !['allow', 'deny'].includes(params.decision))
         throw rpcError(ERRORS.params, 'interactionId and approval decision are required');
-      const { runId, interactionId, decision } = params;
+      const { runId, interactionId, decision, denialReason } = params;
+      if (denialReason !== undefined && (decision !== 'deny' || !isApprovalDenialReason(denialReason)))
+        throw rpcError(ERRORS.params, 'invalid approval denial reason');
       const commandId = `approval-${createHash('sha256').update(interactionId).digest('hex')}`;
       const record = runtime.load(runId);
       if (!record.commands.some(row => row.command.commandId === commandId)
         && runtime.pendingApproval(record.snapshot, record.configuration)?.interactionId !== interactionId)
         throw rpcError(ERRORS.params, 'interaction_mismatch');
-      const receipt = runtime.submit(runId, { commandId, kind: 'submit_interaction', payload: { interactionId, decision } });
+      const receipt = runtime.submit(runId, { commandId, kind: 'submit_interaction',
+        payload: { interactionId, decision, ...(denialReason === undefined ? {} : { denialReason }) } });
       if (receipt.status !== 'rejected') {
         const continueRun = () => { if (!closing && !status(runId).terminal) continueOnSubscription(runId, record); };
         const running = active.get(runId);

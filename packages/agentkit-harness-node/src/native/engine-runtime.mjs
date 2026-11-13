@@ -53,7 +53,14 @@ export const engineApprovalSubject = ({ arguments: args = {} }) => {
   return subject ? redactDiagnosticText(subject, 500) : null;
 };
 
-function durableDecision(record, request) {
+const approvalDenialMessages = {
+  approval_prompts_disabled: 'This action requires one-time authorization, but approval prompts are disabled in this session. Changing the arguments cannot grant permission. Do not retry the denied action or try to bypass approval; continue with permitted work, or tell the user to enable approval prompts before trying again.',
+  approval_rejected: 'The user declined this action. Do not retry it with different arguments or use another tool to bypass the decision.',
+  approval_unavailable: 'No approval responder is available for this action. Changing the arguments cannot grant permission. Continue with permitted work and report the limitation.',
+  approval_cancelled: 'This approval was cancelled. The action did not run. Do not request it again unless the user asks to continue.',
+};
+
+function durableDecision(record, request, explainDenial = false) {
   const { call, operationKey } = request;
   const interactionId = `engine-permission-${digest({ runId: request.runId, call, definition: request.definition })}`;
   // Walk backward only within the lifetime of this call. A reused provider
@@ -66,8 +73,13 @@ function durableDecision(record, request) {
     const intentKey = payload.interactionId?.slice(0, -':approval'.length);
     if (!intentKey || intentKey === operationKey) continue;
     const receipt = record.receipts.find(row => row.operationKey === intentKey && row.status === 'committed');
-    if (receipt?.result.results?.some(result => result.status === 'approval_required' && result.interactionId === interactionId))
-      return payload.decision === 'allow' ? 'allow' : 'deny';
+    if (receipt?.result.results?.some(result => result.status === 'approval_required' && result.interactionId === interactionId)) {
+      if (payload.decision === 'allow') return 'allow';
+      if (explainDenial && Object.hasOwn(approvalDenialMessages, payload.denialReason))
+        return { status: 'error', content: { code: payload.denialReason, executed: false, retryable: false,
+          message: approvalDenialMessages[payload.denialReason] } };
+      return 'deny';
+    }
   }
   return { status: 'approval_required', approvalPolicy: DURABLE_APPROVAL, interactionId,
     content: { contract: ENGINE_APPROVAL_CONTRACT, code: 'approval_required', argumentDigest: digest(call.arguments),
@@ -194,8 +206,8 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
   const roles = nativeChildRoles({ subAgents });
   const supportsImages = description.input.includes('image');
   const store = runStore ?? new SqliteRunStore(join(stateDir, 'runs.sqlite'));
-  const decide = async request => {
-    if (request.definition?.approvalPolicy === DURABLE_APPROVAL) return durableDecision(store.load(request.scope, request.runId), request);
+  const decide = async (request, explainDenial = false) => {
+    if (request.definition?.approvalPolicy === DURABLE_APPROVAL) return durableDecision(store.load(request.scope, request.runId), request, explainDenial);
     return await authorize(request) === 'allow' ? 'allow' : 'deny';
   };
   const artifacts = await createNativeArtifactStore({ directory: join(stateDir, 'artifacts'), scope });
@@ -220,19 +232,20 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
         const effectBound = request.definition?.hostEffectProtocol === ENGINE_HOST_EFFECT;
         const record = effectBound ? store.load(request.scope, request.runId) : null;
         const decision = record && request.definition.approvalPolicy === DURABLE_APPROVAL
-          ? durableDecision(record, request) : null;
+          ? durableDecision(record, request, true) : null;
         if (decision === 'deny') return { status: 'error', content: { code: 'policy_denied', executed: false } };
+        if (decision?.status === 'error') return decision;
         const effect = record ? {
           contract: ENGINE_HOST_EFFECT, operationKey: request.operationKey,
           sourceEventId: record.events.at(-1)?.eventId ?? null,
           goal: record.snapshot.goal, goalRevision: record.snapshot.goalRevision,
           observations: engineUserObservations(store, request.scope, record.snapshot),
-          approved: decision === 'allow', canRequestApproval: !!decision && typeof decision === 'object',
+          approved: decision === 'allow', canRequestApproval: decision?.status === 'approval_required',
         } : undefined;
         const reply = await callHostTool({ runId: request.runId, callId: request.call.callId, name: request.call.name,
           arguments: request.call.arguments ?? {}, signal: request.signal, timeoutMs: request.definition?.timeoutMs ?? 120000, effect });
         if (effectBound && reply?.status === 'approval_required') {
-          return decision && typeof decision === 'object' ? decision
+          return decision?.status === 'approval_required' ? decision
             : { status: 'error', content: { code: 'host_tool_approval_unavailable', executed: false } };
         }
         if (effectBound && reply?.status === 'uncertain')
@@ -262,7 +275,7 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
   const preflight = async (request, dispatch) => {
     if (request.definition.approvalPolicy === DURABLE_APPROVAL
       && (!request.definition.hostEffectProtocol || request.definition.hostApprovalRequired)) {
-      const decision = await decide(request);
+      const decision = await decide(request, true);
       if (decision === 'deny') return { status: 'error', content: { code: 'policy_denied', executed: false } };
       if (decision !== 'allow') return decision;
     }

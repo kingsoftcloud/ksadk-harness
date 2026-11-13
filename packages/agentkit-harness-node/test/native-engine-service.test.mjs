@@ -283,19 +283,23 @@ test('a committed initial plan survives a service restart and remains distinct f
   assert.equal(after.events.filter(event => event.title === 'initial_plan').length, 1);
 });
 
-test('a host effect waits for exact approval and receives only original user observations', async t => {
+for (const deny of [false, true]) test(deny
+  ? 'a denied host effect reports disabled prompts without dispatching the approved callback'
+  : 'a host effect waits for exact approval and receives only original user observations', async t => {
   const root = mkdtempSync(join(tmpdir(), 'native-host-effect-'));
   const workspace = join(root, 'workspace');
   mkdirSync(workspace);
   const token = 'fixture-host-effect-token';
   let calls = 0;
+  const modelRequests = [];
   const service = createEngineService({
     token, startup: { workspace, stateDir: join(root, 'ledger'), approval: 'allow',
       scope: { tenantId: 'fixture', workspaceId: 'workspace', userId: 'user', agentId: 'agent' },
       model: { name: 'fixture', baseUrl: 'https://example.test/v1', apiKeyEnv: 'FIXTURE_KEY' },
     },
     env: { FIXTURE_KEY: 'fixture-model-key' },
-    fetchImpl: async () => {
+    fetchImpl: async (_url, request) => {
+      modelRequests.push(JSON.parse(request.body));
       const first = ++calls === 1;
       const delta = first ? { tool_calls: [{ index: 0, id: 'effect-call', type: 'function',
         function: { name: 'host_write_fact', arguments: '{"content":"proposed-fact"}' } }] }
@@ -343,12 +347,14 @@ test('a host effect waits for exact approval and receives only original user obs
     return requests[0];
   }
   async function until(predicate) {
+    let last;
     for (let i = 0; i < 50; i++) {
       const { result } = await rpc('run/status', { runId });
+      last = result;
       if (predicate(result)) return result;
       await sleep(25);
     }
-    assert.fail('Run did not reach the expected state');
+    assert.fail('Run did not reach the expected state: ' + JSON.stringify(last));
   }
   const first = await callback();
   const observations = first.params.effect.observations;
@@ -358,6 +364,29 @@ test('a host effect waits for exact approval and receives only original user obs
   assert.deepEqual(await post('host-reply', { id: first.id, result: { status: 'approval_required' } }), { accepted: true });
   const { pendingApproval } = await until(state => state.pendingApproval);
   assert.equal(pendingApproval.requiresUserApproval, true);
+  if (deny) {
+    const exact = { runId, interactionId: pendingApproval.interactionId };
+    for (const invalid of [{ decision: 'allow', denialReason: 'approval_prompts_disabled' },
+      { decision: 'deny', denialReason: 'unrecognized' }]) {
+      assert.equal((await rpc('run/approve', { ...exact, ...invalid })).error?.code, -32602);
+    }
+    const reply = { ...exact, decision: 'deny', denialReason: 'approval_prompts_disabled' };
+    assert.equal((await rpc('run/approve', reply)).result.status, 'accepted');
+    await rpc('run/events', { runId, cursor: 0, follow: true });
+    assert.equal((await until(state => state.terminal)).phase, 'completed');
+    assert.equal((await rpc('run/approve', reply)).result.status, 'duplicate');
+    const projected = (await rpc('run/events', { runId, cursor: 0 })).result.events
+      .find(event => event.kind === 'tool.completed' && event.callId === 'effect-call');
+    assert.equal(projected.status, 'error');
+    assert.equal(projected.result.code, 'approval_prompts_disabled');
+    assert.equal(projected.result.executed, false);
+    assert.equal(projected.result.retryable, false);
+    assert.match(projected.result.message, /Do not retry/);
+    assert.match(JSON.stringify(modelRequests[1].messages), /approval_prompts_disabled/);
+    assert.match(JSON.stringify(modelRequests[1].messages), /Changing the arguments cannot grant permission/);
+    assert.deepEqual((await (await fetch(base + 'host-requests?waitMs=0&runId=' + runId, { headers })).json()).requests, []);
+    return;
+  }
   assert.equal((await rpc('run/approve', { runId, interactionId: pendingApproval.interactionId, decision: 'allow' })).result.status, 'accepted');
   const approved = await callback();
   assert.equal(approved.params.effect.approved, true);

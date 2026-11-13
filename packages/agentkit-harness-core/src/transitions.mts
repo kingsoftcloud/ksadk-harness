@@ -6,7 +6,7 @@ import type { SteeringBindings } from './task-contract.mjs';
 import { admitChildPromotion, unsettledChildren } from './child-runtime.mjs';
 import { guidanceReason } from './guidance.mjs';
 import { bindOperatorInput } from './anthropic-context.mjs';
-import { APPROVAL_OUTCOME_POLICY, normalizeHostApprovalOutcome, approvalOutcomePauseReason } from './approval-outcome.mjs';
+import { APPROVAL_OUTCOME_POLICY, normalizeHostApprovalOutcome, approvalOutcomePauseReason, isApprovalDenialReason } from './approval-outcome.mjs';
 
 export function transition(snapshot: RunSnapshot, changes: Partial<RunSnapshot>, facts: { kind: string; payload: ObjectValue }[] = [],
   options: { intents?: EffectIntent[]; receipts?: EffectReceipt[]; commandId?: string; requireNoPendingCommands?: boolean } = {}): CommitBatch {
@@ -157,11 +157,15 @@ export function reduceCommand(snapshot: RunSnapshot, command: RunCommand, pendin
       const pending = snapshot.pendingInteraction;
       const hasOutcome = Object.hasOwn(command.payload, 'approvalOutcome');
       const approvalOutcome = normalizeHostApprovalOutcome(command.payload.approvalOutcome);
+      const denialReason = command.payload.denialReason;
       if (snapshot.phase !== 'awaiting_interaction' || !pending || command.payload.interactionId !== pending.interactionId
         || command.payload.decision !== 'allow' && command.payload.decision !== 'deny') reason = 'interaction_mismatch';
       else if (hasOutcome && (bindings.configuration?.approvalOutcomePolicy !== APPROVAL_OUTCOME_POLICY
         || approvalOutcome !== command.payload.approvalOutcome
         || (approvalOutcome === 'allowed-once') !== (command.payload.decision === 'allow'))) reason = 'interaction_outcome_mismatch';
+      else if (Object.hasOwn(command.payload, 'denialReason') && (command.payload.decision !== 'deny'
+        || !isApprovalDenialReason(denialReason) || pending.approvalPolicy !== 'durable-preflight/v1'))
+        reason = 'interaction_denial_reason_mismatch';
       else {
         changes = { phase: snapshot.childApproval ? snapshot.resumePhase ?? 'preparing_context' : 'executing_tools',
           ...(snapshot.childApproval ? { resumePhase: null, childLifecycleCursor: null } : {}), pendingInteraction: null,
@@ -174,6 +178,7 @@ export function reduceCommand(snapshot: RunSnapshot, command: RunCommand, pendin
         const pauseReason = hasOutcome && !bindings.configuration?.childOwnerBinding ? approvalOutcomePauseReason(approvalOutcome) : null;
         if (pauseReason) Object.assign(changes, { resumePhase: changes.phase, phase: 'paused', reason: pauseReason, outcome: null });
         facts.push({ kind: 'approval.resolved', payload: { interactionId: pending.interactionId, callId: pending.callId, decision: command.payload.decision,
+          ...(isApprovalDenialReason(denialReason) ? { denialReason } : {}),
           ...(hasOutcome ? { approvalOutcome } : {}) } });
       }
       break;

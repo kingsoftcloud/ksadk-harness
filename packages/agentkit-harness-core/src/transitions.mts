@@ -21,7 +21,8 @@ export function transition(snapshot: RunSnapshot, changes: Partial<RunSnapshot>,
   const diagnostics = changes.diagnostics ?? snapshot.diagnostics;
   facts = facts.map(fact => fact.kind === 'run.terminal' ? { ...fact, payload: { ...fact.payload,
     usageComplete: diagnostics.providerUsageIncomplete !== true && diagnostics.descendantUsageIncomplete !== true,
-    ...(diagnostics.lastModelFailure && ['provider_terminal_error', 'provider_retryable_error_retry_exhausted', 'malformed_tool_call_retry_exhausted', 'model_policy_abort'].includes(String(fact.payload.reason))
+    ...(diagnostics.lastModelFailure && ['provider_terminal_error', 'provider_retryable_error_retry_exhausted', 'malformed_tool_call_retry_exhausted', 'model_policy_abort',
+      'context_summary_provider_terminal_error', 'context_summary_retry_exhausted'].includes(String(fact.payload.reason))
       ? { modelFailure: copy(diagnostics.lastModelFailure) } : {}),
   } } : fact);
   const prefix = runKey(snapshot.scope, snapshot.runId);
@@ -38,8 +39,13 @@ export function prepareEffect(snapshot: RunSnapshot, kind: EffectKind, phase: Ph
   changes: Partial<RunSnapshot> = {}): CommitBatch {
   invariant(snapshot.pendingIntent === null, 'effect_already_pending');
   const operationKey = `${runKey(snapshot.scope, snapshot.runId)}:effect:${snapshot.revision + 1}:${kind}`;
-  return transition(snapshot, { ...changes, phase, pendingIntent: operationKey },
-    [{ kind: 'effect.prepared', payload: { operationKey, kind } }],
+  const retry = kind === 'model' && (snapshot.reasoningStallRetry === true && payload.purpose !== 'compaction'
+    || snapshot.retryNotBefore > 0
+    && (payload.purpose === 'compaction' ? (snapshot.contextState?.compaction?.providerErrors ?? 0) > 0
+      || (snapshot.contextState?.compaction?.errors ?? 0) > 0 : snapshot.providerErrors > 0 || snapshot.modelErrors > 0));
+  return transition(snapshot, { ...changes, phase, pendingIntent: operationKey, ...(kind === 'model' ? { retryNotBefore: 0 } : {}) },
+    [{ kind: 'effect.prepared', payload: { operationKey, kind, ...(retry ? { retry: true } : {}),
+      ...(kind === 'model' && payload.purpose === 'compaction' ? { purpose: 'compaction' } : {}) } }],
     { intents: [{ operationKey, kind, payload: copy(payload), status: 'prepared' }] });
 }
 export function reduceCommand(snapshot: RunSnapshot, command: RunCommand, pending: EffectIntent | null = null,

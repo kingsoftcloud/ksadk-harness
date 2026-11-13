@@ -34,6 +34,8 @@ export function initialState() {
     taskStartedAt: null, taskEndedAt: null, finalAnswerId: null,
     verificationRequired: null,
     modelRequestActive: false,
+    modelRequestRetry: false,
+    modelRequestPurpose: null,
     modelThinkingId: null,
     contextMarkers: [],
     subagents: new Map(),
@@ -88,8 +90,12 @@ function apply(state, e) {
     case EventType.TaskState: return applyTaskState(state, e);
     case EventType.TaskFinished: return applyTaskFinished(state, e);
     case EventType.ModelRequest:
+      if (e.active && state.taskState === TaskState.Paused && state.taskReason === 'provider_unavailable')
+        applyTaskState(state, { state: TaskState.Running, reason: null, message: null });
       if (!e.active || state.modelThinkingId !== e.itemId) settleModelPresentation(state);
       state.modelRequestActive = e.active;
+      state.modelRequestRetry = e.active && e.retry === true;
+      state.modelRequestPurpose = e.active ? e.purpose ?? null : null;
       state.modelThinkingId = e.active ? e.itemId : null;
       return;
     case EventType.TextDelta: return applyTextDelta(state, e);
@@ -161,6 +167,8 @@ function applyTaskState(state, e) {
   if (e.state !== TaskState.Running) {
     settleModelPresentation(state);
     state.modelRequestActive = false;
+    state.modelRequestRetry = false;
+    state.modelRequestPurpose = null;
     state.modelThinkingId = null;
   }
   state.taskReason = e.reason;
@@ -174,6 +182,8 @@ function applyTaskState(state, e) {
 function applyTaskFinished(state, e) {
   settleModelPresentation(state);
   state.modelRequestActive = false;
+  state.modelRequestRetry = false;
+  state.modelRequestPurpose = null;
   state.modelThinkingId = null;
   state.verificationRequired = e.verificationRequired;
   state.taskOutcome = e.outcome;

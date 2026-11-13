@@ -27,13 +27,15 @@ const messages = Object.freeze({
 });
 
 const modelReasons = new Set(['provider_terminal_error', 'provider_retryable_error_retry_exhausted',
-  'malformed_tool_call_retry_exhausted', 'model_policy_abort']);
-function modelFailureMessage(value) {
+  'malformed_tool_call_retry_exhausted', 'model_policy_abort', 'context_summary_provider_terminal_error',
+  'context_summary_retry_exhausted']);
+function modelFailureMessage(value, retriesExhausted = false) {
   if (!value) return null;
   try { validateModelFailure(value); } catch { return null; }
   if (value.code === 'http_authentication') return '模型服务拒绝身份认证，请检查模型凭据。';
   if (value.code === 'http_permission') return '模型请求被服务端权限或策略拒绝。';
-  if (value.code === 'http_rate_limit') return '模型服务持续限流，本次运行的重试次数已耗尽。';
+  if (value.code === 'http_client') return `模型网关拒绝了请求（HTTP ${value.httpStatus}）${retriesExhausted ? '。' : '，未自动重试。'}`;
+  if (value.code === 'http_rate_limit') return '模型服务返回限流错误（HTTP 429）。';
   if (value.code === 'host_binding') return '模型连接配置未能加载，请检查运行配置。';
   if (value.phase === 'request') return '模型请求在发送前未通过校验，请查看运行诊断。';
   if (value.code === 'stream_timeout' || value.code === 'http_timeout') return '等待模型服务响应超时，本次运行未能完成。';
@@ -42,11 +44,20 @@ function modelFailureMessage(value) {
   if (value.phase === 'stream' || value.phase === 'buffered') return '模型响应未通过协议校验，本次运行已停止，请查看运行诊断。';
   return null;
 }
+export function nativeModelStopMessage(reason, modelFailure) {
+  if (reason === 'provider_unavailable') return '模型服务暂不可用，自动重试次数已用完。任务已暂停，可稍后继续。';
+  if (!modelReasons.has(reason)) return null;
+  if (reason.endsWith('_retry_exhausted')) {
+    const detail = modelFailureMessage(modelFailure, true);
+    return detail ? `${detail}自动重试次数已用完。` : '模型请求未能完成，自动重试次数已用完。';
+  }
+  return modelFailureMessage(modelFailure) ?? (Object.hasOwn(messages, reason) ? messages[reason] : '模型请求未能完成，任务已停止。');
+}
 export function nativePublicTerminalError(phase, reason, modelFailure) {
   if (phase !== 'failed' && phase !== 'interrupted') return null;
   return {
     code: phase === 'interrupted' ? 'NATIVE_EXECUTION_INTERRUPTED' : 'NATIVE_EXECUTION_NOT_COMPLETED',
-    message: (modelReasons.has(reason) ? modelFailureMessage(modelFailure) : null) ?? (Object.hasOwn(messages, reason) ? messages[reason] : (phase === 'interrupted'
+    message: nativeModelStopMessage(reason, modelFailure) ?? (Object.hasOwn(messages, reason) ? messages[reason] : (phase === 'interrupted'
       ? '原运行需要核对后才能继续，不会自动重复可能产生副作用的操作。'
       : 'Native 运行未完成，请检查运行记录和配置。')),
   };

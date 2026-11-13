@@ -106,6 +106,8 @@ test('shared wall budget wins over a provider Retry-After without another HTTP a
   assert.equal(done.outcome, 'budget_exhausted');
   assert.equal(fixture.requests.length, 1);
   assert.equal(done.usage.modelCalls, 1);
+  assert.ok(!store.load(identity.scope, identity.runId).events.some(event => event.kind === 'effect.prepared' && event.payload.retry),
+    'waiting for Retry-After is not a started retry');
 });
 
 test('cancelling a persisted provider wait does not dispatch another HTTP request', async t => {

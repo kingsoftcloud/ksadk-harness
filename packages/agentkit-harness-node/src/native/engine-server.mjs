@@ -27,7 +27,8 @@ import { readFileSync, realpathSync } from 'node:fs';
 import * as readline from 'node:readline';
 import { setTimeout as wait } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { currentDeliveryManifest, FINAL_SUBMISSION_TOOL, isApprovalDenialReason, isNativeError, TOOL_RECEIPT_OBSERVATION_CONTRACT } from '@kingsoftcloud/agentkit-harness-core';
+import { currentDeliveryManifest, FINAL_SUBMISSION_TOOL, isApprovalDenialReason, isNativeError, TOOL_RECEIPT_OBSERVATION_CONTRACT,
+  validateModelFailure } from '@kingsoftcloud/agentkit-harness-core';
 import { publicErrorMessage } from '@kingsoftcloud/agentkit-harness-core/error-presentation';
 import { createEngineRuntime, engineApprovalSubject, ENGINE_APPROVAL_CONTRACT, ENGINE_EXECUTION_POLICY,
   ENGINE_INPUT_IMAGES } from './engine-runtime.mjs';
@@ -38,13 +39,14 @@ import { ENGINE_HOOKS } from './engine-hooks.mjs';
 import { ENGINE_HOST_EFFECT, hostReceiptReply, hostReceiptSource, waitForHostReceipt } from './engine-host-effects.mjs';
 import { ENGINE_VERIFICATION } from './engine-verification.mjs';
 import { nativeTodoPlan } from './activity-status.mjs';
+import { nativeModelStopMessage } from './native-terminal-failure.mjs';
 export { ENGINE_VIEW_CONTRACT };
 
 export const ENGINE_PROTOCOL = 'agentkit.engine/v1';
 export const ENGINE_EVENT_SCHEMA = 'agentkit.engine-event/v1';
 const THINKING_PAGE_CHARS = 8192;
 const THINKING_HISTORY_CHARS = 128 * 1024;
-const METHODS = ['initialize', 'run/start', 'run/status', 'run/events', 'run/resume', 'run/cancel', 'ui/view', 'shutdown'];
+const METHODS = ['initialize', 'run/start', 'run/status', 'run/events', 'run/resume', 'run/guide', 'run/cancel', 'ui/view', 'shutdown'];
 const DURABLE_APPROVAL_METHOD = 'run/approve';
 const HOST_OBSERVATIONS_METHOD = 'run/host-observations';
 const ERRORS = { parse: -32700, request: -32600, method: -32601, params: -32602, internalError: -32603,
@@ -53,6 +55,11 @@ const text = value => typeof value === 'string' && value.trim().length > 0;
 const toolName = /^[A-Za-z][A-Za-z0-9_.:/-]{0,127}$/;
 const sleep = ms => new Promise(done => setTimeout(done, ms));
 const publicRequestId = operationKey => createHash('sha256').update(operationKey).digest('hex');
+const modelUsageFields = ['inputTokens', 'outputTokens', 'cachedInputTokens', 'cacheWriteInputTokens', 'reasoningTokens'];
+function modelUsage(usage) {
+  return Object.fromEntries(modelUsageFields.filter(key => Number.isSafeInteger(usage[key]) && usage[key] >= 0)
+    .map(key => [key, usage[key]]));
+}
 
 /** The engine's own task view, built by agentkit-harness-ui into this package's dist. */
 let viewCache;
@@ -83,7 +90,9 @@ export function projectEngineEvent(event, requiredVerification = false, thinking
         ...(thinkingPresentation && Array.isArray(payload.todos) ? { plan: nativeTodoPlan(payload.todos) } : {}) };
     case 'effect.prepared':
     case 'effect.settled':
-      return thinkingPresentation && payload.kind === 'model' ? { ...base, category: 'model', title: 'request', ...modelRequest }
+      return payload.kind === 'model' ? { ...base, category: 'model', title: 'request', ...modelRequest,
+        ...(event.kind === 'effect.prepared' && payload.retry === true ? { retry: true } : {}),
+        ...(event.kind === 'effect.prepared' && payload.purpose === 'compaction' ? { purpose: 'compaction' } : {}) }
         : { ...base, category: 'effect' };
     case 'model.completed':
     case 'model.stream_interrupted': {
@@ -99,8 +108,11 @@ export function projectEngineEvent(event, requiredVerification = false, thinking
       ...(text(payload.text) && !(requiredVerification && payload.kind === 'final_candidate') ? { detail: payload.text } : {}),
       ...(Array.isArray(payload.toolCalls) && payload.toolCalls.length ? { tools: payload.toolCalls.map(call => call.name),
         calls: payload.toolCalls.map(call => ({ callId: call.callId, name: call.name, arguments: bounded(call.arguments) })) } : {}),
-      ...(payload.usage ? { usage: { inputTokens: payload.usage.inputTokens, outputTokens: payload.usage.outputTokens } } : {}) };
+      ...(payload.usage ? { usage: modelUsage(payload.usage) } : {}) };
     }
+    case 'context.summary_completed':
+    case 'completion.delivery_review_completed':
+      return { ...base, category: 'model', ...(payload.usage ? { usage: modelUsage(payload.usage) } : {}) };
     case 'tool.completed': return { ...base, category: 'tool', title: payload.name, status: payload.status,
       ...(text(payload.callId) ? { callId: payload.callId } : {}), ...(payload.content === undefined ? {} : { result: bounded(payload.content) }) };
     case 'approval.requested': return { ...base, category: 'approval', title: payload.name, status: 'pending',
@@ -111,14 +123,32 @@ export function projectEngineEvent(event, requiredVerification = false, thinking
         ...(text(payload.content.subject) ? { detail: payload.content.subject } : {}) } : {}) };
     case 'approval.resolved': return { ...base, category: 'approval', status: payload.decision,
       callId: payload.callId, interactionId: payload.interactionId };
-    case 'model.failure_observed': return { ...base, category: 'model', title: 'model_failure', status: 'retrying', detail: payload.code };
+    case 'input.guidance_applied':
+      return { ...base, category: 'input', inputId: payload.inputId };
+    case 'command.applied':
+      return payload.kind === 'guide' ? { ...base, category: 'command', inputId: payload.commandId, status: payload.reason }
+        : { ...base, category: 'command' };
+    case 'model.failure_observed': {
+      try { validateModelFailure(payload); } catch { return { ...base, category: 'model', title: 'model_failure' }; }
+      return { ...base, category: 'model', title: 'model_failure', detail: payload.code,
+        ...(payload.httpStatus === undefined ? {} : { httpStatus: payload.httpStatus }),
+        ...(payload.gateway ? { gateway: payload.gateway } : {}) };
+    }
+    case 'model.retry_exhausted': return { ...base, category: 'model', reason: 'provider_unavailable',
+      modelError: nativeModelStopMessage('provider_unavailable') };
     case 'run.started': return { ...base, category: 'run', title: 'started' };
     case 'run.terminal': return { ...base, category: 'run', title: payload.phase, status: payload.outcome,
       ...(requiredVerification ? { requiredVerification: true } : {}),
       ...(payload.reason ? { reason: payload.reason } : {}),
+      ...modelStopFields(payload.reason, payload.modelFailure),
       ...(text(payload.finalText) && (!requiredVerification || payload.outcome === 'verified') ? { detail: payload.finalText } : {}) };
     default: return { ...base, category: event.kind.split('.')[0] };
   }
+}
+
+function modelStopFields(reason, failure) {
+  const modelError = nativeModelStopMessage(reason, failure);
+  return modelError ? { modelError } : {};
 }
 
 /** Bound a value carried in a projected event: views show previews, never whole files. */
@@ -218,6 +248,8 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
     const pendingApproval = runtime.pendingApproval(snapshot, configuration);
     return { runId, phase: snapshot.phase, outcome: snapshot.outcome ?? null, reason: snapshot.reason ?? null,
       terminal: runtime.terminal(snapshot), running: active.has(runId), usage: snapshot.usage,
+      ...(['paused', 'failed', 'completed'].includes(snapshot.phase)
+        ? modelStopFields(snapshot.reason, snapshot.diagnostics.lastModelFailure) : {}),
       finalText: configuration.hostVerification && snapshot.outcome !== 'verified' ? null
         : snapshot.finalText ?? snapshot.candidate?.text ?? null, cursor: tail(runId),
       ...(pendingApproval ? { pendingApproval } : {}),
@@ -424,6 +456,18 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
       if (before.phase === 'paused') runtime.submit(params.runId, { commandId: `resume-${randomUUID()}`, kind: 'resume', payload: {} });
       if (!before.terminal) continueOnSubscription(params.runId, record);
       return status(params.runId);
+    },
+    async 'run/guide'(params) {
+      const record = requireRun(params);
+      const { runId, inputId, text: input } = params;
+      if (record.configuration.guidancePolicy !== 'boundary-guide/v1') return { status: 'unsupported' };
+      if (!/^guide-[a-f0-9]{64}$/.test(inputId ?? '') || !text(input) || input.length > 32768)
+        throw rpcError(ERRORS.params, 'invalid run guidance');
+      // Recover the revision from the original command when its reply was
+      // lost. The store still checks that replay uses identical input.
+      const previous = runtime.load(runId).commands.find(row => row.command.commandId === inputId);
+      return runtime.submit(runId, { commandId: inputId, kind: 'guide',
+        payload: { text: input, expectedGoalRevision: previous?.command.payload.expectedGoalRevision ?? record.snapshot.goalRevision } });
     },
     async [DURABLE_APPROVAL_METHOD](params) {
       requireRun(params);

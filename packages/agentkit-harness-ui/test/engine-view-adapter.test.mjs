@@ -75,6 +75,49 @@ test("the model request shows a thinking indicator only while it is pending", ()
   assert.equal(showsThinking(), false);
 });
 
+test("the retry indicator requires a new request; a terminal 400 stays visible without retrying", () => {
+  const request = { category: "model", title: "request" };
+  const apply = (...events) => { state = reduceAll(state, engineEventsToTimeline(events)); };
+  const visible = () => JSON.stringify(buildViewModel(state, { locale: "zh-CN" }));
+  let state = initialState();
+  apply(e(1, "run.started"), e(2, "model.failure_observed", { status: "retrying" }));
+  assert.doesNotMatch(visible(), /model-retry/);
+  apply(e(3, "effect.prepared", { ...request, retry: true }));
+  assert.match(visible(), /模型正在重试/);
+  apply(e(4, "effect.settled", request), e(5, "model.failure_observed", { httpStatus: 400 }));
+  assert.doesNotMatch(visible(), /model-retry/);
+  const modelError = "模型网关拒绝了请求（HTTP 400），未自动重试。";
+  apply(e(6, "run.terminal", { title: "failed", status: "failed", reason: "provider_terminal_error", modelError }));
+  assert.equal(state.taskError, modelError);
+  assert.equal(state.taskState, "failed");
+});
+
+test("a compaction request uses its own activity label and never looks like ordinary thinking", () => {
+  const request = { category: "model", title: "request" };
+  const events = [e(1, "run.started"), e(2, "effect.prepared", { ...request, purpose: "compaction" }),
+    e(3, "effect.settled", request)];
+  const compacting = reduceAll(initialState(), engineEventsToTimeline(events.slice(0, -1)));
+  const visible = state => JSON.stringify(buildViewModel(state, { locale: "zh-CN" }));
+  assert.match(visible(compacting), /正在压缩上下文/);
+  assert.doesNotMatch(visible(compacting), /model-thinking/);
+  assert.doesNotMatch(visible(reduceAll(compacting, engineEventsToTimeline(events))), /model-compaction/);
+});
+
+test("retry exhaustion pauses the task until a later model request starts", () => {
+  const request = { category: "model", title: "request" };
+  const modelError = "模型服务暂不可用，自动重试次数已用完。任务已暂停，可稍后继续。";
+  const events = [e(1, "run.started"), e(2, "effect.prepared", { ...request, retry: true }),
+    e(3, "effect.settled", request), e(4, "model.retry_exhausted", { modelError }), e(5, "effect.prepared", request)];
+  const paused = reduceAll(initialState(), engineEventsToTimeline(events.slice(0, -1)));
+  assert.equal(paused.taskState, "paused");
+  assert.equal(paused.taskMessage, modelError);
+  assert.doesNotMatch(JSON.stringify(buildViewModel(paused)), /model-retry/);
+  const resumed = reduceAll(paused, engineEventsToTimeline(events));
+  assert.equal(resumed.taskState, "running");
+  assert.equal(resumed.taskMessage, null);
+  assert.equal(resumed.modelRequestRetry, false);
+});
+
 test("independent runs display the last committed checklist, including after refresh", () => {
   const pending = { content: "Validate the game", status: "pending" };
   const [receipt, plan, clear] = [

@@ -710,6 +710,13 @@ export class NativeKernel {
             const result = validateModelResult(raw as unknown as ModelResult);
             changes = reduceContextModel(snapshot, result, configuration,
               addUsage(snapshot.usage, { ...result.usage, modelCalls: 0, toolCalls: 0 }), this.now(), this.random());
+            if (result.failureDiagnostic || snapshot.diagnostics.lastModelFailure) changes.diagnostics = {
+              ...(changes.diagnostics ?? snapshot.diagnostics),
+              lastModelFailure: result.failureDiagnostic ? objectValue(result.failureDiagnostic) : null,
+            };
+            if (result.failureDiagnostic) facts.push({ kind: 'model.failure_observed', payload: objectValue(result.failureDiagnostic) });
+            if (changes.phase === 'paused' && changes.reason === 'provider_unavailable')
+              facts.push({ kind: 'model.retry_exhausted', payload: { reason: changes.reason } });
             facts.push({ kind: 'context.summary_completed', payload: { kind: result.kind, usage: objectValue(result.usage),
               messageCursor: snapshot.messages.length, usageReported: result.usageReported !== false,
               proposalAvailable: !!changes.contextState?.compaction?.proposal } });
@@ -739,6 +746,8 @@ export class NativeKernel {
           if (changes.candidate) changes.candidate = sealCandidate(changes.candidate, { ...snapshot, ...changes }, configuration, this.digest);
           if (result.transportObservation) facts.push({ kind: 'model.transport_observed', payload: objectValue(result.transportObservation) });
           if (result.failureDiagnostic) facts.push({ kind: 'model.failure_observed', payload: objectValue(result.failureDiagnostic) });
+          if (changes.phase === 'paused' && changes.reason === 'provider_unavailable')
+            facts.push({ kind: 'model.retry_exhausted', payload: { reason: changes.reason } });
           const rejectedDraft = configuration.contract.finalSubmissionSchema !== null && result.kind === 'final_candidate';
           const appended = changes.messages?.slice(snapshot.messages.length) ?? [];
           const assistantOffset = appended.findIndex(message => message.role === 'assistant');
@@ -1055,7 +1064,8 @@ export class NativeKernel {
     const profile = copy(configuration.profile);
     // Admission reserved the full allowance. Lowering the dispatched request
     // preserves that admission and the frozen Run profile.
-    if (!review && configuration.outputRecoveryPolicy === 'response-boundary/v4' && snapshot.reasoningStallRetry)
+    if (!review && snapshot.reasoningStallRetry
+      && ['response-boundary/v4', 'response-boundary/v5'].includes(configuration.outputRecoveryPolicy ?? ''))
       profile.maxOutputTokens = reasoningStallRetryTokens(profile.maxOutputTokens);
     const messages = review ? snapshot.preparedContext ? modelContextMessages(snapshot, this.digest) : this.policies.forRun(configuration).review.deliveryReviewMessages(snapshot)
         : configuration.profile.operatorGuidancePolicy === 'journaled-system/v1' ? modelContextMessages(snapshot, this.digest)

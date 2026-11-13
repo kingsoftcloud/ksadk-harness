@@ -212,7 +212,7 @@ test("renderText is invoked for streaming assistant text but not for user messag
   assert.deepEqual(seen, [{ text: "hello", streaming: true }]);
 });
 
-test("delegated click dispatches inspect-tool with callId for non-toggleable read/search", () => {
+test("delegated inspection dispatches the tool call ID", () => {
   const { React, render } = makeShim();
   const { HarnessTimeline } = createHarnessComponents(React);
   const state = reduceAll(initialState(), [

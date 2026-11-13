@@ -57,6 +57,7 @@ export function connectEngine({ input, output, onApproveTool, onCallTool, hostNa
     status: runId => call('run/status', { runId }),
     events: (runId, cursor = 0, waitMs = 0) => call('run/events', { runId, cursor, waitMs }),
     resume: runId => call('run/resume', { runId }),
+    guide: (runId, inputId, text) => call('run/guide', { runId, inputId, text }),
     cancel: runId => call('run/cancel', { runId }),
     view: () => call('ui/view'),
     shutdown: () => call('shutdown'),

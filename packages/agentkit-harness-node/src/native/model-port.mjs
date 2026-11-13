@@ -33,7 +33,8 @@ import { buildNativeModelRequest } from './model-request.mjs';
 // parseModelJson is the kernel's strict finite JSON parser; used here for the
 // 400 context-length error heuristic so a malformed error body is never parsed
 // as a lenient ambiguity.
-import { parseModelJson, MODEL_FAILURE_CODES } from '@kingsoftcloud/agentkit-harness-core';
+import { parseModelJson, MODEL_FAILURE_CODES, MODEL_GATEWAY_ERROR_CODES, MODEL_GATEWAY_ERROR_TYPES,
+  isModelGatewayRequestId } from '@kingsoftcloud/agentkit-harness-core';
 import { observeModelTransportPort } from './model-transport-observation.mjs';
 
 const DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
@@ -136,12 +137,14 @@ export function createNativeModelPort({
       try {
         if (!response.ok) {
           observation.phase('http-error');
-          const result = await classifyHttpError(response, { maxBytes });
+          const body = await readHttpError(response, maxBytes);
+          const result = classifyHttpError(response, body);
+          const gateway = httpGatewayDiagnostic(response, body);
           request.signal?.throwIfAborted();
           const code = response.status === 401 ? 'http_authentication' : response.status === 403 ? 'http_permission'
             : response.status === 429 ? 'http_rate_limit' : response.status === 408 ? 'http_timeout'
               : response.status >= 500 ? 'http_server' : 'http_client';
-          return withFailure(result, binding, 'http-error', code, { httpStatus: response.status });
+          return withFailure(result, binding, 'http-error', code, { httpStatus: response.status, ...(gateway ? { gateway } : {}) });
         }
         const contentType = response.headers.get('content-type') || '';
         if (contentType.includes('text/event-stream')) {
@@ -182,6 +185,27 @@ async function streamResponse(response, request, binding, emit, internal, maxByt
   // body read rejects cleanly instead of leaving an orphaned read to cancel.
   const abort = (reason) => internal.abort(reason);
   let frameIndex = -1;
+  // Bound only a sustained, exact cycle before the response produces text or
+  // tool arguments. Inspect a small suffix independent of SSE chunk boundaries.
+  let reasoning = request.purpose == null || request.purpose === 'task' ? '' : null;
+  let sinceCheck = 0;
+  let repetition = false;
+  const observe = event => {
+    if ((event.kind === 'text' && event.text.trim()) || event.kind === 'tool_delta') reasoning = null;
+    if (reasoning !== null && event.kind === 'thinking' && event.text) {
+      reasoning = (reasoning + event.text).slice(-1024);
+      sinceCheck += event.text.length;
+      if (reasoning.length === 1024 && sinceCheck >= 128) {
+        sinceCheck = 0;
+        for (let size = 1; size <= 64; size++) {
+          if (reasoning.slice(size) !== reasoning.slice(0, -size)) continue;
+          repetition = true;
+          break;
+        }
+      }
+    }
+    emit(event);
+  };
   const failed = (result, code, fields = {}) => withFailure(result, binding, 'stream', code,
     { ...(frameIndex < 0 ? {} : { frameIndex }),
       ...(code === 'usage_conflict' && state.usageConflict ? { usageConflict: state.usageConflict } : {}), ...fields });
@@ -190,7 +214,12 @@ async function streamResponse(response, request, binding, emit, internal, maxByt
       if (idlePolicy && !frame.data.trim()) continue;
       frameIndex++;
       observation.frame();
-      state.consume(frame, emit);
+      state.consume(frame, observe);
+      if (repetition && reasoning !== null && !state.done) {
+        abort(new Error('reasoning_repetition'));
+        return failed({ kind: 'output_limit', text: '', toolCalls: [], usage: emptyUsage(), usageReported: false,
+          textCommitVersion: 'provider-finished-text/v1', outputBoundary: 'no-visible-output/v1' }, 'reasoning_repetition');
+      }
       if (idlePolicy) emit({ kind: 'activity', text: '' });
       if (state.done) break;
     }
@@ -248,41 +277,42 @@ async function bufferedResponse(response, request, binding, maxBytes, emit, obse
   }
 }
 
-// Classify a non-2xx HTTP response into a sealed ModelResult. The body is read
-// only for a 400 to detect a context_length_exceeded code; otherwise the
-// status and Retry-After header are the only facts that leave the adapter. A
-// body that cannot be read (timeout/overflow/bad utf-8) cannot erase the HTTP
-// failure fact — the status-based classification still stands.
-async function classifyHttpError(response, { maxBytes }) {
+// Diagnostics are observational. Neither body identifiers nor correlation
+// headers change retry behavior, except for the existing context-overflow rule.
+function classifyHttpError(response, body) {
   const status = response.status;
   const retryAfterMs = parseRetryAfterMs(response.headers.get('retry-after'));
   if (status === 408) return retryableResult('request_timeout', retryAfterMs);
   if (status === 429) return retryableResult('rate_limit', retryAfterMs);
   if (status >= 500 && status <= 599) return retryableResult('server_error', retryAfterMs);
   if (status === 403) return { kind: 'policy_abort', text: '', toolCalls: [], usage: emptyUsage(), usageReported: false };
-  if (status === 400) {
-    try {
-      const bodyText = await readBoundedText(response, maxBytes);
-      if (hasContextLengthExceeded(bodyText)) {
-        return { kind: 'context_overflow', text: '', toolCalls: [], usage: emptyUsage(), usageReported: false };
-      }
-    } catch { /* an unreadable 400 body cannot erase the 400 failure fact */ }
-    return terminalResult('client_error');
+  if (status === 400 && (body?.error?.code === 'context_length_exceeded' || body?.error?.type === 'context_length_exceeded')) {
+    return { kind: 'context_overflow', text: '', toolCalls: [], usage: emptyUsage(), usageReported: false };
   }
   return terminalResult('client_error');
 }
 
-function hasContextLengthExceeded(bodyText) {
+async function readHttpError(response, maxBytes) {
+  const contextCheck = response.status === 400;
+  // Keep the original 400 compatibility check. For other statuses this is
+  // optional evidence; a stalled error body must not delay retries.
+  if (!contextCheck && !response.body?.getReader) return null;
   try {
-    const payload = parseModelJson(bodyText);
-    const error = payload && typeof payload === 'object' ? payload.error : null;
-    if (error && typeof error === 'object') {
-      const code = String(error.code || '');
-      const type = String(error.type || '');
-      if (code === 'context_length_exceeded' || type === 'context_length_exceeded') return true;
-    }
-  } catch { /* an unreadable error body cannot erase the HTTP failure fact */ }
-  return false;
+    return parseModelJson(await readBoundedText(response, contextCheck ? maxBytes : Math.min(maxBytes, 8192),
+      undefined, contextCheck ? undefined : AbortSignal.timeout(200)));
+  } catch { return null; }
+}
+
+function httpGatewayDiagnostic(response, body) {
+  const diagnostic = {};
+  const error = body?.error && typeof body.error === 'object' ? body.error : body;
+  if (MODEL_GATEWAY_ERROR_CODES.includes(error?.code)
+    || Number.isInteger(error?.code) && error.code >= 400 && error.code <= 599) diagnostic.code = error.code;
+  if (MODEL_GATEWAY_ERROR_TYPES.includes(error?.type)) diagnostic.type = error.type;
+  const requestId = ['x-request-id', 'request-id', 'x-ksc-request-id']
+    .map(header => response.headers.get(header)).find(isModelGatewayRequestId);
+  if (requestId) diagnostic.requestId = requestId;
+  return Object.keys(diagnostic).length ? diagnostic : null;
 }
 
 function terminalResult(failureKind) {
@@ -296,9 +326,12 @@ function protocolCode(error) {
     ? error.code : 'protocol_invalid';
 }
 function withFailure(result, binding, phase, code, fields = {}) {
-  if (!['provider_terminal_error', 'provider_retryable_error', 'policy_abort', 'malformed_tool_call'].includes(result.kind)) return result;
+  if (!['provider_terminal_error', 'provider_retryable_error', 'policy_abort', 'malformed_tool_call'].includes(result.kind)
+    && !(result.kind === 'output_limit' && code === 'reasoning_repetition')
+    && !(result.kind === 'context_overflow' && fields.gateway)) return result;
   const protocol = ['openai-chat', 'openai-responses', 'anthropic-messages'].includes(binding?.protocol) ? binding.protocol : 'unknown';
-  return { ...result, failureDiagnostic: { contract: fields.providerError ? 'model-failure-diagnostic/v3' : fields.usageConflict
+  return { ...result, failureDiagnostic: { contract: fields.gateway ? 'model-failure-diagnostic/v4'
+    : fields.providerError ? 'model-failure-diagnostic/v3' : fields.usageConflict
     ? 'model-failure-diagnostic/v2' : 'model-failure-diagnostic/v1', protocol, phase, code, ...fields } };
 }
 
@@ -329,7 +362,7 @@ function cancelBody(response) {
 // truncating a prefix (a JSON prefix + overflow suffix must not masquerade as a
 // complete response). Reads to EOF before sealing. Throws OverflowError on
 // overflow; propagates abort and bad-UTF-8 errors for the caller to classify.
-async function readBoundedText(response, maxBytes, observeBytes) {
+async function readBoundedText(response, maxBytes, observeBytes, signal) {
   const body = response.body;
   if (body == null) return '';
   const reader = body.getReader ? body.getReader() : null;
@@ -337,9 +370,13 @@ async function readBoundedText(response, maxBytes, observeBytes) {
   let total = 0;
   const chunks = [];
   if (reader) {
+    const abort = () => { void reader.cancel().catch(() => {}); };
     try {
+      signal?.throwIfAborted();
+      signal?.addEventListener('abort', abort, { once: true });
       while (true) {
         const { value, done } = await reader.read();
+        signal?.throwIfAborted();
         if (done) break;
         if (!value) continue;
         if (!(value instanceof Uint8Array) && !(value instanceof ArrayBuffer)) throw new ProtocolError('body requires bytes');
@@ -351,6 +388,7 @@ async function readBoundedText(response, maxBytes, observeBytes) {
       chunks.push(decoder.decode());
       return chunks.join('');
     } finally {
+      signal?.removeEventListener('abort', abort);
       reader.releaseLock?.();
     }
   }

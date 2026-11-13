@@ -416,6 +416,7 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
     ] : [{ role: 'user', content: task, ...(media.length ? { media } : {}) }];
     const configuration = configure({ profile, tools: runtimeTools, contextSources, hooks: hooks.definitions,
       ...hooks.configuration,
+      guidancePolicy: 'boundary-guide/v1',
       ...(verification ? { hostVerification: verification } : {}),
       ...(executionPolicy?.strategy === 'plan-act-observe' ? { initialPlanPolicy: 'plan-act-observe/v1' } : {}),
       contract: { objective: scopedCallbacks ? objective : task,

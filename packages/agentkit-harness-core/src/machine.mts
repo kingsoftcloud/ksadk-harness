@@ -291,7 +291,12 @@ export function validateModelResult(input: ModelResult): ModelResult {
   const result = copy(input);
   validateModelTransport(result.transportObservation);
   validateModelFailure(result.failureDiagnostic);
-  invariant(!result.failureDiagnostic || ['provider_terminal_error', 'provider_retryable_error', 'policy_abort', 'malformed_tool_call'].includes(result.kind),
+  const failure = result.failureDiagnostic;
+  invariant(!failure || ['provider_terminal_error', 'provider_retryable_error', 'policy_abort', 'malformed_tool_call'].includes(result.kind)
+    || result.kind === 'output_limit' && result.outputBoundary === 'no-visible-output/v1'
+      && failure.phase === 'stream' && failure.code === 'reasoning_repetition'
+    || result.kind === 'context_overflow' && failure.httpStatus === 400
+      && (failure.gateway?.code === 'context_length_exceeded' || failure.gateway?.type === 'context_length_exceeded'),
     'model_failure_diagnostic_requires_failure');
   invariant(['tool_calls', 'final_candidate', 'output_limit', 'context_overflow', 'empty_response', 'malformed_tool_call',
     'provider_retryable_error', 'provider_terminal_error', 'policy_abort', 'user_abort'].includes(result.kind)
@@ -350,7 +355,8 @@ export function reduceModel(snapshot: RunSnapshot, input: ModelResult, config: R
   // errors, malformed calls and context-overflow retries keep this input debt.
   if (snapshot.hookState && ['tool_calls', 'final_candidate', 'output_limit'].includes(result.kind)
     && (result.toolCalls.length > 0 || result.text.trim())) base.hookState = { ...currentHookState(snapshot), feedback: [] };
-  const stalled = config.outputRecoveryPolicy === 'response-boundary/v4' && reasoningStall(result);
+  const stalled = config.outputRecoveryPolicy === 'response-boundary/v4' && reasoningStall(result)
+    || config.outputRecoveryPolicy === 'response-boundary/v5' && result.failureDiagnostic?.code === 'reasoning_repetition';
   // Keep the narrowed retry through transport errors and context preparation.
   // A sealed cutoff with text or an unfinished tool call uses the ordinary budget again.
   if (snapshot.reasoningStallRetry && (result.kind === 'tool_calls' || result.kind === 'final_candidate'
@@ -481,7 +487,7 @@ export function reduceModel(snapshot: RunSnapshot, input: ModelResult, config: R
           messages: [...snapshot.messages, { role: 'user',
             kind: suffix ? 'response_continuation_feedback' : 'output_limit_reasoning_observation',
             content: suffix ? 'Continue with only the missing text suffix now.'
-              : 'The previous attempt spent its output budget on reasoning without taking action. Take the next useful tool action now, or answer directly if the task is complete.' }] };
+              : 'The previous response stopped during reasoning before taking action. Take the next useful tool action now, or answer directly if the task is complete.' }] };
       }
       if (snapshot.continuations >= continuationLimit) {
         // Committed answer text stays a suffix contract even when the first

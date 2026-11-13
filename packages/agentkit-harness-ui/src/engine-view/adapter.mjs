@@ -56,7 +56,9 @@ export function engineEventToTimeline(event, { runId = "run", time, startedAt = 
     case "effect.prepared":
     case "effect.settled":
       return event.category === "model" && event.title === "request"
-        ? [{ v, id: id("model-request"), type: "model.request", active: event.kind === "effect.prepared", itemId: thoughtId }]
+        ? [{ v, id: id("model-request"), type: "model.request", active: event.kind === "effect.prepared",
+          retry: event.kind === "effect.prepared" && event.retry === true,
+          ...(event.purpose === "compaction" ? { purpose: "compaction" } : {}), itemId: thoughtId }]
         : [];
     case "model.completed": {
       const out = [];
@@ -92,8 +94,9 @@ export function engineEventToTimeline(event, { runId = "run", time, startedAt = 
           items: event.result.todos.map((item, index) => ({ ...item, id: `todo:${index}` })) });
       return out;
     }
-    case "model.failure_observed":
-      return [{ v, id: id("retry"), type: "task.state", state: "running", reason: "model_retry", message: `模型请求失败（${event.detail ?? "unknown"}），正在重试。` }];
+    case "model.retry_exhausted":
+      return [{ v, id: id("paused"), type: "task.state", state: "paused", reason: "provider_unavailable",
+        message: event.modelError }];
     case "run.terminal": {
       const out = [];
       const itemId = `${runId}:final`;
@@ -102,7 +105,8 @@ export function engineEventToTimeline(event, { runId = "run", time, startedAt = 
       }
       if (event.title === "paused") return [...out, { v, id: id("paused"), type: "task.state", state: "paused", reason: event.reason ?? null }];
       return [...out, { v, id: id("finished"), type: "task.finished", outcome: outcomeOf(event), endedAt: time,
-        ...(out.length ? { finalAnswerId: itemId } : {}), ...(event.reason ? { reason: event.reason } : {}) }];
+        ...(out.length ? { finalAnswerId: itemId } : {}), ...(event.reason ? { reason: event.reason } : {}),
+        ...(text(event.modelError) ? { error: event.modelError } : {}) }];
     }
     default:
       return [];

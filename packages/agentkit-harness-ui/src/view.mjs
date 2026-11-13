@@ -197,10 +197,10 @@ function timelineList(state, items, opts) {
     } else if (segment.process.length || showModelActivity) kids.push(h('div', { className: 'harness-work-items', 'data-testid': 'work-process' },
       ...renderTimelineItems(segment.process, opts, state.taskState === 'running'
         && index === segments.length - 1 && segment.following.length === 0),
-      showModelActivity ? modelActivity(opts) : null));
+      showModelActivity ? modelActivity(opts, state) : null));
     kids.push(...renderTimelineItems(segment.following, opts));
   }
-  if (modelActive && !segments.length) kids.push(modelActivity(opts));
+  if (modelActive && !segments.length) kids.push(modelActivity(opts, state));
   if (!kids.length && opts.emptyState) kids.push(opts.emptyState);
   if (opts.following === false) kids.push(jumpToLatest(opts));
   return h("div", { className: "harness-timeline", "data-testid": "harness-timeline-list" }, ...kids);
@@ -270,10 +270,16 @@ function textBlock(item, opts) {
   }, h("span", { className: "harness-text-content" }, text));
 }
 
-function modelActivity(opts) {
-  return h("div", { className: "harness-thought-summary harness-model-activity", role: "status", "data-testid": "model-thinking" },
+function modelActivity(opts, state) {
+  const zh = String(opts.locale ?? '').startsWith('zh');
+  const compacting = state.modelRequestPurpose === 'compaction', retry = state.modelRequestRetry;
+  const label = compacting ? (retry ? (zh ? '正在重试上下文压缩…' : 'Retrying context compaction…')
+    : (zh ? '正在压缩上下文…' : 'Compacting context…'))
+    : retry ? (zh ? '模型正在重试…' : 'Retrying model request…') : opts.labels.thinking;
+  return h("div", { className: "harness-thought-summary harness-model-activity", role: "status",
+    "data-testid": compacting ? "model-compaction" : retry ? "model-retry" : "model-thinking" },
     brainIcon("harness-thought-icon"),
-    h("span", { className: "harness-thought-label harness-thought-label-streaming" }, opts.labels.thinking));
+    h("span", { className: "harness-thought-label harness-thought-label-streaming" }, label));
 }
 
 function thoughtBlock(item, opts) {

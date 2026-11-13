@@ -47,13 +47,14 @@ test('delivery line counts compare the opening and final content and omit revert
   assert.deepEqual(net('created.txt'), { path: 'created.txt', added: 2, removed: 0 });
 });
 
-test('a live cursor delivers reasoning and tool drafts before the model response settles', async t => {
+test('a live cursor delivers reasoning and tool drafts, and accepts guidance for the next model step', async t => {
   const root = mkdtempSync(join(tmpdir(), 'native-engine-thinking-'));
   const workspace = join(root, 'workspace');
   mkdirSync(workspace);
   const reasoning = 'first\n' + 'a'.repeat(10000) + '\nlast';
   const encoder = new TextEncoder();
   let stream, modelCalls = 0;
+  const modelRequests = [];
   const frame = (delta, finish_reason = null) => encoder.encode(`data: ${JSON.stringify({
     id: 'thinking-fixture', choices: [{ index: 0, delta, finish_reason }],
   })}\n\n`);
@@ -61,7 +62,9 @@ test('a live cursor delivers reasoning and tool drafts before the model response
   const service = createEngineService({ token, startup: { workspace, stateDir: join(root, 'ledger'), approval: 'deny',
     scope: { tenantId: 'fixture', workspaceId: 'workspace', userId: 'user', agentId: 'agent' },
     model: { name: 'fixture', baseUrl: 'https://example.test/v1', apiKeyEnv: 'FIXTURE_KEY' } },
-    env: { FIXTURE_KEY: 'fixture-key' }, fetchImpl: async () => new Response(new ReadableStream({
+    env: { FIXTURE_KEY: 'fixture-key' }, fetchImpl: async (_url, req) => {
+      modelRequests.push(JSON.parse(req.body));
+      return new Response(new ReadableStream({
       start(controller) {
         if (modelCalls++ === 0) {
           stream = controller;
@@ -72,7 +75,8 @@ test('a live cursor delivers reasoning and tool drafts before the model response
           controller.close();
         }
       },
-    }), { headers: { 'content-type': 'text/event-stream' } }),
+      }), { headers: { 'content-type': 'text/event-stream' } });
+    },
   });
   t.after(async () => { await service.close(); await rm(root, { recursive: true, force: true }); });
   await new Promise(resolve => service.server.listen(0, '127.0.0.1', resolve));
@@ -107,6 +111,10 @@ test('a live cursor delivers reasoning and tool drafts before the model response
   const { toolDraft } = await poll();
   assert.equal(cursor, before);
   assert.deepEqual(toolDraft, { cursor: toolDraftCursor, requestId, tools: [{ index: 0, name: 'read_workspace_file' }] });
+  const guide = { runId, inputId: 'guide-' + 'a'.repeat(64), text: 'Confirm the file check before finishing.' };
+  assert.equal((await rpc('run/guide', guide)).status, 'accepted');
+  assert.equal((await rpc('run/guide', guide)).status, 'duplicate');
+  assert.equal(modelRequests.length, 1, 'guidance does not interrupt the in-flight tool draft');
   stream.enqueue(frame({ tool_calls: [{ index: 0, function: { arguments: '"}' } }] }));
   stream.enqueue(frame({}, 'tool_calls'));
   stream.enqueue(encoder.encode('data: [DONE]\n\n'));
@@ -118,6 +126,9 @@ test('a live cursor delivers reasoning and tool drafts before the model response
   assert.match(requestId, /^[a-f0-9]{64}$/);
   assert.equal(completed?.requestId, requestId);
   assert.equal(completed?.thinking, reasoning);
+  assert.deepEqual(events.filter(event => event.kind === 'input.guidance_applied').map(event => event.inputId), [guide.inputId]);
+  assert.equal(modelRequests.length, 2);
+  assert.ok(modelRequests[1].messages.some(message => message.content === guide.text));
 });
 
 test('required verification repairs an unsupported answer, survives restart and rejects an unbound reply', async t => {

@@ -587,7 +587,9 @@ function ScrollEnd({ reducedMotion, renderChildren, type, props }) {
     return createElement('article', { ...containerProps, className: 'harness-turn', 'data-testid': 'harness-turn' },
       createElement(HarnessTimeline, { state, onCopy, locale, ...timeline }),
       state.taskState === 'failed' && state.taskError
-        ? createElement('p', { className: 'harness-turn-error', role: 'alert' }, state.taskError) : null,
+        ? createElement('p', { className: 'harness-turn-error', role: 'alert' }, state.taskError)
+        : state.taskState === 'paused' && state.taskReason === 'provider_unavailable' && state.taskMessage
+          ? createElement('p', { className: 'harness-turn-model-pause', role: 'status' }, state.taskMessage) : null,
       answer?.kind === 'text' && !answer.streaming && (resolveWebDelivery || loadDeliveryEvidence)
         ? createElement(DeliveryEvidence, { key: deliverySeq, seq: deliverySeq, load: loadDeliveryEvidence, deliveries,
           openFile: timeline.onOpenFile, resolveWebDelivery, zh }) : null,

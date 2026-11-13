@@ -165,7 +165,8 @@ function normalizePayload(type, event) {
       return { state: requiredChoice(event.state, TASK_STATES, "task state"), reason: str(event.reason) || null, message: str(event.message) || null };
     case EventType.ModelRequest:
       if (typeof event.active !== "boolean") throw new TypeError("model request requires an active flag");
-      return { active: event.active, itemId: str(event.itemId) };
+      return { active: event.active, itemId: str(event.itemId), ...(event.retry === true ? { retry: true } : {}),
+        ...(event.purpose === "compaction" ? { purpose: "compaction" } : {}) };
     case EventType.TaskFinished: {
       const outcome = requiredChoice(event.outcome, TASK_OUTCOMES, "task outcome");
       if (event.executionState !== undefined && (event.executionState !== TaskState.Interrupted || outcome !== TaskOutcome.Unverified))

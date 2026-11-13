@@ -82,6 +82,8 @@ export function engineEventToTimeline(event, { runId = "run", time, startedAt = 
         : [];
     case "tool.completed": {
       if (!text(event.callId)) return [];
+      if (event.status === "uncertain") return [{ v, id: id("uncertain"), type: "tool.state",
+        callId: event.callId, status: "uncertain" }];
       // Older engines stored the committed TodoWrite receipt but omitted the
       // separate checklist projection. Never infer progress from tool inputs.
       const display = event.status === "ok" ? completedEditDisplay(event) : undefined;
@@ -104,6 +106,8 @@ export function engineEventToTimeline(event, { runId = "run", time, startedAt = 
         out.push({ v, id: id("final"), type: "text.delta", itemId, delta: event.detail }, { v, id: id("final-done"), type: "text.done", itemId });
       }
       if (event.title === "paused") return [...out, { v, id: id("paused"), type: "task.state", state: "paused", reason: event.reason ?? null }];
+      if (event.title === "interrupted") return [{ v, id: id("finished"), type: "task.finished",
+        outcome: "unverified", executionState: "interrupted", endedAt: time, reason: event.reason }];
       return [...out, { v, id: id("finished"), type: "task.finished", outcome: outcomeOf(event), endedAt: time,
         ...(out.length ? { finalAnswerId: itemId } : {}), ...(event.reason ? { reason: event.reason } : {}),
         ...(text(event.modelError) ? { error: event.modelError } : {}) }];

@@ -22,7 +22,7 @@ import { renderTool } from "./renderers.mjs";
 import { isRetryableEditFailure } from "./tool-error.mjs";
 import { toolIdentity } from "./tool-identity.mjs";
 import { activityGroups, activityGroupSummary } from './activity-groups.mjs';
-import { conversationWorkSegments, completedWorkLabel } from './work-segments.mjs';
+import { conversationWorkSegments, completedWorkLabel, interruptedWorkLabel } from './work-segments.mjs';
 
 export const ELEMENT = Symbol.for("agentkit.harness-ui.element");
 
@@ -183,6 +183,8 @@ function timelineList(state, items, opts) {
     !(item.kind === 'tool' && item.status === 'failed' && toolIdentity(item.name).family === 'edit'
       && isRetryableEditFailure(item.error))) : items;
   const segments = conversationWorkSegments(state, transcript);
+  const lastHistory = segments.findLastIndex(segment => segment.collapsible);
+  const interrupted = interruptedWorkLabel(state, opts.locale);
   for (const [index, segment] of segments.entries()) {
     const showModelActivity = modelActive && index === segments.length - 1
       && !segment.process.some(item => item.streaming && ["thought", "tool-preview"].includes(item.kind));
@@ -191,7 +193,9 @@ function timelineList(state, items, opts) {
       const open = Boolean(opts.historyOpen?.get(segment.id));
       kids.push(h('details', { open, className: 'harness-work-history', 'data-testid': 'work-history', 'data-item-id': segment.id },
         h('summary', { className: 'harness-work-history-summary', 'data-testid': 'work-history-toggle' },
-          h('span', {}, completedWorkLabel(state, opts.locale)), chevronIcon('harness-work-history-chevron')),
+          h('span', {}, completedWorkLabel(state, opts.locale)),
+          index === lastHistory && interrupted ? h('span', { 'data-testid': 'work-history-interruption' }, `· ${interrupted}`) : null,
+          chevronIcon('harness-work-history-chevron')),
         open ? h('div', { className: 'harness-work-items harness-work-history-content', 'data-testid': 'work-history-content' },
           ...renderTimelineItems(segment.process, opts)) : null));
     } else if (segment.process.length || showModelActivity) kids.push(h('div', { className: 'harness-work-items', 'data-testid': 'work-process' },

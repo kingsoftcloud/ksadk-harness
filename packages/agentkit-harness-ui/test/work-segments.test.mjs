@@ -59,6 +59,28 @@ test('unknown tool outcomes remain accessible in collapsed history after the ans
   assert.equal(findByTestId(expanded, 'tool-block').props['data-status'], 'uncertain');
 });
 
+test('an interrupted engine run projects the same collapsed reason after reload and never promotes progress', () => {
+  const row = (seq, type, data) => ({ type: 'event', event: { seq, type, ignorable: true, time: seq * 1000, data: { turn: 1, ...data } } });
+  const engine = (seq, kind, fields) => row(seq, 'agentkit/native-engine-event',
+    { runId: 'browser-run', event: { schema: 'agentkit.engine-event/v1', seq, kind, ...fields } });
+  const active = [row(1, 'turn/start', {}),
+    engine(2, 'model.completed', { detail: 'Checking the page', calls: [{ callId: 'verify', name: 'browser_inspect_workspace' }] })];
+  const ending = [engine(3, 'tool.completed', { callId: 'verify', status: 'uncertain' }),
+    engine(4, 'run.terminal', { title: 'interrupted', status: 'unverified', reason: 'effect_outcome_unknown' }),
+    row(5, 'turn/end', { reason: { kind: 'error', error: { code: 'effect_outcome_unknown' } } })];
+  const projector = createSessionTaskProjector();
+  projector.project({ revision: 1, entries: active });
+  const snapshot = { revision: 2, entries: [...active, ...ending], change: { kind: 'append', entries: ending } };
+  const [task] = projector.project(snapshot);
+  assert.deepEqual(task, createSessionTaskProjector().project(snapshot)[0]);
+  assert.equal(task.state.taskState, 'interrupted');
+  assert.equal(task.state.finalAnswerId, null);
+  const view = buildViewModel(task.state, { locale: 'zh-CN' });
+  assert.equal(findByTestId(view, 'work-history').props.open, false);
+  assert.match(textOf(findByTestId(view, 'work-history-toggle')), /已中断：浏览器验收结果未确认/);
+  assert.doesNotMatch(textOf(view), /Checking the page/);
+});
+
 test('steering inputs remain visible and every text block from the final message stays outside history',()=>{
   const state=replay([...events.slice(0,-1),{type:'text.done',itemId:'steer',role:'user',text:'Focus on persistence'},
     {type:'thinking.done',itemId:'thought-2',text:'Additional actual reasoning'},

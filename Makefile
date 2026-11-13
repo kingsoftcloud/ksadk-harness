@@ -5,7 +5,7 @@ NPM ?= npm
 NODE ?= node
 GITLEAKS_BIN ?= gitleaks
 
-.PHONY: check test build pack verify-boundary verify-rpc verify-installed-ui public-surface-audit secret-scan package-audit public-gate release-check ci clean
+.PHONY: check test browser-gate build pack verify-boundary verify-rpc verify-installed-ui public-surface-audit secret-scan package-audit public-gate release-check ci clean
 
 check:
 	$(NPM) run check
@@ -13,6 +13,9 @@ check:
 test:
 	$(NPM) test
 	$(NPM) run test:release
+
+browser-gate: build
+	KSADK_REQUIRE_TEST_BROWSER=1 $(NPM) run test:browser-live
 
 build:
 	$(NPM) run build

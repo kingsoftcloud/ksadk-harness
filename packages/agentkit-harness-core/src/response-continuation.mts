@@ -3,7 +3,8 @@ import type { Message, RunConfiguration, RunSnapshot } from './contracts.mjs';
 /** The output recovery strategy is versioned separately from the sealed v2
  * text-fragment protocol. A v3 task may still own an explicit suffix chain. */
 export function responseBoundaryRecovery(config: Pick<RunConfiguration, 'outputRecoveryPolicy'>): boolean {
-  return config.outputRecoveryPolicy === 'response-boundary/v2' || config.outputRecoveryPolicy === 'response-boundary/v3';
+  return config.outputRecoveryPolicy === 'response-boundary/v2' || config.outputRecoveryPolicy === 'response-boundary/v3'
+    || config.outputRecoveryPolicy === 'response-boundary/v4' || config.outputRecoveryPolicy === 'response-boundary/v5';
 }
 
 export function responseScopedOutputRestarts(config: Pick<RunConfiguration, 'outputRestartPolicy'>): boolean {

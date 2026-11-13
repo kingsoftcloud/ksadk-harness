@@ -69,8 +69,8 @@ export function isTerminal(state) {
 export function planProgress(state) {
   const plan = state?.plan;
   if (!Array.isArray(plan) || !plan.length) return null;
-  const total = plan.length;
-  const completed = plan.filter(item => item.status === "completed").length;
+  const total = state.planSummary?.totalCount ?? plan.length;
+  const completed = state.planSummary?.completedCount ?? plan.filter(item => item.status === "completed").length;
   const inProgress = plan.find(item => item.status === "in_progress");
   return {
     total,

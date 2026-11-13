@@ -65,6 +65,10 @@ export interface ToolDefinition {
   executionTimeoutPolicy?: 'dispatch/v1' | 'dispatch/v2';
   /** Host permission waits yield a durable Native interaction before dispatch. */
   approvalPolicy?: 'durable-preflight/v1';
+  /** An explicit Run policy requires a user decision even if standing access permits the tool. */
+  hostApprovalRequired?: true;
+  /** This external owner receives a frozen effect identity and may request conditional approval. */
+  hostEffectProtocol?: 'agentkit.engine-host-tool-effect/v1';
   contextRole: 'none' | 'workspace_read' | 'workspace_search' | 'workspace_list' | 'artifact_read' | 'task_planning';
   observationRole: 'none' | 'browser';
   progressObservation: boolean; contextRetention: 'normal' | 'persistent';
@@ -139,6 +143,10 @@ export type VerificationMethod = 'deterministic' | 'human' | 'model_assisted';
 export interface AcceptanceItem {
   id: string; required: boolean; verifierRef: string; verifierVersion: string;
   verificationMethod: VerificationMethod; description: string;
+}
+export interface HostVerificationBinding {
+  verifierRef: string; verifierVersion: string; bindingDigest: string;
+  evidenceTools: string[]; contextSourceId: string | null;
 }
 export interface TaskContract {
   objective: string; revision: string; constraints: string[]; acceptance: AcceptanceItem[];
@@ -255,6 +263,9 @@ export interface ToolResultPruning {
 export interface ContextSourceDefinition {
   contract: 'agentkit.native-context-source/v1'; sourceId: string; bindingDigest: string;
   priority: number; timeoutMs: number; required: boolean; maxTokens: number; maxBytes: number;
+  /** A frozen host grant controls whether a projected item can enter the system layer. */
+  hostProjection?: 'data/v1' | 'instructions-and-data/v1';
+  warnOnFailure?: true;
   /** Current file guidance is refreshed before inference, never substituted by a historical summary. */
   instructionPolicy?: 'current-files/v1';
   /** Retry only a timed-out read; required sources pause after exhaustion. Absence keeps the frozen legacy behavior. */
@@ -270,6 +281,7 @@ export interface ConversationSeed {
   discoveredToolNames?: string[];
 }
 export interface RunConfiguration {
+  hostVerification?: HostVerificationBinding;
   workspaceCapturePolicy?: 'declared-subjects/v1';
   deliveryScopePolicy?: 'declared-deliverables/v1' | 'answer-artifacts/v2';
   childCapabilityPolicy?: 'required-tools/v1';
@@ -287,6 +299,7 @@ export interface RunConfiguration {
   /** I/O deadlines belong to the execution owner, not kernel staging or result projection. */
   toolExecutionPolicy?: 'owner-execution/v1';
   planModePolicy?: 'session-plan/v1' | 'inherited-child-plan/v1';
+  initialPlanPolicy?: 'plan-act-observe/v1';
   planModeInitialActive?: boolean;
   childPlanPolicy?: 'inherit-plan/v1';
   toolDiscoveryPolicy?: 'local-tool-search/v1';
@@ -309,7 +322,7 @@ export interface RunConfiguration {
   stopHookContinuationLimit: number; delegationDepth: number;
   modelRecoveryPolicy: 'manual' | 'pure-inference/v1';
   guidancePolicy?: 'boundary-guide/v1' | null;
-  outputRecoveryPolicy?: 'task-or-delivery/v1' | 'response-boundary/v2' | 'response-boundary/v3' | null;
+  outputRecoveryPolicy?: 'task-or-delivery/v1' | 'response-boundary/v2' | 'response-boundary/v3' | 'response-boundary/v4' | 'response-boundary/v5' | null;
   /** Restart allowance belongs to one interrupted response chain. v2 pauses
    * exhausted chains for explicit resume instead of terminating the Run.
    * Legacy Runs retain their frozen accounting and exhaustion behavior. */
@@ -469,6 +482,7 @@ export interface RunSnapshot extends RunIdentity {
   policyContextCursor?: string;
   conversationBranch?: { commandId: string; generation: number };
   planMode?: { active: boolean; revision: number; approvedPlan?: { plan: string; allowedPrompts?: Json } };
+  initialPlanCompleted?: true;
   todos?: { items: TodoItem[]; revision: number; assistantTurns: number; lastWriteAssistantTurn: number; lastReminderAssistantTurn: number };
   toolDiscovery?: { discovered: string[]; promoted: string[] };
   /** Runtime-owned capacity for the complete original assistant batch, never a dispatched subset. */
@@ -489,6 +503,8 @@ export interface RunSnapshot extends RunIdentity {
   pendingInteraction: PendingInteraction | null; interaction: ObjectValue | null;
   usage: Usage; descendantUsage: Usage; modelErrors: number; providerErrors: number;
   continuations: number; outputRestarts: number; repairs: number;
+  /** A sealed reasoning-only cutoff has armed the short retry for this response. */
+  reasoningStallRetry?: boolean;
   activeElapsedMs: number; retryNotBefore: number;
   candidate: CompletionCandidate | null; verification: VerificationReport | null;
   finalText: string; outcome: Outcome | null; reason: string | null;
@@ -718,6 +734,7 @@ export interface SourceReadBudget {
   maxSourceUnits: number; maxResultUnits: number; maxResultBytes: number;
 }
 export interface VerificationPort {
+  available?(configuration: RunConfiguration): boolean;
   verify(request: PortContext & { candidate: CompletionCandidate; contract: TaskContract; snapshot: RunSnapshot }): Promise<VerificationReport>;
 }
 export interface HookPort {

@@ -67,7 +67,7 @@ async function supervise() {
       try { if (privateFile(join(directory, 'cancel'), true)) cancel(); }
       catch { stateError = true; cancel(); }
     }, 20);
-    const result = await runBoundedProcess({ argv: shellCommandArgv(request.command, request.shellPolicy ?? null), cwd: request.cwd,
+    const result = await runBoundedProcess({ argv: shellCommandArgv(request.command, request.shellPolicy ?? null, request), cwd: request.cwd,
       env: request.env, timeoutMs: request.timeoutMs, settings: request.settings, outputPolicy: request.outputPolicy,
       signal: controller.signal,
       onOutput(channel, text) {

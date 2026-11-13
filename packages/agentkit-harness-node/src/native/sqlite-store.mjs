@@ -636,6 +636,7 @@ export class SqliteRunStore extends TransactionalRunStore {
           return scope;
         });
     };
+    this.probe = () => { open(); db.prepare('SELECT version FROM native_schema LIMIT 1').get(); };
     this.close = () => { if (!closed) { db.close(); closed = true; } };
   }
 }

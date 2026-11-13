@@ -56,6 +56,21 @@ test('idle policy HTTP: comments cannot keep a silent provider alive', async () 
   assert.equal(result.transportObservation.lastFrameMs, null);assert.equal(result.transportObservation.lastOutputMs, null);
 });
 
+test('repetitive thinking is cut off before the provider finishes, without claiming usage', async () => {
+  const pattern = ' — **hmm';
+  const chunks = pattern.repeat(180).match(/.{1,23}/g);
+  const { result } = await collect(null, 'openai-chat', () => ({ headers: SSE_HEADERS,
+    body: [...chunks.map(part => sse(ochunk({ reasoning_content: part }))),
+      { delay: 200 }, sse(ochunk({ content: 'too late' }, 'stop')), sseDone()] }),
+  makeRequest({ profile: makeProfile({ providerThinkingDisplay: true }) }));
+  assert.equal(result.kind, 'output_limit');
+  assert.equal(result.outputBoundary, 'no-visible-output/v1');
+  assert.equal(result.failureDiagnostic.code, 'reasoning_repetition');
+  assert.equal(result.usageReported, false);
+  assert.deepEqual(result.toolCalls, []);
+  assert.equal(result.text, '');
+});
+
 test('transport observation distinguishes waiting for headers from a silent response stream', async () => {
   await withServer(async () => { await sleep(150);return { headers: SSE_HEADERS, body: sseDone() }; }, async server => {
     const port = makePort({ port: server.port, protocol: 'openai-chat' });
@@ -870,9 +885,13 @@ test('openai: invalid retry-after header yields no scheduler instruction', async
 });
 
 test('openai: 400 with context_length_exceeded is context_overflow', async () => {
-  const handler = () => ({ status: 400, body: '{"error":{"code":"context_length_exceeded","message":"secret"}}' });
+  const requestId = '65cd9c89-0944-4a65-ac03-ec5eff3e17cf';
+  const handler = () => ({ status: 400, headers: { 'x-request-id': requestId },
+    body: '{"error":{"code":"context_length_exceeded","message":"secret"}}' });
   const { result } = await collect(0, 'openai-chat', handler, makeRequest());
   assert.equal(result.kind, 'context_overflow');
+  assert.deepEqual(result.failureDiagnostic.gateway, { code: 'context_length_exceeded', requestId });
+  assert.doesNotMatch(JSON.stringify(result), /secret/);
   // a 400 without the explicit code stays terminal
   const handler2 = () => ({ status: 400, body: '{"error":{"message":"context_length_exceeded"}}' });
   const { result: r2 } = await collect(0, 'openai-chat', handler2, makeRequest());

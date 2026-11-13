@@ -49,4 +49,4 @@ export { toolIdentity, toolConversationVisible, localizedToolTitle } from './too
 
 // React binding. Imported lazily-safe only because this barrel re-exports it;
 // hosts that do not need React should import the subpaths directly.
-export { HarnessTimeline } from "./components.mjs";
+export { HarnessTimeline, HarnessTurn } from "./components.mjs";

@@ -6,7 +6,7 @@ export const MODEL_FAILURE_CODES = [
   'http_server', 'http_rate_limit', 'http_timeout', 'protocol_invalid', 'json_invalid',
   'envelope_invalid', 'provider_error', 'identity_conflict', 'usage_invalid', 'usage_conflict',
   'choice_invalid', 'delta_invalid', 'termination_conflict', 'framing_invalid', 'body_limit',
-  'body_encoding', 'transport_error', 'stream_timeout', 'stream_incomplete', 'tool_payload_invalid',
+  'body_encoding', 'transport_error', 'stream_timeout', 'stream_incomplete', 'tool_payload_invalid', 'reasoning_repetition',
 ] as const;
 /** Closed provider identifiers only; arbitrary provider strings can contain credentials. */
 export const MODEL_PROVIDER_ERROR_CODES = Object.freeze([
@@ -23,6 +23,17 @@ export const MODEL_PROVIDER_ERROR_TYPES = Object.freeze([...MODEL_PROVIDER_ERROR
   'UnauthorizedError', 'ForbiddenError', 'InternalServerError', 'BadRequestError',
   'NotFoundError', 'AuthenticationError', 'PermissionDeniedError', 'RateLimitError',
 ] as const);
+export const MODEL_GATEWAY_ERROR_CODES = Object.freeze([...MODEL_PROVIDER_ERROR_CODES, 'context_length_exceeded'] as const);
+export const MODEL_GATEWAY_ERROR_TYPES = Object.freeze([...MODEL_PROVIDER_ERROR_TYPES, 'context_length_exceeded'] as const);
+// Only structured correlation identifiers from the gateway are retained.
+export function isModelGatewayRequestId(value: unknown): value is string {
+  return typeof value === 'string' && value.length === 36 && /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i.test(value);
+}
+interface ModelGatewayDiagnostic {
+  code?: typeof MODEL_GATEWAY_ERROR_CODES[number] | number;
+  type?: typeof MODEL_GATEWAY_ERROR_TYPES[number];
+  requestId?: string;
+}
 export interface ModelProviderErrorDiagnostic {
   category: 'rate_limit' | 'server_error' | 'request_timeout' | 'client_error' | 'invalid_response';
   fingerprint: string;
@@ -31,7 +42,7 @@ export interface ModelProviderErrorDiagnostic {
   status?: number;
 }
 export interface ModelFailureDiagnostic {
-  contract: 'model-failure-diagnostic/v1' | 'model-failure-diagnostic/v2' | 'model-failure-diagnostic/v3';
+  contract: 'model-failure-diagnostic/v1' | 'model-failure-diagnostic/v2' | 'model-failure-diagnostic/v3' | 'model-failure-diagnostic/v4';
   protocol: 'openai-chat' | 'openai-responses' | 'anthropic-messages' | 'unknown';
   phase: 'binding' | 'request' | 'headers' | 'http-error' | 'stream' | 'buffered';
   code: typeof MODEL_FAILURE_CODES[number];
@@ -39,6 +50,7 @@ export interface ModelFailureDiagnostic {
   httpStatus?: number;
   /** Observational only. Raw error messages, headers and bodies are excluded. */
   providerError?: ModelProviderErrorDiagnostic;
+  gateway?: ModelGatewayDiagnostic;
   /** Observed counters only, never a replacement for the sealed billable usage. */
   usageConflict?: {
     previousFrameIndex: number;
@@ -61,10 +73,11 @@ function validUsageCounters(value: ModelUsageCounters): boolean {
 }
 export function validateModelFailure(value: ModelFailureDiagnostic | undefined): void {
   if (value === undefined) return;
-  invariant(value && ['model-failure-diagnostic/v1', 'model-failure-diagnostic/v2', 'model-failure-diagnostic/v3'].includes(value.contract)
+  invariant(value && ['model-failure-diagnostic/v1', 'model-failure-diagnostic/v2', 'model-failure-diagnostic/v3', 'model-failure-diagnostic/v4'].includes(value.contract)
     && Object.keys(value).every(key => ['contract', 'protocol', 'phase', 'code', 'frameIndex', 'httpStatus',
       ...(value.contract === 'model-failure-diagnostic/v2' ? ['usageConflict'] : []),
-      ...(value.contract === 'model-failure-diagnostic/v3' ? ['providerError'] : [])].includes(key))
+      ...(value.contract === 'model-failure-diagnostic/v3' ? ['providerError'] : []),
+      ...(value.contract === 'model-failure-diagnostic/v4' ? ['gateway'] : [])].includes(key))
     && ['openai-chat', 'openai-responses', 'anthropic-messages', 'unknown'].includes(value.protocol)
     && ['binding', 'request', 'headers', 'http-error', 'stream', 'buffered'].includes(value.phase)
     && MODEL_FAILURE_CODES.includes(value.code)
@@ -93,6 +106,17 @@ export function validateModelFailure(value: ModelFailureDiagnostic | undefined):
       && (provider.type === undefined || MODEL_PROVIDER_ERROR_TYPES.includes(provider.type))
       && (provider.status === undefined || Number.isInteger(provider.status) && provider.status >= 400 && provider.status <= 599),
     'invalid_model_failure_diagnostic');
+  }
+  if (value.contract === 'model-failure-diagnostic/v4') {
+    const gateway = value.gateway;
+    invariant(value.phase === 'http-error' && value.code.startsWith('http_') && gateway
+      && typeof gateway === 'object' && !Array.isArray(gateway) && Object.keys(gateway).length > 0
+      && Object.keys(gateway).every(key => ['code', 'type', 'requestId'].includes(key))
+      && (gateway.code === undefined || (typeof gateway.code === 'number'
+        ? Number.isInteger(gateway.code) && gateway.code >= 400 && gateway.code <= 599
+        : MODEL_GATEWAY_ERROR_CODES.includes(gateway.code)))
+      && (gateway.type === undefined || MODEL_GATEWAY_ERROR_TYPES.includes(gateway.type))
+      && (gateway.requestId === undefined || isModelGatewayRequestId(gateway.requestId)), 'invalid_model_failure_diagnostic');
   }
   invariant(!value.code.startsWith('http_') || value.phase === 'http-error' && value.httpStatus !== undefined
     && (value.code === 'http_authentication' ? value.httpStatus === 401

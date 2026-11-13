@@ -38,7 +38,7 @@ test('legacy child schemas remain unchanged, explicit capability generation requ
   }
 });
 
-for (const outputRecoveryPolicy of ['response-boundary/v2', 'response-boundary/v3'])
+for (const outputRecoveryPolicy of ['response-boundary/v2', 'response-boundary/v3', 'response-boundary/v4', 'response-boundary/v5'])
 for (const admitted of [false, true]) test(`actual child owner ${outputRecoveryPolicy} ${admitted ? 'admits a matching role and freezes response continuation' : 'refuses missing capability without a child, reservation or model effect'}`, { timeout: 10000 }, async t => {
   const store = new MemoryRunStore(), roles = nativeChildRoles({ subAgents: [{ name: 'reader', instructions: 'Read assigned evidence.', tools: ['read_workspace_file'] }] });
   let childRequests = 0, bindCalls = 0, release;

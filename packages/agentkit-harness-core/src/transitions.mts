@@ -6,7 +6,7 @@ import type { SteeringBindings } from './task-contract.mjs';
 import { admitChildPromotion, unsettledChildren } from './child-runtime.mjs';
 import { guidanceReason } from './guidance.mjs';
 import { bindOperatorInput } from './anthropic-context.mjs';
-import { APPROVAL_OUTCOME_POLICY, normalizeHostApprovalOutcome, approvalOutcomePauseReason } from './approval-outcome.mjs';
+import { APPROVAL_OUTCOME_POLICY, normalizeHostApprovalOutcome, approvalOutcomePauseReason, isApprovalDenialReason } from './approval-outcome.mjs';
 
 export function transition(snapshot: RunSnapshot, changes: Partial<RunSnapshot>, facts: { kind: string; payload: ObjectValue }[] = [],
   options: { intents?: EffectIntent[]; receipts?: EffectReceipt[]; commandId?: string; requireNoPendingCommands?: boolean } = {}): CommitBatch {
@@ -21,7 +21,8 @@ export function transition(snapshot: RunSnapshot, changes: Partial<RunSnapshot>,
   const diagnostics = changes.diagnostics ?? snapshot.diagnostics;
   facts = facts.map(fact => fact.kind === 'run.terminal' ? { ...fact, payload: { ...fact.payload,
     usageComplete: diagnostics.providerUsageIncomplete !== true && diagnostics.descendantUsageIncomplete !== true,
-    ...(diagnostics.lastModelFailure && ['provider_terminal_error', 'provider_retryable_error_retry_exhausted', 'malformed_tool_call_retry_exhausted', 'model_policy_abort'].includes(String(fact.payload.reason))
+    ...(diagnostics.lastModelFailure && ['provider_terminal_error', 'provider_retryable_error_retry_exhausted', 'malformed_tool_call_retry_exhausted', 'model_policy_abort',
+      'context_summary_provider_terminal_error', 'context_summary_retry_exhausted'].includes(String(fact.payload.reason))
       ? { modelFailure: copy(diagnostics.lastModelFailure) } : {}),
   } } : fact);
   const prefix = runKey(snapshot.scope, snapshot.runId);
@@ -38,8 +39,13 @@ export function prepareEffect(snapshot: RunSnapshot, kind: EffectKind, phase: Ph
   changes: Partial<RunSnapshot> = {}): CommitBatch {
   invariant(snapshot.pendingIntent === null, 'effect_already_pending');
   const operationKey = `${runKey(snapshot.scope, snapshot.runId)}:effect:${snapshot.revision + 1}:${kind}`;
-  return transition(snapshot, { ...changes, phase, pendingIntent: operationKey },
-    [{ kind: 'effect.prepared', payload: { operationKey, kind } }],
+  const retry = kind === 'model' && (snapshot.reasoningStallRetry === true && payload.purpose !== 'compaction'
+    || snapshot.retryNotBefore > 0
+    && (payload.purpose === 'compaction' ? (snapshot.contextState?.compaction?.providerErrors ?? 0) > 0
+      || (snapshot.contextState?.compaction?.errors ?? 0) > 0 : snapshot.providerErrors > 0 || snapshot.modelErrors > 0));
+  return transition(snapshot, { ...changes, phase, pendingIntent: operationKey, ...(kind === 'model' ? { retryNotBefore: 0 } : {}) },
+    [{ kind: 'effect.prepared', payload: { operationKey, kind, ...(retry ? { retry: true } : {}),
+      ...(kind === 'model' && payload.purpose === 'compaction' ? { purpose: 'compaction' } : {}) } }],
     { intents: [{ operationKey, kind, payload: copy(payload), status: 'prepared' }] });
 }
 export function reduceCommand(snapshot: RunSnapshot, command: RunCommand, pending: EffectIntent | null = null,
@@ -146,7 +152,8 @@ export function reduceCommand(snapshot: RunSnapshot, command: RunCommand, pendin
       if (snapshot.phase !== 'paused') reason = 'not_paused';
       else changes = { phase: snapshot.resumePhase ?? 'preparing_context', resumePhase: null,
         ...(snapshot.reason === 'output_budget_exhausted' && bindings.configuration?.outputRestartPolicy === 'per-response/v2'
-          ? { reason: null, continuations: 0, outputRestarts: 0 } : {}),
+          ? { reason: null, continuations: 0, outputRestarts: 0,
+            ...(snapshot.reasoningStallRetry ? { reasoningStallRetry: false } : {}) } : {}),
         ...(bindings.configuration?.approvalOutcomePolicy === APPROVAL_OUTCOME_POLICY
           && ['approval_rejected', 'approval_cancelled', 'approval_unavailable'].includes(snapshot.reason ?? '') ? { reason: null } : {}),
         ...(['provider_unavailable', 'context_summary_unavailable', 'context_source_unavailable', 'child_paused']
@@ -156,11 +163,15 @@ export function reduceCommand(snapshot: RunSnapshot, command: RunCommand, pendin
       const pending = snapshot.pendingInteraction;
       const hasOutcome = Object.hasOwn(command.payload, 'approvalOutcome');
       const approvalOutcome = normalizeHostApprovalOutcome(command.payload.approvalOutcome);
+      const denialReason = command.payload.denialReason;
       if (snapshot.phase !== 'awaiting_interaction' || !pending || command.payload.interactionId !== pending.interactionId
         || command.payload.decision !== 'allow' && command.payload.decision !== 'deny') reason = 'interaction_mismatch';
       else if (hasOutcome && (bindings.configuration?.approvalOutcomePolicy !== APPROVAL_OUTCOME_POLICY
         || approvalOutcome !== command.payload.approvalOutcome
         || (approvalOutcome === 'allowed-once') !== (command.payload.decision === 'allow'))) reason = 'interaction_outcome_mismatch';
+      else if (Object.hasOwn(command.payload, 'denialReason') && (command.payload.decision !== 'deny'
+        || !isApprovalDenialReason(denialReason) || pending.approvalPolicy !== 'durable-preflight/v1'))
+        reason = 'interaction_denial_reason_mismatch';
       else {
         changes = { phase: snapshot.childApproval ? snapshot.resumePhase ?? 'preparing_context' : 'executing_tools',
           ...(snapshot.childApproval ? { resumePhase: null, childLifecycleCursor: null } : {}), pendingInteraction: null,
@@ -173,6 +184,7 @@ export function reduceCommand(snapshot: RunSnapshot, command: RunCommand, pendin
         const pauseReason = hasOutcome && !bindings.configuration?.childOwnerBinding ? approvalOutcomePauseReason(approvalOutcome) : null;
         if (pauseReason) Object.assign(changes, { resumePhase: changes.phase, phase: 'paused', reason: pauseReason, outcome: null });
         facts.push({ kind: 'approval.resolved', payload: { interactionId: pending.interactionId, callId: pending.callId, decision: command.payload.decision,
+          ...(isApprovalDenialReason(denialReason) ? { denialReason } : {}),
           ...(hasOutcome ? { approvalOutcome } : {}) } });
       }
       break;

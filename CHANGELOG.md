@@ -1,5 +1,85 @@
 # Changelog
 
+## Unreleased
+
+## 0.0.20 - 2026-11-13
+
+- Preserve explicit approval denial reasons and redeliver an unacknowledged
+  host callback to its original receiver without rerunning the tool.
+- Recover from sustained reasoning repetition, retain bounded gateway
+  diagnostics, and distinguish model retries from context compaction.
+  Rate-limit recovery uses status and Retry-After without reading the body.
+- Fold completed work, group search and file reads with expandable details,
+  and keep retryable edit errors in history. Report net per-run file changes.
+- Report engine startup errors through the client instead of crashing the host.
+
+## 0.0.19 - 2026-11-12
+
+- Stream live reasoning, tool drafts, and checklist progress in independent
+  Runs. Fold completed work and keep recoverable edit diagnostics available
+  inside the expanded history.
+- Show web deliverables, file changes and screenshot evidence for completed
+  Runs. Limit file evidence to committed effects of the current Run and
+  serve interactive previews from a separate local origin.
+- Let a read-only delivery status request preserve the running host's
+  registered approval and tool callbacks.
+
+## 0.0.18
+
+- Run Harness as a separately installed HTTP service with its own model
+  connection, workspace, command and Run journals, and task view. Studio and
+  KSADK can continue a Run after replacing the service image within the
+  supported protocol and journal versions.
+- Persist child and tool approvals in the service and reconcile committed
+  effects before resuming. Deliver managed commands, resumable event cursors
+  and terminal receipts through the service protocol.
+- Accept approved host tools, bound Skills and context contributions over the
+  host protocol. Keep host identity and resource authorization at the
+  integration boundary.
+- Add the engine preset contract `agentkit.engine-preset/v1`. A host names a
+  preset (`official`) and the engine resolves the recovery policy versions,
+  output restart allowance, control tools and default per-request output budget
+  for new Runs. Hosts no longer spell engine policy versions, so a policy
+  improvement ships with an engine release only. Existing Runs keep the
+  configuration frozen at their creation.
+- The `official` preset keeps its 32000-token default request budget, bounded
+  by the model limit and half the context window, for the initial call and up
+  to two automatic continuations. Further truncation pauses the original Run
+  with its committed effects intact. The opt-in `experimental-reasoning-stall`
+  preset tests one shorter retry after a confirmed reasoning-only cutoff.
+- Add engine-rendered instructions (`engine-instructions/v1`), now the policy
+  new Runs are admitted with. The engine owns the base system prompt and places
+  the Host's rendered contribution verbatim in a delimited slot. Recovery
+  compares only the Host contribution, so a base wording change in a later
+  engine release no longer invalidates Runs admitted earlier. Runs admitted
+  under `native-owned-sections/v1..v3` keep their exact whole-prompt check.
+- Add the engine process `agentkit-engine` speaking `agentkit.engine/v1`
+  (JSON-RPC 2.0 over NDJSON stdio): `initialize` with capability negotiation,
+  `run/start`, `run/status`, `run/events`, `run/resume`, `run/cancel` and the
+  engine-to-host request `host/approveTool`. It composes workspace, command and
+  web tools, the official preset and engine-rendered instructions from this
+  package alone. `native/engine-client` is a thin client with no engine logic.
+  Events are projected to the host-renderable `agentkit.engine-event/v1`.
+- Add host tools to `agentkit.engine/v1`. A host that declares the `tools`
+  service may pass `hostTools` to `run/start`; the engine advertises them and
+  forwards each call over `host/callTool`, where the host executes and
+  authorizes it. Read-only host tools may be re-run after a crash; others are
+  never replayed. `initialize` reports `reservedToolNames` and
+  `hostToolNamePattern` so a host never hard-codes engine tool names.
+- The engine's event wait reads only the journal suffix instead of rescanning
+  every event on each poll.
+- Add the engine's own task view (`agentkit.engine-view/v1`). The UI package
+  bundles the shared timeline into one self-contained HTML document
+  (`dist/engine-view.html`, no network access, strict CSP) and maps
+  `agentkit.engine-event/v1` onto its event protocol. The engine delivers it
+  through `ui/view` and advertises it in `initialize`. A host embeds it in a
+  scripts-only sandboxed iframe and relays events by `postMessage`, so task
+  presentation changes ship with the engine. Projected events now carry
+  bounded tool calls and results for the view.
+- `run/start` accepts earlier `conversation` turns; the engine renders them into
+  the Run objective, newest first within a fixed budget. The engine view follows
+  the host's color scheme sent with the `theme` message.
+
 ## 0.0.17 - 2026-11-10
 
 - Keep live reasoning, text, and tool previews streaming after the persisted

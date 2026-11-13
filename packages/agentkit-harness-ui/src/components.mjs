@@ -1,6 +1,6 @@
 import * as React from "react";
 import { createHarnessComponents } from "./react-binding.mjs";
-export const { HarnessTimeline } = createHarnessComponents(React);
+export const { HarnessTimeline, HarnessTurn } = createHarnessComponents(React);
 export { buildViewModel, styles } from "./react-binding.mjs";
 
 import * as ReactDOM from "react-dom";

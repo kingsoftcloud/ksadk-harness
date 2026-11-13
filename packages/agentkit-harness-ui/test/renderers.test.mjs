@@ -105,7 +105,7 @@ test("execute output is ANSI-sanitized: escape sequences are stripped to plain t
   assert.equal(textOf(findByTestId(tree, "bash-result-output")), "file");
 });
 
-test("read renderer is a non-toggleable file chip; open-file action carries path/kind", () => {
+test("read starts collapsed and the file chip still opens the original file", () => {
   const s = reduceAll(initialState(), [
     ev(EventType.TaskStarted, "t0", { taskId: "T" }),
     ev(EventType.ToolScheduled, "x1", { callId: "c1", name: "Read", input: { file_path: "src/a.ts" } }),
@@ -113,7 +113,8 @@ test("read renderer is a non-toggleable file chip; open-file action carries path
   ]);
   const tree = render(s.items[0], { onOpenFile: () => {}, workspaceRoot: "/repo" });
   assert.equal(attr(tree, "data-renderer"), "read");
-  assert.equal(attr(findByTestId(tree, "tool-details"), "data-static"), "true", "read is not toggleable");
+  assert.equal(attr(findByTestId(tree, "tool-details"), "open"), false);
+  assert.ok(findByTestId(tree, "tool-toggle"));
   const chip = findByTestId(tree, "read-chip");
   assert.ok(chip, "file chip renders");
   assert.equal(attr(chip, "data-action"), "open-file");
@@ -121,34 +122,39 @@ test("read renderer is a non-toggleable file chip; open-file action carries path
   assert.equal(textOf(findByTestId(tree, "read-file-name")), "a.ts");
 });
 
-test("read renderer does not repeat the path three times: kind label, leaf chip, one path line", () => {
+test("read keeps the path and the actual receipt range in the expanded detail", () => {
   const s = reduceAll(initialState(), [
     ev(EventType.TaskStarted, "t0", { taskId: "T" }),
-    ev(EventType.ToolScheduled, "x1", { callId: "c1", name: "Read", input: { file_path: "src/a.ts" } }),
-    ev(EventType.ToolResult, "x2", { callId: "c1", display: { kind: "file_read", path: "src/a.ts", entryType: "file" } }),
+    ev(EventType.ToolScheduled, "x1", { callId: "c1", name: "read_workspace_file",
+      input: { path: "src/a.ts", start_line: 20, end_line: 99 } }),
+    ev(EventType.ToolResult, "x2", { callId: "c1", result: { read_range: { start: 20, end: 42 }, line_count: 23 } }),
   ]);
   const tree = render(s.items[0], { workspaceRoot: "/repo" });
-  const summary = findByTestId(tree, "tool-summary-static") || findByTestId(tree, "tool-toggle");
-  const txt = textOf(summary);
-  // The full workspace-relative path appears exactly once as text (not in the
-  // kind label, not duplicated in a third line). The leaf appears once in the chip.
-  const pathMatches = txt.match(/src\/a\.ts/g) || [];
-  assert.equal(pathMatches.length, 1, "full path shown once, not three times");
-  assert.equal(textOf(findByTestId(tree, "tool-title")), "Read", "kind label carries no path");
+  assert.equal(textOf(findByTestId(tree, "tool-toggle")), "Read·a.ts");
+  assert.equal(findByTestId(tree, "read-file-path"), null);
+  const open = renderOpen(s.items[0]);
+  assert.equal(textOf(findByTestId(open, "read-file-path")), "src/a.ts");
+  assert.equal(textOf(findByTestId(open, "read-line-range")), "20–42");
 });
 
-test("search renderer (Grep) shows a Find {query} summary, not a file path, and stays non-toggleable", () => {
+test("search shows only the query in the summary and exposes scope and match positions on demand", () => {
   const s = reduceAll(initialState(), [
     ev(EventType.TaskStarted, "t0", { taskId: "T" }),
-    ev(EventType.ToolScheduled, "x1", { callId: "c1", name: "Grep", input: { pattern: "TODO", path: "src" } }),
-    ev(EventType.ToolResult, "x2", { callId: "c1", result: "no hits" }),
+    ev(EventType.ToolScheduled, "x1", { callId: "c1", name: "search_workspace_files", input: { query: "TODO", path: "src" } }),
+    ev(EventType.ToolResult, "x2", { callId: "c1", result: { searched_path: "src", match_count: 2, results: [
+      { path: "src/a.ts", line: 17 }, { path: "src/b.ts", line: 32 },
+    ] } }),
   ]);
   const tree = render(s.items[0]);
   assert.equal(attr(tree, "data-renderer"), "read");
-  assert.equal(attr(findByTestId(tree, "tool-details"), "data-static"), "true", "search is non-toggleable");
-  assert.equal(textOf(findByTestId(tree, "tool-title")), "Search", "search kind label");
-  assert.equal(textOf(findByTestId(tree, "search-primary")), "Find TODO", "primary text is the query, not a path");
-  assert.equal(findByTestId(tree, "read-chip"), null, "no file chip for a content search");
+  assert.equal(attr(findByTestId(tree, "tool-details"), "open"), false);
+  assert.equal(textOf(findByTestId(tree, "tool-toggle")), "Search·TODO");
+  assert.equal(findByTestId(tree, "search-matches"), null);
+  const open = renderOpen(s.items[0]);
+  assert.equal(textOf(findByTestId(open, "search-scope")), "src");
+  assert.equal(textOf(findByTestId(open, "search-match-count")), "2");
+  assert.ok(hasText(findByTestId(open, "search-matches"), "src/a.ts:17"));
+  assert.ok(hasText(findByTestId(open, "search-matches"), "src/b.ts:32"));
 });
 
 test("list renderer (list_workspace_files) names the directory once after its kind", () => {
@@ -163,7 +169,7 @@ test("list renderer (list_workspace_files) names the directory once after its ki
   assert.equal(textOf(findByTestId(tree, "search-primary")), "/repo/src", "directory listing names the cwd without repeating its kind");
 });
 
-test("a failed non-toggleable read preserves its redacted error reason inline (not hidden by a missing toggle)", () => {
+test("a failed read preserves its redacted error reason while collapsed", () => {
   const s = reduceAll(initialState(), [
     ev(EventType.TaskStarted, "t0", { taskId: "T" }),
     ev(EventType.ToolScheduled, "x1", { callId: "c1", name: "Read", input: { file_path: "missing.ts" } }),

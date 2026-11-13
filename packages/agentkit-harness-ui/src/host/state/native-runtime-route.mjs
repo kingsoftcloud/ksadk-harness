@@ -7,7 +7,7 @@ export function nativeRuntimeRouteInput(_session, openState, projection, boundPr
   return { presetId: boundPresetId, ready: openState === 'open' && projection?.state === 'ready' };
 }
 
-export async function resolveNativeRuntimeRoute({ hostRemote, presetId, resolveAgentFromPreset, signal }) {
+export async function resolveNativeRuntimeRoute({ hostRemote, presetId, resolveAgentFromPreset, isIndependentPreset, signal }) {
   const first = await hostRemote.agents({ source: 'local', pageSize: 100 });
   signal.throwIfAborted();
   if (!Array.isArray(first?.items)) throw Error('智能体目录响应无效');
@@ -22,5 +22,6 @@ export async function resolveNativeRuntimeRoute({ hostRemote, presetId, resolveA
   if (!agentId) return { kind: 'other', agentId: null };
   const agent = items.find(item => (item.metadata?.id ?? item.id) === agentId);
   if (!agent) throw Error('当前会话的智能体配置暂不可用');
-  return agent.spec?.runtime?.type === 'harness' ? { kind: 'native', agentId } : { kind: 'other', agentId };
+  if (agent.spec?.runtime?.type !== 'harness') return { kind: 'other', agentId };
+  return { kind: isIndependentPreset?.(presetId) ? 'engine' : 'native', agentId };
 }

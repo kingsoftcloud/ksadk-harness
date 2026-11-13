@@ -33,12 +33,17 @@ export function initialState() {
     taskError: null,
     taskStartedAt: null, taskEndedAt: null, finalAnswerId: null,
     verificationRequired: null,
+    modelRequestActive: false,
+    modelRequestRetry: false,
+    modelRequestPurpose: null,
+    modelThinkingId: null,
     contextMarkers: [],
     subagents: new Map(),
     items: [], // ordered TimelineItem[]
     seen: new Set(), // event ids already applied (dedup/replay)
     pendingThinking: new Set(), // itemIds that had thinking.start but no delta yet
     plan: null, // PlanItem[] | null
+    planSummary: null, // null until the session has observed a checklist update
     lastSeq: null,
   };
 }
@@ -84,6 +89,15 @@ function apply(state, e) {
     case EventType.TaskStarted: return applyTaskStarted(state, e);
     case EventType.TaskState: return applyTaskState(state, e);
     case EventType.TaskFinished: return applyTaskFinished(state, e);
+    case EventType.ModelRequest:
+      if (e.active && state.taskState === TaskState.Paused && state.taskReason === 'provider_unavailable')
+        applyTaskState(state, { state: TaskState.Running, reason: null, message: null });
+      if (!e.active || state.modelThinkingId !== e.itemId) settleModelPresentation(state);
+      state.modelRequestActive = e.active;
+      state.modelRequestRetry = e.active && e.retry === true;
+      state.modelRequestPurpose = e.active ? e.purpose ?? null : null;
+      state.modelThinkingId = e.active ? e.itemId : null;
+      return;
     case EventType.TextDelta: return applyTextDelta(state, e);
     case EventType.TextDone: return applyTextDone(state, e);
     case EventType.ThinkingStart: return applyThinkingStart(state, e);
@@ -141,9 +155,22 @@ function applyTaskStarted(state, e) {
   state.taskEndedAt = null; state.finalAnswerId = null;
 }
 
+function settleModelPresentation(state) {
+  if (!state.modelThinkingId) return;
+  applyThinkingDone(state, { itemId: state.modelThinkingId });
+  state.items = state.items.filter(item => item.kind !== 'tool-preview' || item.responseId !== state.modelThinkingId);
+}
+
 function applyTaskState(state, e) {
   if (!canTransition(state.taskState, e.state)) return; // ignore invalid transitions
   state.taskState = e.state;
+  if (e.state !== TaskState.Running) {
+    settleModelPresentation(state);
+    state.modelRequestActive = false;
+    state.modelRequestRetry = false;
+    state.modelRequestPurpose = null;
+    state.modelThinkingId = null;
+  }
   state.taskReason = e.reason;
   state.taskMessage = e.message;
   if (e.state === TaskState.Running || e.state === TaskState.Recovered) {
@@ -153,6 +180,11 @@ function applyTaskState(state, e) {
 }
 
 function applyTaskFinished(state, e) {
+  settleModelPresentation(state);
+  state.modelRequestActive = false;
+  state.modelRequestRetry = false;
+  state.modelRequestPurpose = null;
+  state.modelThinkingId = null;
   state.verificationRequired = e.verificationRequired;
   state.taskOutcome = e.outcome;
   state.taskSummary = e.summary; // host-supplied; may be null — never invented
@@ -317,7 +349,13 @@ function settlePriorReasoning(state, event) {
 }
 
 function applyPlan(state, e) {
-  state.plan = Array.isArray(e.items) && e.items.length ? e.items : null;
+  state.plan = e.items.length ? e.items : null;
+  const visibleCompleted = e.items.filter(item => item.status === "completed").length;
+  const totalCount = Number.isSafeInteger(e.totalCount) && e.totalCount >= e.items.length ? e.totalCount : e.items.length;
+  const omittedItems = totalCount - e.items.length;
+  const completedCount = Number.isSafeInteger(e.completedCount) && e.completedCount >= visibleCompleted
+    && e.completedCount <= visibleCompleted + omittedItems ? e.completedCount : visibleCompleted;
+  state.planSummary = { totalCount, completedCount, omittedItems };
 }
 
 function findItemIndex(state, id) {

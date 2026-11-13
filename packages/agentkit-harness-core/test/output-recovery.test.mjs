@@ -24,9 +24,10 @@ test('v3 treats visible truncated text as unfinished work while preserving an ex
   assert.equal(outputRecoveryMode(snapshot, config, true, limitedText('Delivery prefix')), 'suffix');
 });
 
-for (const sqlite of [false, true]) test(`v3 ${sqlite ? 'sqlite' : 'memory'}: a delivery-only admission retains exact text joining`, async t => {
+for (const outputRecoveryPolicy of ['response-boundary/v3', 'response-boundary/v5'])
+for (const sqlite of [false, true]) test(`${outputRecoveryPolicy} ${sqlite ? 'sqlite' : 'memory'}: a delivery-only admission retains exact text joining`, async t => {
   let calls = 0;
-  const run = setup(t, { sqlite, options: { outputRecoveryPolicy: 'response-boundary/v3', tools: [] }, model: async request => {
+  const run = setup(t, { sqlite, options: { outputRecoveryPolicy, tools: [] }, model: async request => {
     assert.deepEqual(request.tools, []);
     if (++calls === 1) return limitedText('Report line\nFinal incomplete');
     assert.equal(request.messages.at(-1).continuationMode, 'suffix');
@@ -108,6 +109,116 @@ for (const sqlite of [false, true]) test(`response recovery v2 ${sqlite ? 'sqlit
   assert.equal(final.phase, 'completed'); assert.equal(final.finalText, '已有文件保留，任务继续完成。');
   assert.equal(calls, 7); assert.equal(writes, 1); assert.ok(budgets.every(value => value === 8192), 'explicit output cap is never raised');
   assert.deepEqual(run.store.load(scope, 'run').receipts.slice(0, receipts.length), receipts);
+});
+
+test('v4 pauses after one short reasoning-only retry and resumes the same SQLite Run', async t => {
+  const budgets = [];
+  let writes = 0, finish = false;
+  const port = createNativeModelPort({ resolveProfile: async () => ({ protocol: 'openai-chat',
+    baseUrl: 'https://model.example.test/v1', apiKey: 'fixture-key', model: 'fixture' }),
+  fetchImpl: async (_url, { body }) => {
+    const wire = JSON.parse(body);
+    const budget = wire.max_completion_tokens ?? wire.max_tokens;
+    budgets.push(budget);
+    const tool = budgets.length === 1;
+    const delta = tool ? { tool_calls: [{ index: 0, id: 'original-write', type: 'function',
+      function: { name: 'write', arguments: '{}' } }] } : finish ? { content: 'Work resumed without repeating the write.' }
+      : { reasoning_content: 'Continuing to reason.' };
+    const frames = [
+      { choices: [{ index: 0, delta, finish_reason: null }] },
+      { choices: [{ index: 0, delta: {}, finish_reason: tool ? 'tool_calls' : finish ? 'stop' : 'length' }],
+        usage: { prompt_tokens: 10, completion_tokens: tool || finish ? 10 : budget,
+          completion_tokens_details: { reasoning_tokens: tool || finish ? 0 : budget } } },
+    ];
+    return new Response(frames.map(frame => 'data: ' + JSON.stringify(frame) + '\n\n').join('') + 'data: [DONE]\n\n',
+      { headers: { 'content-type': 'text/event-stream' } });
+  } });
+  const run = setup(t, { sqlite: true, options: {
+    outputRecoveryPolicy: 'response-boundary/v4', outputRestartPolicy: 'per-response/v2',
+    tools: [tool({ name: 'write', readOnly: false, concurrentSafe: false })],
+    profile: { ...fixture().config.profile, maxOutputTokens: 32000, maxContinuations: 3 },
+    limits: { maxOutputRestarts: 1 },
+  }, model: request => port.generate(request, () => {}),
+  tools: async () => { writes++; return { status: 'ok', content: 'written' }; } });
+  const paused = await run.kernel().runUntilIdle(scope, 'run');
+  assert.equal(paused.phase, 'paused'); assert.equal(paused.reason, 'output_budget_exhausted');
+  assert.deepEqual(budgets, [32000, 32000, 8192]); assert.equal(writes, 1);
+  assert.equal(paused.usage.reasoningTokens, 40192);
+  assert.equal(paused.continuations, 1); assert.equal(paused.outputRestarts, 0);
+  const receipts = structuredClone(run.store.load(scope, 'run').receipts);
+  run.reopen();
+  assert.equal((await run.kernel().runUntilIdle(scope, 'run')).phase, 'paused');
+  assert.equal(budgets.length, 3);
+  finish = true;
+  run.kernel().submit(scope, 'run', { commandId: 'resume-short-retry', kind: 'resume', payload: {} });
+  const final = await run.kernel().runUntilIdle(scope, 'run');
+  assert.equal(final.phase, 'completed'); assert.equal(writes, 1);
+  assert.equal(final.finalText, 'Work resumed without repeating the write.');
+  assert.deepEqual(budgets, [32000, 32000, 8192, 32000]);
+  assert.deepEqual(run.store.load(scope, 'run').receipts.slice(0, receipts.length), receipts);
+});
+
+for (const boundary of ['tool-call/v1', 'assistant-text/v1']) test(`v4 restores the explicit cap after productive cutoff: ${boundary}`, async t => {
+  const budgets = [];
+  const run = setup(t, { options: {
+    outputRecoveryPolicy: 'response-boundary/v4', outputRestartPolicy: 'per-response/v2',
+    profile: { ...fixture().config.profile, maxOutputTokens: 6000, maxContinuations: 3 },
+  }, model: async request => {
+    const budget = request.profile.maxOutputTokens;
+    budgets.push(budget);
+    if (budgets.length === 1) return response('', 'output_limit', { outputBoundary: 'no-visible-output/v1', textCommitVersion: 'provider-finished-text/v1',
+      usageReported: true, usage: { ...emptyUsage(), outputTokens: budget, reasoningTokens: budget } });
+    if (budgets.length === 2) return response(boundary === 'assistant-text/v1' ? 'Preparing a file.' : '', 'output_limit',
+      { outputBoundary: boundary, textCommitVersion: 'provider-finished-text/v1', usageReported: true,
+        usage: { ...emptyUsage(), outputTokens: budget, reasoningTokens: budget } });
+    return response('Done.');
+  } });
+  const result = await run.kernel().runUntilIdle(scope, 'run');
+  assert.equal(result.phase, 'completed');
+  assert.deepEqual(budgets, [6000, 3000, 6000]);
+  assert.equal(result.finalText, 'Done.');
+});
+
+test('v4 short retry preserves the sealed text suffix contract across reopening', async t => {
+  const budgets = [];
+  const run = setup(t, { sqlite: true, options: {
+    outputRecoveryPolicy: 'response-boundary/v4', outputRestartPolicy: 'per-response/v2', tools: [],
+    profile: { ...fixture().config.profile, maxOutputTokens: 32000, maxContinuations: 3 },
+  }, model: async request => {
+    budgets.push(request.profile.maxOutputTokens);
+    if (budgets.length === 1) return limitedText('Verified answer: ');
+    if (budgets.length === 2) return response('', 'output_limit', { outputBoundary: 'no-visible-output/v1',
+      textCommitVersion: 'provider-finished-text/v1', usageReported: true,
+      usage: { ...emptyUsage(), outputTokens: 32000, reasoningTokens: 32000 } });
+    assert.equal(request.messages.at(-1).kind, 'response_continuation_feedback');
+    return response('the file exists.');
+  } });
+  const first = run.kernel({ onCheckpoint: async snapshot => {
+    if (snapshot.phase === 'preparing_context' && snapshot.reasoningStallRetry)
+      first.submit(scope, 'run', { commandId: 'pause-before-short-retry', kind: 'pause', payload: {} });
+  } });
+  assert.equal((await first.runUntilIdle(scope, 'run')).phase, 'paused');
+  assert.deepEqual(budgets, [32000, 32000]);
+  run.reopen();
+  run.kernel().submit(scope, 'run', { commandId: 'resume-sealed-suffix', kind: 'resume', payload: {} });
+  const final = await run.kernel().runUntilIdle(scope, 'run');
+  assert.equal(final.finalText, 'Verified answer: the file exists.');
+  assert.deepEqual(budgets, [32000, 32000, 8192]);
+});
+
+test('v4 keeps the normal budget when the provider cannot attribute all output to reasoning', async t => {
+  const budgets = [];
+  const run = setup(t, { options: {
+    outputRecoveryPolicy: 'response-boundary/v4', outputRestartPolicy: 'per-response/v2',
+    profile: { ...fixture().config.profile, maxOutputTokens: 32000, maxContinuations: 3 },
+  }, model: async request => {
+    budgets.push(request.profile.maxOutputTokens);
+    if (budgets.length <= 2) return response('', 'output_limit', { outputBoundary: 'no-visible-output/v1', textCommitVersion: 'provider-finished-text/v1',
+      usageReported: budgets.length !== 1, usage: { ...emptyUsage(), outputTokens: 32000, reasoningTokens: budgets.length === 1 ? 32000 : 100 } });
+    return response('Done.');
+  } });
+  assert.equal((await run.kernel().runUntilIdle(scope, 'run')).phase, 'completed');
+  assert.deepEqual(budgets, [32000, 32000, 32000]);
 });
 
 test('response recovery v2: cancellation after exhausted SQLite pause never replays inference or a partial tool', async t => {
@@ -317,7 +428,7 @@ function setup(t, { sqlite = false, options = {}, model, tools, verification } =
 }
 
 for (const sqlite of [false, true]) {
-  for (const outputRecoveryPolicy of ['task-or-delivery/v1', 'response-boundary/v3'])
+  for (const outputRecoveryPolicy of ['task-or-delivery/v1', 'response-boundary/v3', 'response-boundary/v5'])
   test(`${sqlite ? 'sqlite' : 'memory'} ${outputRecoveryPolicy}: interrupted work executes the real tool once and delivers a fresh verified answer`, async t => {
     let calls = 0, writes = 0;
     const run = setup(t, { sqlite, options: configuration({ outputRecoveryPolicy, tools: [tool({ name: 'write', readOnly: false, concurrentSafe: false })],

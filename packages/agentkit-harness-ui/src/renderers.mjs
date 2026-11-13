@@ -4,8 +4,7 @@
 // renderers that mirror the ZCode DESKTOP task conversation:
 //  - execute (terminal): `$` prompt + bounded command, live output with
 //    stdout/stderr/exit/cwd, safe-ANSI plain text, copy + open-terminal actions
-//  - read: a file chip (icon + name) that opens the file via a host callback,
-//    not toggleable
+//  - read/search: compact summaries with expandable file and search details
 //  - edit: file chips, +N/-N change count, inline diff with REAL line numbers
 //    from the patch hunk headers, unified + split responsive, bounded preview
 //    with a full-retrieval callback; never infers a write succeeded from input
@@ -18,12 +17,12 @@
 
 import { h, terminalIcon, fileTextIcon, searchIcon, pencilIcon, wrenchIcon, chevronIcon, skillIcon, globeIcon } from "./view.mjs";
 import { ToolStatus } from "./protocol.mjs";
-import { toolTitle, toolDetailLines, toolInputPreview, workspaceRelative, redactError } from "./tool-detail.mjs";
+import { toolTitle, toolDetailLines, toolInputPreview, redactError } from "./tool-detail.mjs";
 import { truncateText, latestNonEmptyLine, redactValue, boundedDetailLines } from "./summary.mjs";
 import { parseDiffHunks, countChangeStat, inferOperationKind } from "./diff.mjs";
 import { extractCommand, extractOutput } from "./terminal.mjs";
 import { toolIdentity, localizedToolTitle } from './tool-identity.mjs';
-import { toolErrorSummary } from './tool-error.mjs';
+import { commandPolicyBlockReason, isCommandPolicyBlock, toolErrorSummary } from './tool-error.mjs';
 
 /** Tool-name → renderer classification. Host tool names vary across runtimes. */
 
@@ -84,17 +83,15 @@ const toolIsLive = item => item.kind === 'tool-preview' ? item.streaming === tru
  * own title span), the primary/secondary content, the status word, and a
  * chevron that rotates when the body is open.
  *
- * Error placement preserves the reason for non-toggleable tools too: a read or
- * search that cannot expand still surfaces its redacted error inline in the
- * summary (role=alert), so the failure is never hidden behind a missing toggle.
+ * Policy-blocked commands put the reason inside the disclosure.
  */
-function toolShell(item, opts, { icon, summary, body, canToggle = true, defaultOpen, actions = [], summaryAction }) {
+function toolShell(item, opts, { icon, summary, body, canToggle = true, defaultOpen, actions = [], summaryAction, commandBlocked = false }) {
   const status = item.status;
   const provisional = item.kind === 'tool-preview';
   const streaming = toolIsLive(item);
   if (provisional) { canToggle = false; summaryAction = undefined; actions = []; }
   const error = status === ToolStatus.Failed && item.error ? redactError(item.error) : null;
-  // Plain static read failures are already fully visible inline. Structured
+  // Plain static failures are already fully visible inline. Structured
   // failures retain a disclosure for the original bounded diagnostic evidence.
   if (error && !canToggle && toolErrorSummary(item.error, opts) !== error) { canToggle = true; defaultOpen = false; }
   const open = resolveOpen(item, opts, defaultOpen == null ? streaming : defaultOpen, canToggle);
@@ -105,7 +102,7 @@ function toolShell(item, opts, { icon, summary, body, canToggle = true, defaultO
   const errorSummary = error ? toolErrorSummary(item.error, opts) : null;
   // Non-toggleable tools have no body to expand into, so their error must live
   // in the summary; toggleable tools show it inline only when collapsed.
-  const showInlineError = error && (canToggle ? !open : true);
+  const showInlineError = error && !commandBlocked && (canToggle ? !open : true);
   if (showInlineError) summaryKids.push(h("span", {
     className: "harness-tool-error harness-tool-error-inline",
     role: "alert",
@@ -115,16 +112,18 @@ function toolShell(item, opts, { icon, summary, body, canToggle = true, defaultO
     className: `harness-tool-status harness-tool-status-${status}`,
     "data-testid": "tool-status",
     "data-status": status,
-  }, statusLabel(status, opts)));
+  }, commandBlocked ? (String(opts.locale).startsWith("zh") ? "未执行" : "Not executed") : statusLabel(status, opts)));
   for (const action of actions) {
     if (action) summaryKids.push(action);
   }
   if (canToggle) summaryKids.push(chevronIcon("harness-tool-chevron"));
   const visibleBody = open && canToggle ? (typeof body === 'function' ? body() : body) : [];
   const bodyKids = Array.isArray(visibleBody) ? visibleBody : [visibleBody];
-  if (error && open && canToggle) bodyKids.push(h("div", {
+  const blockedReason = commandBlocked ? commandPolicyBlockReason(item.error) : null;
+  if (error && open && canToggle) bodyKids.unshift(h("div", {
     className: "harness-tool-error", role: "alert", "data-testid": "tool-error",
-  }, error));
+  }, commandBlocked ? [errorSummary, blockedReason ? h("div", {}, blockedReason) : null]
+    : errorSummary === error ? error : [errorSummary, h("div", {}, error)]));
   const detailsProps = canToggle ? {
     open, className: "harness-tool-details", "data-testid": "tool-details",
     "data-call-id": item.callId, "aria-expanded": open,
@@ -201,6 +200,7 @@ function executeRenderer(item, opts) {
   // One extractor handles both normalized event displays (fullText) and
   // Host observation snapshots (stdout/stderr). An empty alias must not hide
   // real streaming bytes supplied through the other supported representation.
+  const commandBlocked = item.status === ToolStatus.Failed && isCommandPolicyBlock(item.error);
   const stdout = out.stdout;
   const hasOutput = Boolean(stdout || out.stderr || out.exit != null);
   const title = localizedToolTitle(item.name, toolTitle(item.name, item.input) || item.name, opts.locale);
@@ -217,7 +217,7 @@ function executeRenderer(item, opts) {
   }, truncateText(command, { maxLines: 1, maxChars: 80 })));
 
   const body = [commandBlock(item.callId, command, cwd, opts),
-    outputBlock(item.callId, { stdout, stderr: out.stderr, exit: out.exit, cwd, running, hasOutput }, opts)];
+    commandBlocked ? null : outputBlock(item.callId, { stdout, stderr: out.stderr, exit: out.exit, cwd, running, hasOutput }, opts)];
   // A host progress message (e.g. "running 4 tests") is shown as a live status
   // line under the command, above the output. The reducer never invents it.
   if (item.progress && item.status !== ToolStatus.Completed) {
@@ -228,7 +228,7 @@ function executeRenderer(item, opts) {
     }, item.progress));
   }
 
-  return toolShell(item, opts, { icon: terminalIcon("harness-tool-kind-icon"), summary, body, canToggle: true, defaultOpen: false });
+  return toolShell(item, opts, { icon: terminalIcon("harness-tool-kind-icon"), summary, body, canToggle: true, defaultOpen: false, commandBlocked });
 }
 
 function commandBlock(callId, command, cwd, opts) {
@@ -301,12 +301,6 @@ function copyButton(opts, text, testid) {
 
 // ── read / search / list ─────────────────────────────────────────────────────
 //
-// The desktop conversation splits "file-read" (ReadToolCallBlock: a file chip)
-// from "search" (SearchToolCallBlock: "Find {query}" / "List {cwd}"). Both are
-// non-toggleable one-line summaries. The path is shown once (leaf in the chip +
-// the workspace-relative path as secondary, full path only in the chip title)
-// rather than repeated across the title, the chip, and a third path line.
-
 function readRenderer(item, opts) {
   return readSubKind(item.name, item.input) === "search"
     ? searchListRenderer(item, opts)
@@ -316,15 +310,11 @@ function readRenderer(item, opts) {
 function readFileRenderer(item, opts) {
   const meta = readMeta(item);
   const path = meta.path;
-  const fileName = leafName(path) || toolTitle(item.name, item.input) || item.name;
+  const fileName = leafName(path) || path;
   const running = toolIsLive(item);
-  const kindLabel = running
-    ? (opts.labels && opts.labels.readReading || "Reading")
-    : (opts.labels && opts.labels.readKind || "Read");
-  const canOpen = Boolean(opts.onOpenFile) && meta.entryType === "file";
-  // Primary content is the file chip itself; the kind label precedes it. The
-  // path is NOT duplicated in the title — only the leaf shows in the chip and
-  // the workspace-relative path shows once as the secondary.
+  const labels = opts.labels || {};
+  const kindLabel = running ? labels.readReading || "Reading" : labels.readKind || "Read";
+  const canOpen = meta.entryType === "file" && Boolean(opts.onOpenFile);
   const summary = [
     h("span", {
       className: running
@@ -332,21 +322,46 @@ function readFileRenderer(item, opts) {
         : "harness-tool-title",
       "data-testid": "tool-title",
     }, kindLabel),
-    fileChip(path, fileName, canOpen, opts, "read-chip", "read-file-name",
-      { kind: meta.entryType === "directory" ? "directory" : "file", callId: item.callId, path }),
+    path ? h("span", { className: "harness-tool-secondary", "aria-hidden": "true" }, "·") : null,
+    path ? fileChip(path, fileName, canOpen, opts, "read-chip", "read-file-name",
+      { kind: meta.entryType, callId: item.callId, showIcon: false }) : null,
   ];
-  if (path) summary.push(h("span", {
-    className: "harness-tool-secondary harness-read-path",
-    "data-testid": "read-file-path",
-    title: path,
-  }, workspaceRelative(path, opts.workspaceRoot)));
-  // Read is a one-line chip; it does not toggle. A failed read surfaces its
-  // error inline via the shell, and an optional inspect action lets the host
-  // open the result/details (the public result-inspection action).
+  const result = item.result;
+  const readRange = result?.line_count === 0
+    ? labels.readNoLines || "No lines returned"
+    : formatReadRange(result?.read_range?.start ?? result?.start_line, result?.read_range?.end ?? result?.end_line, labels);
+  const requestedRange = formatReadRange(item.input?.start_line, item.input?.end_line, labels);
+  const rows = [
+    [labels.readPath || "Path", path, "read-file-path"],
+    readRange
+      ? [labels.readLines || "Lines read", readRange, "read-line-range"]
+      : [labels.readRequestedLines || "Requested lines", requestedRange, "read-line-range"],
+    ...(!readRange && !requestedRange ? [
+      [labels.readOffset || "Offset", item.input?.offset, "read-offset"],
+      [labels.readLimit || "Limit", item.input?.limit, "read-limit"],
+    ] : []),
+  ];
   return toolShell(item, opts, {
     icon: fileTextIcon("harness-tool-kind-icon"),
-    summary, body: [], canToggle: false,
+    summary, body: () => observationDetails(rows), defaultOpen: false,
+    canToggle: Boolean(path || readRange || requestedRange || item.error || item.input?.offset != null || item.input?.limit != null),
   });
+}
+
+function formatReadRange(start, end, labels) {
+  const hasStart = Number.isSafeInteger(start) && start > 0;
+  const hasEnd = Number.isSafeInteger(end) && end > 0;
+  if (hasStart && hasEnd) return start === end ? String(start) : `${start}–${end}`;
+  if (hasStart) return (labels.readFromLine || "From line {line}").replace("{line}", start);
+  if (hasEnd) return (labels.readThroughLine || "Through line {line}").replace("{line}", end);
+  return "";
+}
+
+function observationDetails(rows) {
+  return h("dl", { className: "harness-tool-detail" }, rows
+    .filter(([, value]) => typeof value === "string" ? value.length > 0 : Number.isSafeInteger(value))
+    .map(([label, value, id]) => h("div", { className: "harness-tool-detail-line", key: id },
+      h("dt", {}, label), h("dd", { "data-testid": id }, String(value)))));
 }
 
 function searchListRenderer(item, opts) {
@@ -358,10 +373,7 @@ function searchListRenderer(item, opts) {
   const kindLabel = running
     ? (isList ? (labels.listSearching || "Listing") : (labels.searchSearching || "Searching"))
     : (isList ? (labels.listKind || "List") : (labels.searchKind || "Search"));
-  const primary = isList
-    ? (cwd ? truncateText(cwd, { maxLines: 1, maxChars: 60 }) : '')
-    : (query ? (labels.searchFindQuery || "Find {query}").replace("{query}", truncateText(query, { maxLines: 1, maxChars: 80 }))
-      : (labels.searchFind || "Find"));
+  const primary = truncateText(isList ? cwd : query, { maxLines: 1, maxChars: isList ? 60 : 80 });
   const summary = [
     h("span", {
       className: running
@@ -369,15 +381,42 @@ function searchListRenderer(item, opts) {
         : "harness-tool-title",
       "data-testid": "tool-title",
     }, kindLabel),
-    ...((isList ? cwd : query) ? [h("span", {
+    ...(!isList && primary ? [h("span", { className: "harness-tool-secondary", "aria-hidden": "true" }, "·")] : []),
+    ...(primary ? [h("span", {
       className: "harness-tool-primary harness-search-primary",
       "data-testid": "search-primary",
     }, primary)] : []),
   ];
   return toolShell(item, opts, {
     icon: searchIcon("harness-tool-kind-icon"),
-    summary, body: [], canToggle: false,
+    summary, body: () => searchDetails(item, query, cwd, labels), defaultOpen: false,
+    canToggle: !isList && Boolean(query || cwd || item.result != null || item.error),
   });
+}
+
+function searchDetails(item, query, cwd, labels) {
+  const result = item.result;
+  const nativeSearch = item.name === "search_workspace_files";
+  const scope = result?.searched_path || cwd || (nativeSearch ? "." : "");
+  const locations = Array.isArray(result?.results) ? result.results
+    .filter(hit => typeof hit?.path === "string" && hit.path && Number.isSafeInteger(hit.line) && hit.line > 0) : [];
+  const count = Number.isSafeInteger(result?.match_count) ? result.match_count : null;
+  const shown = locations.slice(0, 12);
+  const legacyResult = typeof result === "string" ? redactError(result, { maxChars: 600 }) : "";
+  return [
+    observationDetails([
+      [labels.searchQuery || "Query", truncateText(query, { maxLines: 3, maxChars: 512 }), "search-query"],
+      [labels.searchScope || "Scope", scope, "search-scope"],
+      [labels.searchGlob || "File pattern", item.input?.glob, "search-glob"],
+      [labels.searchMatches || "Matches returned", count, "search-match-count"],
+    ]),
+    shown.length ? h("ul", { className: "harness-search-matches", "data-testid": "search-matches" },
+      shown.map(({ path, line }, index) => h("li", { key: index }, `${path}:${line}`))) : null,
+    (result?.locations_truncated ?? result?.truncated) === true || (count ?? locations.length) > shown.length
+      ? h("div", { className: "harness-tool-secondary", "data-testid": "search-results-truncated" },
+        labels.searchResultsTruncated || "Some match locations are omitted") : null,
+    legacyResult ? h("pre", { className: "harness-search-legacy-result", "data-testid": "search-legacy-result" }, legacyResult) : null,
+  ];
 }
 
 /** A directory listing (list_workspace_files / parsed list_files) vs a search. */
@@ -428,8 +467,9 @@ function searchCwd(input) {
 
 function readMeta(item) {
   const disp = item.display || {};
-  if (disp.kind === "file_read") return { path: disp.path || readInputPath(item.input), entryType: disp.entryType || "file" };
-  return { path: readInputPath(item.input), entryType: "file" };
+  const path = readInputPath(item.input) || (typeof item.result?.path === "string" ? item.result.path : "");
+  if (disp.kind === "file_read") return { path: disp.path || path, entryType: disp.entryType || "file" };
+  return { path, entryType: "file" };
 }
 
 function readInputPath(input) {
@@ -576,7 +616,7 @@ function fileChip(path, label, clickable, opts, chipTestid, nameTestid, action) 
   const isDir = action && action.kind === "directory" || String(path || "").endsWith("/");
   const glyph = isDir ? searchIcon("harness-file-icon") : fileTextIcon("harness-file-icon");
   const inner = [
-    glyph,
+    action?.showIcon === false ? null : glyph,
     h("span", { className: "harness-file-name", "data-testid": nameTestid }, label),
   ];
   if (clickable && opts.onOpenFile) {

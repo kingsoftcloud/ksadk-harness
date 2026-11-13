@@ -33,6 +33,22 @@ test('actual Session response boundaries own stream, committed content and tools
   assert.equal(createSessionTaskProjector().project(window(1, [call]))[0].state.items[0].responseId, undefined);
 });
 
+test('workspace read and search receipts remain structured when replayed from Session messages', () => {
+  const rows = [];
+  const observations = [
+    { ok: true, read_range: { start: 3, end: 5 } },
+    { ok: true, match_count: 1, results: [{ path: 'src/app.js', line: 4 }] },
+  ];
+  for (const [index, name] of ['read_workspace_file', 'search_workspace_files'].entries()) {
+    const callId = String(index);
+    rows.push(entry(index * 2 + 1, 'tool/call', { callId, name, arguments: '{}' }));
+    rows.push(entry(index * 2 + 2, 'tool/result', { message: { toolCallId: callId,
+      content: [{ type: 'text', text: JSON.stringify(observations[index]) }] } }));
+  }
+  const [{ state }] = createSessionTaskProjector().project(window(1, rows));
+  assert.deepEqual(state.items.map(item => item.result), observations);
+});
+
 test('command previews enrich only an unsettled matching call and cannot replace final command output', () => {
   const state = createSessionTaskProjector().project(window(1, [entry(1, 'tool/call', {
     callId: 'command', name: 'run_command', arguments: '{"command":"controlled"}' })]))[0].state;

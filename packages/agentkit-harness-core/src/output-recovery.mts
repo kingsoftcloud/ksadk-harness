@@ -5,12 +5,24 @@ import { contextMessageRef } from './context-planning.mjs';
 
 type Digest = (value: unknown) => string;
 
+export function reasoningStall(result: ModelResult): boolean {
+  // The adapter detects unfinished wire tool calls even when they aren't
+  // executable. Missing usage or a mixed response isn't proof of pure reasoning.
+  return result.kind === 'output_limit' && result.outputBoundary === 'no-visible-output/v1'
+    && !result.text.trim() && !result.toolCalls.length && result.usageReported === true
+    && result.usage.outputTokens > 0 && result.usage.reasoningTokens === result.usage.outputTokens;
+}
+
+export function reasoningStallRetryTokens(maxOutputTokens: number): number {
+  return Math.max(1, Math.min(8192, Math.floor(maxOutputTokens / 2)));
+}
+
 /** Select from actual admission after the completed model claim, never the catalog. */
 export function outputRecoveryMode(snapshot: RunSnapshot, config: RunConfiguration, toolsAvailable: boolean, result?: ModelResult): 'suffix' | 'task_resume' {
   if (responseBoundaryRecovery(config) && config.contract.finalOutputFormat === 'text') {
     // A provider length boundary identifies truncated text, not task completion.
     // Preserve explicit sealed delivery, otherwise retain the admitted tools.
-    if (config.outputRecoveryPolicy === 'response-boundary/v3')
+    if (config.outputRecoveryPolicy !== 'response-boundary/v2')
       return responseContinuationPending(snapshot, config) || !toolsAvailable ? 'suffix' : 'task_resume';
     if (responseContinuationPending(snapshot, config)
       || result?.textCommitVersion === 'provider-finished-text/v1' && result.outputBoundary === 'assistant-text/v1') return 'suffix';

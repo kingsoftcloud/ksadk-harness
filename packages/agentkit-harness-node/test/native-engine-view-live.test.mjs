@@ -49,9 +49,11 @@ test('a host embeds the engine view and relays events; the view renders the time
       e(12, 'run.terminal', { title: 'completed', status: 'unverified', detail: 'Created out.txt.' }),
     ]);
     await frame.getByText('Created out.txt.').waitFor();
+    assert.equal(await frame.getByText('Writing the file now.').count(), 0);
+    await frame.getByTestId('work-history-toggle').click();
+    await frame.getByText('Writing the file now.').waitFor();
     assert.equal(await frame.getByText('Writing the file now.').count(), 1);
-    const text = await frame.locator('body').innerText();
-    assert.match(text, /out\.txt/);
+    await frame.getByText('out.txt', { exact: true }).waitFor();
     await page.waitForFunction(() => window.messages.some(m => m.type === 'height' && m.height > 0));
     if (process.env.ENGINE_VIEW_SCREENSHOT) await page.locator('#v').screenshot({ path: process.env.ENGINE_VIEW_SCREENSHOT });
     assert.deepEqual(errors, []);

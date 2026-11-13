@@ -6,14 +6,93 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import test from 'node:test';
-import { createEngineService } from '../src/native/engine-service.mjs';
+import { createEngineService, parseEngineSessionFrame } from '../src/native/engine-service.mjs';
 import { projectEngineEvent } from '../src/native/engine-server.mjs';
 import { createEngineViewStore } from '../src/native/engine-view-store.mjs';
 import { ENGINE_CONTEXT } from '../src/native/engine-context.mjs';
-import { ENGINE_HOST_EFFECT } from '../src/native/engine-host-effects.mjs';
+import { ENGINE_HOST_EFFECT, waitForHostReceipt } from '../src/native/engine-host-effects.mjs';
 import { ENGINE_EXECUTION_POLICY } from '../src/native/engine-runtime.mjs';
 import { ENGINE_VERIFICATION } from '../src/native/engine-verification.mjs';
 import { deliveryNetChanges, engineDeliveryEvidence } from '../src/native/engine-delivery-evidence.mjs';
+
+test('the session frame boundary accepts RPC replies and host callbacks', () => {
+  const result = { jsonrpc: '2.0', id: 'reply', result: null };
+  const callback = { jsonrpc: '2.0', id: 'host', method: 'host/readToolReceipt', expiresAt: Date.now() + 1000 };
+  assert.deepEqual(parseEngineSessionFrame(JSON.stringify(result)), result);
+  assert.deepEqual(parseEngineSessionFrame(JSON.stringify(callback)), callback);
+  for (const line of ['', '{', 'null', '{"jsonrpc":"2.0","id":"reply"}'])
+    assert.equal(parseEngineSessionFrame(line), null);
+});
+
+test('unavailable host receipts yield a bounded idle wait without fabricating a result', async () => {
+  const call = { name: 'call_remote', callId: 'call-1', arguments: {} };
+  const operationKey = 'operation-1';
+  const record = {
+    snapshot: { runId: 'run-1', phase: 'awaiting_reconciliation', pendingTools: [call],
+      toolReconciliation: { operationKey, callId: call.callId } },
+    configuration: { tools: [{ name: call.name, hostEffectProtocol: ENGINE_HOST_EFFECT,
+      recoveryPolicy: 'receipt-observation/v1' }] },
+    intents: [{ operationKey, kind: 'tool', status: 'running', claimedFence: 1, payload: { calls: [call] } }],
+    receipts: [{ operationKey, status: 'uncertain' }],
+    commands: [],
+  };
+  const signal = new AbortController().signal;
+  let calls = 0;
+  const answer = await waitForHostReceipt(record, { signal, waitMs: 25, assertCurrent() {},
+    async read() { calls++; throw new Error('host unavailable'); } });
+  assert.equal(answer, null);
+  assert.equal(calls, 1);
+  assert.equal(record.snapshot.phase, 'awaiting_reconciliation');
+  const recovered = await waitForHostReceipt(record, { signal, waitMs: 1000, assertCurrent() {},
+    async read() { return { token: 'a'.repeat(64), settled: true }; } });
+  assert.equal(recovered.kind, 'reconcile_tool');
+  assert.deepEqual(recovered.payload, { originalOperationKey: operationKey });
+});
+
+test('session capacity reclaims an idle session and reopens its durable Run', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'native-session-capacity-'));
+  const workspace = join(root, 'workspace');
+  mkdirSync(workspace);
+  const token = 'session-capacity-fixture-token';
+  const reached = Promise.withResolvers(), finish = Promise.withResolvers();
+  const service = createEngineService({ token, maxSessions: 1,
+    startup: { workspace, stateDir: join(root, 'state'), scope: { tenantId: 't', workspaceId: 'w', userId: 'u', agentId: 'a' },
+      approval: 'deny', model: { name: 'fixture', baseUrl: 'https://example.test/v1', apiKeyEnv: 'FIXTURE_KEY' } },
+    env: { FIXTURE_KEY: 'fixture-value' },
+    async fetchImpl() {
+      reached.resolve();
+      await finish.promise;
+      const frame = { id: 'fixture', choices: [{ index: 0, delta: { content: 'Done.' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 5, completion_tokens: 2 } };
+      return new Response('data: ' + JSON.stringify(frame) + '\n\ndata: [DONE]\n\n',
+        { headers: { 'content-type': 'text/event-stream' } });
+    } });
+  t.after(async () => { finish.resolve(); await service.close(); await rm(root, { recursive: true, force: true }); });
+  await new Promise(resolve => service.server.listen(0, '127.0.0.1', resolve));
+  const origin = 'http://127.0.0.1:' + service.server.address().port;
+  let id = 0;
+  const rpc = (session, method, params) => fetch(origin + '/v1/sessions/' + session + '/rpc', {
+    method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: String(++id), method, params }),
+  });
+  const initialize = session => rpc(session, 'initialize', { protocolVersions: ['agentkit.engine/v1'] });
+  assert.equal((await initialize('first')).status, 200);
+  const run = { runId: 'durable-run' };
+  assert.equal((await rpc('first', 'run/start', { ...run, objective: 'Complete the fixture.' })).status, 200);
+  await reached.promise;
+  assert.equal((await initialize('second')).status, 503);
+  finish.resolve();
+  for (let i = 0; i < 30; i++) {
+    if (!(await (await rpc('first', 'run/status', run)).json()).result.running) break;
+    await sleep(25);
+  }
+  assert.equal((await initialize('second')).status, 200);
+  assert.equal((await rpc('first', 'run/status', run)).status, 404);
+  assert.equal((await initialize('first')).status, 200);
+  const { result } = await (await rpc('first', 'run/status', run)).json();
+  assert.equal(result.phase, 'completed');
+  assert.equal(result.finalText, 'Done.');
+});
 
 test('oversized workspace observations retain actual read ranges and bounded search locations', () => {
   const project = (name, content) => projectEngineEvent({ kind: 'tool.completed', seq: 1,

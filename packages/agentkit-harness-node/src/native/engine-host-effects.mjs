@@ -5,6 +5,7 @@ import { canonical, invariant, isNativeError, toolReceiptSource } from '@kingsof
 export const ENGINE_HOST_EFFECT = 'agentkit.engine-host-tool-effect/v1';
 const MAX_INPUT_BYTES = 128 * 1024;
 const MAX_INPUTS = 64;
+export const RECEIPT_WAIT_MS = 30_000;
 
 export function hostReceiptSource(record) {
   const originalOperationKey = record.snapshot.toolReconciliation?.operationKey;
@@ -27,28 +28,37 @@ export function hostReceiptReply(reply, observationId) {
 
 /** Idle reads inspect a durable checkpoint. The Kernel claims the original
  * remote receipt query separately from the initial mutation. */
-export async function waitForHostReceipt(record, { read, signal, assertCurrent }) {
+export async function waitForHostReceipt(record, { read, signal, assertCurrent, waitMs = RECEIPT_WAIT_MS }) {
   const source = hostReceiptSource(record);
   if (!source) return null;
   const { call, originalOperationKey } = source, { runId } = record.snapshot;
-  for (;;) {
-    assertCurrent();
-    const ready = await read(call, originalOperationKey, signal).catch(() => null);
-    assertCurrent();
-    if (ready) {
-      const digest = createHash('sha256').update(canonical({ runId, originalOperationKey, token: ready.token })).digest('hex');
-      const prefix = 'host-receipt-' + digest;
-      const attempts = record.commands.filter(row => row.consumed && row.command.commandId.startsWith(prefix + '-')).length;
-      // One initial read may find the original Task finished even after its
-      // deadline. Later terminal facts have a different checkpoint token.
-      if (ready.settled ? attempts < 3 : attempts === 0 || Date.now() < ready.retryUntil) {
-        if (attempts) await delay(Math.min(1500 * attempts, 5000), undefined, { signal });
-        assertCurrent();
-        return { commandId: prefix + '-' + attempts, kind: 'reconcile_tool', payload: { originalOperationKey } };
+  const deadline = AbortSignal.timeout(waitMs);
+  const polling = AbortSignal.any([signal, deadline]);
+  try {
+    while (!polling.aborted) {
+      assertCurrent();
+      const ready = await read(call, originalOperationKey, polling).catch(() => null);
+      polling.throwIfAborted();
+      assertCurrent();
+      if (ready) {
+        const digest = createHash('sha256').update(canonical({ runId, originalOperationKey, token: ready.token })).digest('hex');
+        const prefix = 'host-receipt-' + digest;
+        const attempts = record.commands.filter(row => row.consumed && row.command.commandId.startsWith(prefix + '-')).length;
+        // A terminal fact has a different checkpoint token. Give the host a
+        // bounded window to publish it before leaving the durable Run idle.
+        if (ready.settled ? attempts < 3 : attempts === 0 || Date.now() < ready.retryUntil) {
+          if (attempts) await delay(Math.min(1500 * attempts, 5000), undefined, { signal: polling });
+          assertCurrent();
+          return { commandId: prefix + '-' + attempts, kind: 'reconcile_tool', payload: { originalOperationKey } };
+        }
       }
+      await delay(1000, undefined, { signal: polling });
     }
-    await delay(1000, undefined, { signal });
+  } catch (error) {
+    if (!deadline.aborted || signal.aborted) throw error;
   }
+  assertCurrent();
+  return null;
 }
 
 /** The host receives original user text and stable identities, never imported prose or media. */

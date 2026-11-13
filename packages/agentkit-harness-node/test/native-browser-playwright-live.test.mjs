@@ -10,10 +10,11 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { existsSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
-import { homedir, platform, tmpdir } from 'node:os';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium } from '@playwright/test';
+import { resolveNativeBrowserExecutable } from '../src/native/browser-availability.mjs';
 import { NativePlaywrightBrowser } from '../src/native/browser-playwright.mjs';
 import { createStudioBrowserWorkspacePort } from '../src/native/browser-workspace.mjs';
 import { NativeKernel, configure, canonical, emptyUsage } from '../../agentkit-harness-core/dist/index.mjs';
@@ -22,33 +23,11 @@ import { createHash } from 'node:crypto';
 
 const SCOPE = { tenantId: 'tenant', workspaceId: 'workspace', userId: 'user', agentId: 'agent' };
 
-/** Locate the Playwright browser cache portably (macOS / Linux / Windows). */
-function playwrightCache() {
-  const home = homedir();
-  if (platform() === 'darwin') return join(home, 'Library', 'Caches', 'ms-playwright');
-  if (platform() === 'win32') return join(home, 'AppData', 'Local', 'ms-playwright');
-  return join(home, '.cache', 'ms-playwright');
-}
-const CACHE = playwrightCache();
-
-/** Find a cached Chromium executable across revision directories and platform layouts. */
-function findChromiumExecutable() {
-  if (process.env.AGENTKIT_NATIVE_TEST_CHROMIUM) return process.env.AGENTKIT_NATIVE_TEST_CHROMIUM;
-  try {
-    const dirs = readdirSync(CACHE).filter((d) => /^chromium-\d+$/.test(d)).sort((a, b) => Number(b.slice(9)) - Number(a.slice(9)));
-    for (const d of dirs) {
-      const macos = join(CACHE, d, 'chrome-mac-arm64', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing');
-      if (existsSync(macos)) return macos;
-      const linux = join(CACHE, d, 'chrome-linux', 'chrome');
-      if (existsSync(linux)) return linux;
-    }
-  } catch {}
-  // Fall back to the driver's expected executable (may point to a missing revision).
-  try { const ep = chromium.executablePath(); if (existsSync(ep)) return ep; } catch {}
-  return null;
-}
-
-const EXECUTABLE = findChromiumExecutable();
+const EXECUTABLE = resolveNativeBrowserExecutable({ env: {
+  ...process.env,
+  KSADK_BROWSER_EXECUTABLE_PATH: process.env.AGENTKIT_NATIVE_TEST_CHROMIUM ?? process.env.KSADK_BROWSER_EXECUTABLE_PATH,
+} });
+if (process.env.KSADK_REQUIRE_TEST_BROWSER === '1') assert.ok(EXECUTABLE, 'Chromium must be installed for the browser gate');
 const AVAILABLE = EXECUTABLE != null;
 const skip = (name, fn) => test(name, { timeout: 60000, skip: AVAILABLE ? false : 'no cached Chromium executable' }, fn);
 

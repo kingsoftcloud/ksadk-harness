@@ -2,7 +2,7 @@ import { createHash, createPublicKey, timingSafeEqual } from 'node:crypto';
 import { join } from 'node:path';
 import { canonical, configure, invariant, parseNativeJson, TOOL_RECEIPT_OBSERVATION_CONTRACT } from '@kingsoftcloud/agentkit-harness-core';
 import { createEngineRuntime } from './engine-runtime.mjs';
-import { ENGINE_HOST_EFFECT, waitForHostReceipt } from './engine-host-effects.mjs';
+import { ENGINE_HOST_EFFECT, RECEIPT_WAIT_MS, waitForHostReceipt } from './engine-host-effects.mjs';
 import { ENGINE_TOOL_POLICY } from './engine-tool-policy.mjs';
 import { createManagedSessionDelivery, MANAGED_SESSION_DELIVERY, projectManagedSessionEvent } from './engine-managed-delivery.mjs';
 import { createManagedEngineHost, MANAGED_HOST_RESOURCES } from './engine-managed-host.mjs';
@@ -150,12 +150,19 @@ export function createEngineManagedService({ startup, stateDir, workspace, confi
       }) : {};
       const hasHostReceipts = configuration.tools.some(tool => tool.hostEffectProtocol === ENGINE_HOST_EFFECT
         && tool.recoveryPolicy === 'receipt-observation/v1');
-      function waitForReceipt(_snapshot, { signal: idleSignal, assertCurrent }) {
-        assertCurrent();
-        return waitForHostReceipt(store.load(scope, runId), { read: readReceipt, signal: idleSignal, assertCurrent });
+      function executeWithReceipts({ execute }) {
+        let deadline;
+        return execute({ onIdle(_snapshot, { signal: idleSignal, assertCurrent }) {
+          assertCurrent();
+          deadline ??= Date.now() + RECEIPT_WAIT_MS;
+          const waitMs = deadline - Date.now();
+          return waitMs <= 0 ? null : waitForHostReceipt(store.load(scope, runId), {
+            read: readReceipt, signal: idleSignal, assertCurrent, waitMs,
+          });
+        } });
       }
       return { scope, buildId, configuration, ports: engine.ports, ...delivery,
-        ...(hasHostReceipts ? { withExecution: ({ execute }) => execute({ onIdle: waitForReceipt }) } : {}),
+        ...(hasHostReceipts ? { withExecution: executeWithReceipts } : {}),
         release: () => engine.close() };
     } catch (error) {
       await engine.close();

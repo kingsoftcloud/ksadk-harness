@@ -9,6 +9,10 @@ import { resolveNativeBrowserExecutable } from '../src/native/browser-availabili
 
 const executablePath = resolveNativeBrowserExecutable();
 const html = (() => { try { return readFileSync(new URL('../dist/engine-view.html', import.meta.url), 'utf8'); } catch { return null; } })();
+if (process.env.KSADK_REQUIRE_TEST_BROWSER === '1') {
+  assert.ok(executablePath, 'Chromium must be installed for the browser gate');
+  assert.ok(html, 'The engine view must be built for the browser gate');
+}
 const e = (seq, kind, extra = {}) => ({ schema: 'agentkit.engine-event/v1', seq, kind, ...extra });
 
 test('a host embeds the engine view and relays events; the view renders the timeline and reports its size',

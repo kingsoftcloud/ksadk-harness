@@ -23,6 +23,8 @@ import { ISOLATED_COMMAND_SHELL, shellCommandArgv } from './command-shell.mjs';
 export const ENGINE_SERVICE_CONTRACT = 'agentkit.engine-service/v1';
 // Bound the authenticated frame separately from the current-turn media budget.
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
+const SESSION_IDLE_MS = 10 * 60_000;
+const RPC_TIMEOUT_MS = 40_000;
 const SESSION_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const hash = value => createHash('sha256').update(value).digest();
 
@@ -46,6 +48,18 @@ async function readFrame(request) {
   return frame;
 }
 
+export function parseEngineSessionFrame(line) {
+  try {
+    const frame = JSON.parse(line);
+    if (frame?.jsonrpc !== '2.0' || typeof frame.id !== 'string' || !frame.id) return null;
+    if (Object.hasOwn(frame, 'method')) {
+      return typeof frame.method === 'string' && frame.method.startsWith('host/')
+        && Number.isSafeInteger(frame.expiresAt) ? frame : null;
+    }
+    return Object.hasOwn(frame, 'result') !== Object.hasOwn(frame, 'error') ? frame : null;
+  } catch { return null; }
+}
+
 function openSession(sessionId, startup, env, fetchImpl, log, viewStore) {
   const input = new PassThrough(), output = new PassThrough();
   const frames = createInterface({ input: output, crlfDelay: Infinity });
@@ -55,19 +69,31 @@ function openSession(sessionId, startup, env, fetchImpl, log, viewStore) {
       if (request.frame.expiresAt <= now) hostRequests.delete(id);
     }
   };
+  let lastUsed = Date.now(), busy = false, stopped = false;
+  const stop = () => { stopped = true; input.end(); };
   const done = serveEngine({
     input, output, env, fetchImpl, log, viewStore, detachOnShutdown: true,
+    onActivity: value => { busy = value; lastUsed = Date.now(); },
     startup: { ...startup, sessionId, stateDir: join(startup.stateDir, hash(sessionId).toString('hex')) },
   }).finally(() => {
+    stopped = true;
+    lastUsed = Date.now();
     for (const resolve of pending.values()) resolve(null);
     for (const waiter of hostWaiters) waiter(true);
     pending.clear();
+    hostRequests.clear();
     output.end();
   });
   // The server owns the worker lifetime independently of HTTP request lifetime.
   done.catch(() => log('engine session stopped'));
   frames.on('line', line => {
-    const frame = JSON.parse(line);
+    if (stopped) return;
+    const frame = parseEngineSessionFrame(line);
+    if (!frame) {
+      stop();
+      log('invalid engine session output frame');
+      return;
+    }
     if (typeof frame.method === 'string') {
       pruneHostRequests(Date.now());
       hostRequests.set(frame.id, { frame, claimed: false });
@@ -93,14 +119,29 @@ function openSession(sessionId, startup, env, fetchImpl, log, viewStore) {
     return ready;
   };
   return {
+    get lastUsed() { return lastUsed; },
+    get stopped() { return stopped; },
+    isIdle(now) {
+      pruneHostRequests(now);
+      return !busy && !pending.size && !hostRequests.size && !hostWaiters.size;
+    },
     request(frame) {
-      if (pending.has(frame.id)) return null;
+      if (stopped || pending.has(frame.id)) return null;
+      lastUsed = Date.now();
       return new Promise(resolve => {
-        pending.set(frame.id, resolve);
+        const finish = value => {
+          clearTimeout(timer);
+          pending.delete(frame.id);
+          resolve(value);
+        };
+        const timer = setTimeout(() => finish(null), RPC_TIMEOUT_MS);
+        pending.set(frame.id, finish);
         input.write(JSON.stringify(frame) + '\n');
       });
     },
     async takeHostRequests(runId, waitMs, response, receiver) {
+      if (stopped) return [];
+      lastUsed = Date.now();
       const available = takeHostRequests(runId, receiver);
       if (available.length || !waitMs || response.destroyed) return available;
       return new Promise(resolve => {
@@ -122,13 +163,15 @@ function openSession(sessionId, startup, env, fetchImpl, log, viewStore) {
       });
     },
     reply(frame) {
+      if (stopped) return false;
+      lastUsed = Date.now();
       const request = hostRequests.get(frame.id);
       if (!request?.claimed || !hostRequests.delete(frame.id) || request.frame.expiresAt <= Date.now()) return false;
       input.write(JSON.stringify(frame) + '\n');
       return true;
     },
     async close() {
-      input.end();
+      stop();
       await done;
     },
   };
@@ -157,6 +200,26 @@ export function createEngineService({ startup, token, env = process.env, fetchIm
   const managedRuntime = managed && createEngineManagedService({ startup, stateDir, workspace,
     config: managed, env, fetchImpl, log, serviceToken: token, viewStore, viewRef });
   let closing = false;
+  const retirements = new Map();
+  function retire(id, session) {
+    if (retirements.has(id)) return retirements.get(id);
+    const retirement = session.close().catch(() => {}).finally(() => {
+      sessions.delete(id);
+      retirements.delete(id);
+    });
+    retirements.set(id, retirement);
+    return retirement;
+  }
+  function oldestIdle(now) {
+    return [...sessions].filter(([id, session]) => !retirements.has(id) && session.isIdle(now))
+      .sort(([, a], [, b]) => a.lastUsed - b.lastUsed)[0];
+  }
+  const cleanup = setInterval(() => {
+    const now = Date.now();
+    for (const [id, session] of sessions) {
+      if (session.isIdle(now) && now - session.lastUsed >= SESSION_IDLE_MS) void retire(id, session);
+    }
+  }, SESSION_IDLE_MS).unref();
   const handleRequest = async (request, response) => {
     if (request.method === 'GET' && request.url === '/healthz') {
       return respond(response, closing ? 503 : 200, {
@@ -201,7 +264,7 @@ export function createEngineService({ startup, token, env = process.env, fetchIm
     try {
       if (request.method === 'GET' && action === 'host-requests') {
         const session = sessions.get(id);
-        if (!session) return respond(response, 404, { error: 'session_not_found' });
+        if (!session || session.stopped) return respond(response, 404, { error: 'session_not_found' });
         const search = new URLSearchParams(query);
         const runId = search.get('runId') ?? undefined;
         const waitMs = Math.min(Math.max(Number(search.get('waitMs')) || 0, 0), 5000);
@@ -225,11 +288,20 @@ export function createEngineService({ startup, token, env = process.env, fetchIm
       }
       if (typeof frame.method !== 'string' || frame.method === 'shutdown')
         return respond(response, 400, { error: 'invalid_method' });
-      if (!session) {
+      while (!session || session.stopped) {
         if (frame.method !== 'initialize') return respond(response, 404, { error: 'session_not_found' });
-        if (sessions.size >= maxSessions) return respond(response, 503, { error: 'session_capacity' });
-        session = openSession(id, { ...startup, stateDir }, env, fetchImpl, log, viewStore);
-        sessions.set(id, session);
+        if (session) await retire(id, session);
+        else if (sessions.size >= maxSessions) {
+          const victim = oldestIdle(Date.now());
+          if (!victim) return respond(response, 503, { error: 'session_capacity' });
+          await retire(...victim);
+        } else {
+          session = openSession(id, { ...startup, stateDir }, env, fetchImpl, log, viewStore);
+          sessions.set(id, session);
+          break;
+        }
+        if (closing) return respond(response, 503, { error: 'service_stopping' });
+        session = sessions.get(id);
       }
       const result = await session.request(frame);
       if (closing) return respond(response, 503, { error: 'service_stopping' });
@@ -244,6 +316,7 @@ export function createEngineService({ startup, token, env = process.env, fetchIm
     server,
     async close() {
       closing = true;
+      clearInterval(cleanup);
       const stopped = new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
       await Promise.allSettled([...sessions.values()].map(session => session.close()).concat(managedRuntime?.close() ?? []));
       server.closeAllConnections();

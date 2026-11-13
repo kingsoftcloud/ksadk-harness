@@ -36,7 +36,7 @@ import { ENGINE_VIEW_CONTRACT } from './engine-view-store.mjs';
 import { ENGINE_TOOL_POLICY } from './engine-tool-policy.mjs';
 import { ENGINE_CONTEXT } from './engine-context.mjs';
 import { ENGINE_HOOKS } from './engine-hooks.mjs';
-import { ENGINE_HOST_EFFECT, hostReceiptReply, hostReceiptSource, waitForHostReceipt } from './engine-host-effects.mjs';
+import { ENGINE_HOST_EFFECT, RECEIPT_WAIT_MS, hostReceiptReply, hostReceiptSource, waitForHostReceipt } from './engine-host-effects.mjs';
 import { ENGINE_VERIFICATION } from './engine-verification.mjs';
 import { nativeTodoPlan } from './activity-status.mjs';
 import { nativeModelStopMessage } from './native-terminal-failure.mjs';
@@ -53,7 +53,6 @@ const ERRORS = { parse: -32700, request: -32600, method: -32601, params: -32602,
   notInitialized: -32010, runNotFound: -32011, runBusy: -32012 };
 const text = value => typeof value === 'string' && value.trim().length > 0;
 const toolName = /^[A-Za-z][A-Za-z0-9_.:/-]{0,127}$/;
-const sleep = ms => new Promise(done => setTimeout(done, ms));
 const publicRequestId = operationKey => createHash('sha256').update(operationKey).digest('hex');
 const modelUsageFields = ['inputTokens', 'outputTokens', 'cachedInputTokens', 'cacheWriteInputTokens', 'reasoningTokens'];
 function modelUsage(usage) {
@@ -195,10 +194,12 @@ function boundedToolResult(name, value) {
   return { ...result, ...observation, preview: result.preview.slice(0, PREVIEW_CHARS - JSON.stringify(observation).length) };
 }
 
-export async function serveEngine({ input, output, log = () => {}, startup, env = process.env, fetchImpl = fetch, detachOnShutdown = false, viewStore }) {
+export async function serveEngine({ input, output, log = () => {}, startup, env = process.env, fetchImpl = fetch, detachOnShutdown = false, viewStore, onActivity = () => {} }) {
   const frames = readline.createInterface({ input, crlfDelay: Infinity });
   const send = frame => output.write(`${JSON.stringify(frame)}\n`);
   const pending = new Map(), active = new Map(), driven = new Set(), receiptWaits = new Map();
+  const handlersInFlight = new Set(), lifetime = new AbortController();
+  const reportActivity = () => onActivity(handlersInFlight.size > 0 || active.size > 0);
   const liveModelDisplay = new Map();
   function captureModelDisplay({ runId, operationKey }, event) {
     if (!['thinking', 'tool_delta'].includes(event.kind)) return;
@@ -296,7 +297,7 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
     const controller = new AbortController();
     const runOptions = detachOnShutdown ? { detachSignal: controller.signal } : { signal: controller.signal };
     const execute = async () => {
-      let deadline;
+      let deadline, receiptDeadline;
       for (;;) {
         try {
           const snapshot = await runtime.run(runId, runOptions);
@@ -304,15 +305,19 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
           const record = runtime.load(runId);
           if (!hostReceiptSource(record)) return snapshot;
           if (runtime.pendingCommands(runId).length) continue;
+          receiptDeadline ??= Date.now() + RECEIPT_WAIT_MS;
+          const waitMs = receiptDeadline - Date.now();
+          if (waitMs <= 0) return snapshot;
           const idle = new AbortController();
           receiptWaits.set(runId, idle);
           const signal = AbortSignal.any([idle.signal, controller.signal]);
           try {
             const command = await waitForHostReceipt(record, {
               read: (call, operationKey, receiptSignal) => readHostReceipt(runId, call, operationKey, receiptSignal),
-              signal, assertCurrent: () => signal.throwIfAborted(),
+              signal, waitMs, assertCurrent: () => signal.throwIfAborted(),
             });
-            if (command) runtime.submit(runId, command);
+            if (!command) return snapshot;
+            runtime.submit(runId, command);
           } catch (error) {
             if (controller.signal.aborted || !idle.signal.aborted) throw error;
           } finally { receiptWaits.delete(runId); }
@@ -332,8 +337,9 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
         if (!detachOnShutdown || !controller.signal.aborted)
           log(`run ${runId} stopped: ${isNativeError(error) ? error.code : publicErrorMessage(error)}`);
       })
-      .finally(() => { active.delete(runId); liveModelDisplay.delete(runId); });
+      .finally(() => { active.delete(runId); liveModelDisplay.delete(runId); reportActivity(); });
     active.set(runId, { controller, done });
+    reportActivity();
   };
   const lookup = runId => {
     try { return runtime.authority(runId); }
@@ -447,6 +453,7 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
       const deadline = Date.now() + Math.min(Math.max(Number(params.waitMs) || 0, 0), 30000);
       // The wait reads only the journal suffix; the Run record is loaded once, on return.
       for (;;) {
+        lifetime.signal.throwIfAborted();
         const running = active.has(params.runId), events = runtime.events(params.runId, cursor);
         const live = (thinkingPresentation || draftPresentation) && running ? liveModelDisplay.get(runId) : null;
         let thinking, toolDraft;
@@ -481,7 +488,7 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
             ...(toolDraft ? { toolDraft } : {}),
             terminal: runtime.terminal(snapshot), running: active.has(runId) };
         }
-        await sleep(250);
+        await wait(250, undefined, { signal: lifetime.signal });
       }
     },
     async 'run/resume'(params) {
@@ -561,7 +568,7 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
       send({ jsonrpc: '2.0', id: frame?.id ?? null, error: { code: ERRORS.request, message: 'Invalid Request' } }); continue;
     }
     // Requests run concurrently so a long poll never blocks a cancel or an approval reply.
-    void (async () => {
+    const task = (async () => {
       const reply = body => { if (frame.id !== undefined) send({ jsonrpc: '2.0', id: frame.id, ...body }); };
       try {
         if (!Object.hasOwn(handlers, frame.method)) throw rpcError(ERRORS.method, 'Method not found');
@@ -572,12 +579,18 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
           message: isNativeError(error) ? error.code : publicErrorMessage(error) } });
       }
       if (closing) frames.close();
-    })();
+    })().finally(() => {
+      handlersInFlight.delete(task);
+      reportActivity();
+    });
+    handlersInFlight.add(task);
+    reportActivity();
   }
   closing = true;
+  lifetime.abort();
   for (const { controller } of active.values()) controller.abort();
   for (const waiter of pending.values()) waiter.reject(new Error('engine closing'));
-  await Promise.allSettled([...active.values()].map(item => item.done));
+  await Promise.allSettled([...handlersInFlight, ...[...active.values()].map(item => item.done)]);
   await (await runtimePromise?.catch(() => null))?.close();
 }
 function rpcError(code, message, data) { return Object.assign(new Error(message), { rpc: { code, message, ...(data ? { data } : {}) } }); }

@@ -293,6 +293,9 @@ function classifyHttpError(response, body) {
 }
 
 async function readHttpError(response, maxBytes) {
+  // Rate limiting is fully determined by status and Retry-After. Only the
+  // allowlisted correlation header is needed; never wait on a 429 body.
+  if (response.status === 429) return null;
   const contextCheck = response.status === 400;
   // Keep the original 400 compatibility check. For other statuses this is
   // optional evidence; a stalled error body must not delay retries.

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.0.20 - 2026-11-13
+
+- Preserve explicit approval denial reasons and redeliver an unacknowledged
+  host callback to its original receiver without rerunning the tool.
+- Recover from sustained reasoning repetition, retain bounded gateway
+  diagnostics, and distinguish model retries from context compaction.
+  Rate-limit recovery uses status and Retry-After without reading the body.
+- Fold completed work, group search and file reads with expandable details,
+  and keep retryable edit errors in history. Report net per-run file changes.
+- Report engine startup errors through the client instead of crashing the host.
+
 ## 0.0.19 - 2026-11-12
 
 - Stream live reasoning, tool drafts, and checklist progress in independent

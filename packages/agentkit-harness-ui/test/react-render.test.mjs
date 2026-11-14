@@ -7,6 +7,19 @@ import {renderToStaticMarkup} from 'react-dom/server';
 
 function state(events){return events.reduce((s,e,i)=>reduce(s,{v:1,id:String(i),...e}),initialState())}
 
+test('a terminal failure has one neutral collapsed reason disclosure and recovery clears it', () => {
+  const {HarnessTurn} = createHarnessComponents(React);
+  const events = [{type:'task.started',taskId:'failure'},
+    {type:'task.finished',outcome:'failed',error:'托管 Harness 仅接受绑定的 Agent 会话调用。'}];
+  const html = renderToStaticMarkup(React.createElement(HarnessTurn,{state:state(events),locale:'zh-CN'}));
+  assert.match(html, /<details class="harness-turn-error"><summary>本轮未完成，查看原因<\/summary>/);
+  assert.match(html, /托管 Harness 仅接受绑定的 Agent 会话调用/);
+  assert.doesNotMatch(html, /role="alert"|<details[^>]* open/);
+  const recovered = renderToStaticMarkup(React.createElement(HarnessTurn,{state:state([...events,
+    {type:'task.started',taskId:'recovered'}]),locale:'zh-CN'}));
+  assert.doesNotMatch(recovered, /<details class="harness-turn-error"|托管 Harness 仅接受/);
+});
+
 {
   const {HarnessTimeline}=createHarnessComponents(React);
 

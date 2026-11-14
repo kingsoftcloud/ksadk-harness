@@ -268,7 +268,9 @@ button.harness-tool-summary { border: 0; background: none; color: inherit; font:
 .harness-work-history { margin: 0; }
 .harness-turn { width: 100%; min-width: 0; }
 .harness-turn + .harness-turn { margin-top: 24px; }
-.harness-turn-error { color: #cf222e; color: light-dark(#cf222e, #ff7b72); margin: 8px 0 0; }
+.harness-turn-error { color: color-mix(in srgb, currentColor 60%, transparent); margin: 8px 0 0; }
+.harness-turn-error > summary { cursor: pointer; }
+.harness-turn-error > p { white-space: pre-wrap; overflow-wrap: anywhere; }
 .harness-delivery { display: flex; align-items: center; gap: 12px; padding: 10px 12px; margin-top: 12px; border-radius: 10px;
   border: 1px solid color-mix(in srgb, currentColor 16%, transparent); background: color-mix(in srgb, currentColor 6%, transparent);
   font-size: var(--ui-font-size, 14px); }

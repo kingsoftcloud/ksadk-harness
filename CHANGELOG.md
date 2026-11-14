@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.0.21 - 2026-11-14
+
+- Stream bounded model body previews over an independent cursor, and retire
+  provisional text on settlement, retry and cancellation. Keep the committed
+  final answer and verification result authoritative across history replay.
+- Honor an exact approved command at command-policy enforcement, reduce
+  Workspace Write prompts for scoped safe operations, and bind formal
+  acceptance reports to the actual delivered workspace revision.
+- Preserve explicit GLM compatibility through proxies, exclude generated
+  cache files from delivery evidence, and handle spaces in test paths.
+- Document the service's explicit image-input declaration and its limits.
+
 ## 0.0.20 - 2026-11-13
 
 - Preserve explicit approval denial reasons and redeliver an unacknowledged

@@ -4,6 +4,7 @@
 // subprocesses (no mock filesystem). Run with: node --test test/native-artifact-review.test.mjs
 
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, existsSync, readdirSync, renameSync } from 'node:fs';
@@ -14,7 +15,7 @@ import { scopeDigest, runDigest, identityDigest, canonicalStringify } from '../s
 
 const SCOPE = Object.freeze({ tenantId: 'tenant', workspaceId: 'ws', userId: 'user', agentId: 'agent' });
 const OTHER_SCOPE = Object.freeze({ tenantId: 'other', workspaceId: 'ws', userId: 'user', agentId: 'agent' });
-const HARNESS_DIR = new URL('..', import.meta.url).pathname;
+const HARNESS_DIR = fileURLToPath(new URL('..', import.meta.url));
 
 function ctx(runId, operationKey, signal) {
   return {

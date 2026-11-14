@@ -17,6 +17,7 @@ import { createNativeModelPort, nativeModelRecoveryPolicy } from './model-port.m
 import { admitChatUsagePolicy } from './model-chat-usage.mjs';
 import { validateMediaBlock } from './model-media.mjs';
 import { admitProviderCompatibilityPolicy } from './model-provider-compat.mjs';
+import { isProviderCompatibilityRule } from './model-inline-reasoning.mjs';
 import { bindNativeContext, nativeContextDefaults } from './context-profile.mjs';
 import { createEngineDeliveryJournal, engineDeliveryEvidence } from './engine-delivery-evidence.mjs';
 import { createNativeWorkspaceTools } from './workspace-tools.mjs';
@@ -40,7 +41,7 @@ import { admitEngineToolPolicy, restrictEngineTools } from './engine-tool-policy
 import { admitEngineContextSources, engineContextPort } from './engine-context.mjs';
 import { admitEngineHooks, engineHookPort } from './engine-hooks.mjs';
 import { ENGINE_HOST_EFFECT, completedHostObservations, engineUserObservations } from './engine-host-effects.mjs';
-import { admitEngineVerification, engineVerificationPort } from './engine-verification.mjs';
+import { admitEngineVerification, ENGINE_COMMAND_VERIFIER, engineVerificationPort } from './engine-verification.mjs';
 
 export const ENGINE_RUNTIME_CONTRACT = 'agentkit.engine-runtime/v1';
 export const ENGINE_EXECUTION_POLICY = 'agentkit.engine-execution-policy/v1';
@@ -60,7 +61,7 @@ const approvalDenialMessages = {
   approval_cancelled: 'This approval was cancelled. The action did not run. Do not request it again unless the user asks to continue.',
 };
 
-function durableDecision(record, request, explainDenial = false) {
+function durableDecision(record, request, explainDenial = false, workspaceWriteSafe = false) {
   const { call, operationKey } = request;
   const interactionId = `engine-permission-${digest({ runId: request.runId, call, definition: request.definition })}`;
   // Walk backward only within the lifetime of this call. A reused provider
@@ -83,7 +84,7 @@ function durableDecision(record, request, explainDenial = false) {
   }
   return { status: 'approval_required', approvalPolicy: DURABLE_APPROVAL, interactionId,
     content: { contract: ENGINE_APPROVAL_CONTRACT, code: 'approval_required', argumentDigest: digest(call.arguments),
-      subject: engineApprovalSubject(call) } };
+      subject: engineApprovalSubject(call), ...(workspaceWriteSafe ? { workspaceWriteSafe } : {}) } };
 }
 
 function admitExecutionPolicy(policy, legacyMaxModelCalls) {
@@ -105,13 +106,24 @@ export function admitEngineModel(model) {
     && (model.maxOutputTokens == null || Number.isSafeInteger(model.maxOutputTokens) && model.maxOutputTokens > 0)
     && (model.requestOutputTokens == null || Number.isSafeInteger(model.requestOutputTokens) && model.requestOutputTokens > 0)
     && (model.images === undefined || typeof model.images === 'boolean')
+    && (model.compatibilityRule === undefined || isProviderCompatibilityRule(model.compatibilityRule))
     && typeof model.apiKey === 'function', 'engine_model_invalid');
   const contextWindow = model.contextWindow ?? 128000;
   return { protocol: model.protocol ?? 'openai-chat', modelName: model.name, baseUrl: model.baseUrl, parameters: {},
+    ...(model.compatibilityRule === undefined ? {} : { compatibilityRule: model.compatibilityRule }),
     input: model.images ? ['text', 'image'] : ['text'], contextWindow,
     maxOutputTokens: presetRequestOutputTokens({ configured: model.requestOutputTokens ?? null,
       modelMaxOutputTokens: model.maxOutputTokens ?? null, contextWindow }),
     requestTimeoutMs: model.requestTimeoutMs ?? 180000 };
+}
+
+export function engineProviderCompatibilityRule(description) {
+  if (description.compatibilityRule || description.protocol !== 'openai-chat'
+    || description.modelName.trim().toLowerCase() !== 'glm-5.3-flash') return description.compatibilityRule;
+  const hostname = new URL(description.baseUrl).hostname;
+  if (/(^|\.)kspmas(?:-internal)?\.ksyun\.com$/.test(hostname)) return 'kspmas-gateway';
+  if (/(^|\.)(z\.ai|bigmodel\.cn)$/.test(hostname)) return 'zai';
+  return 'permissive';
 }
 
 const CONVERSATION_TURNS = 64, CONVERSATION_CHARS = 60000;
@@ -206,8 +218,9 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
   const roles = nativeChildRoles({ subAgents });
   const supportsImages = description.input.includes('image');
   const store = runStore ?? new SqliteRunStore(join(stateDir, 'runs.sqlite'));
-  const decide = async (request, explainDenial = false) => {
-    if (request.definition?.approvalPolicy === DURABLE_APPROVAL) return durableDecision(store.load(request.scope, request.runId), request, explainDenial);
+  const decide = async (request, explainDenial = false, workspaceWriteSafe = false) => {
+    if (request.definition?.approvalPolicy === DURABLE_APPROVAL)
+      return durableDecision(store.load(request.scope, request.runId), request, explainDenial, workspaceWriteSafe);
     return await authorize(request) === 'allow' ? 'allow' : 'deny';
   };
   const artifacts = await createNativeArtifactStore({ directory: join(stateDir, 'artifacts'), scope });
@@ -219,7 +232,8 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
   const commands = createNativeLocalCommandTools({ workspaceRoot: root, stateRoot: join(stateDir, 'commands'), sessionId,
     settings: local.settings, sourceEnv: local.environment, outputPolicy: local.outputPolicy, environmentPolicy: local.environmentPolicy,
     shellPolicy: commandSandbox,
-    artifacts, authorize: decide, captureWorkspace: request => workspace.capture(request),
+    artifacts, authorize: (request, info) => decide(request, true, info?.readOnlyCommand),
+    classifyApproval: true, captureWorkspace: request => workspace.capture(request),
     resolveOwnedCommand: createOwnedCommandResolver({ scope, store }) });
   const web = createNativeWebTools({ fetch: fetchImpl, providerConfig: { provider: '' }, authorize: decide, sessionId, inlineMaxChars: 6000 });
   const owners = [workspace, commands, web];
@@ -299,12 +313,15 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
   };
   const context = bindNativeContext({ description, context: {}, ...nativeContextDefaults(undefined) });
   const chatUsage = admitChatUsagePolicy(description.protocol);
+  // On opaque proxies the model name alone does not establish support for the
+  // Z.ai thinking switch. An explicitly bound provider takes precedence.
+  const providerRule = engineProviderCompatibilityRule(description);
   const profile = { profileId: 'engine', profileVersion: digest(description), providerFamily: description.protocol,
     compatibilityDigest: digest(description), supportsImages, discoveredToolExposure: 'direct-after-search/v1', streamTimeoutPolicy: 'idle/v1',
     ...(chatUsage ? { chatUsagePolicy: chatUsage } : {}), maxRetries: 2, maxProviderRetries: 10, ...context.profile,
     maxOutputTokens: description.maxOutputTokens, contextWindow: description.contextWindow,
     requestTimeoutMs: description.requestTimeoutMs, providerReplayMode: 'reasoning_content',
-    providerCompatibilityPolicy: admitProviderCompatibilityPolicy() };
+    providerCompatibilityPolicy: admitProviderCompatibilityPolicy(providerRule) };
   const modelSurface = bindNativeModelSurface({ environment: execution.executionEnvironment(executionOptions), description });
   const modelPort = createNativeModelPort({ fetchImpl, resolveProfile: async () => ({ protocol: description.protocol, baseUrl: description.baseUrl,
     apiKey: await model.apiKey(), model: description.modelName, parameters: description.parameters }) });
@@ -370,7 +387,8 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
   }
   const ports = { model: modelPort, tools, workspace,
     context: engineContextPort(context.port, callHostContext),
-    verification: engineVerificationPort(store, callHostVerification, digest),
+    verification: engineVerificationPort(store, callHostVerification, digest,
+      request => workspace.capture(request).revision),
     hooks: engineHookPort(callHostHook, request => {
       const { snapshot } = store.authority(request.scope, request.runId);
       const indexes = new Set(request.input.compaction.messageRefs.map(ref => Number(ref.split(':', 3)[1])));
@@ -407,6 +425,10 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
     const contextSources = admitEngineContextSources(hostContext);
     const hooks = admitEngineHooks(hostHooks);
     const verification = admitEngineVerification(hostVerification);
+    if (verification?.verifierRef === ENGINE_COMMAND_VERIFIER) {
+      invariant(verification.evidenceTools.length === 0, 'engine_command_verification_evidence_invalid');
+      if (runtimeTools.some(tool => tool.name === 'run_command')) verification.evidenceTools = ['run_command'];
+    }
     const effectBound = hosted.some(tool => tool.hostEffectProtocol === ENGINE_HOST_EFFECT);
     const scopedCallbacks = contextSources.length || hooks.definitions.length || effectBound || !!verification;
     const inputMessages = effectBound || originalInput ? [
@@ -483,10 +505,17 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
       const tools = snapshot.childApproval
         ? store.authority(snapshot.childApproval.childScope, snapshot.childApproval.childRunId).configuration.tools
         : configuration.tools;
+      const commandApproval = !snapshot.childApproval && call.name === 'run_command'
+        ? store.load(scope, snapshot.runId).receipts.find(receipt => receipt.operationKey === pending.operationKey
+          && receipt.status === 'committed')?.result.results?.find(result => result.interactionId === pending.hostInteractionId)?.content
+        : null;
       return { interactionId: pending.interactionId, callId: pending.callId, tool: call.name,
         ...(tools.some(tool => tool.name === call.name && (tool.hostApprovalRequired
           || tool.hostEffectProtocol === ENGINE_HOST_EFFECT)) ? { requiresUserApproval: true } : {}),
         ...(snapshot.childApproval ? { childRunId: snapshot.childApproval.childRunId } : {}),
+        ...(!snapshot.childApproval && (commandApproval?.workspaceWriteSafe === true || route.get(call.name) === workspace
+          && ['write_workspace_file', 'write_workspace_files', 'edit_workspace_file',
+            'multi_edit_workspace_file', 'apply_workspace_patch'].includes(call.name)) ? { workspaceWriteSafe: true } : {}),
         ...(subject ? { subject } : {}) };
     },
     deliveryEvidence(runId) {

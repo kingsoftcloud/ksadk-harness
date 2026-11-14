@@ -1,6 +1,7 @@
 import { CONTEXT_CONTRIBUTION_CONTRACT, canonical, invariant } from '@kingsoftcloud/agentkit-harness-core';
 
 export const ENGINE_VERIFICATION = 'agentkit.engine-verification/v1';
+export const ENGINE_COMMAND_VERIFIER = 'engine.workspace-command-receipt';
 const TIMEOUT_MS = 5000;
 const EVIDENCE_BYTES = 256 * 1024;
 const ID = /^[a-zA-Z0-9._-]{1,128}$/;
@@ -24,6 +25,7 @@ export function admitEngineVerification(input) {
 
 function verificationEvidence(record, definition) {
   const { configuration, events, intents, receipts } = record;
+  const commandVerifier = definition.verifierRef === ENGINE_COMMAND_VERIFIER;
   const tools = new Set(definition.evidenceTools);
   const source = configuration.contextSources.find(item => item.sourceId === definition.contextSourceId);
   const intentByKey = new Map(intents.map(intent => [intent.operationKey, intent]));
@@ -61,14 +63,27 @@ function verificationEvidence(record, definition) {
     for (let offset = 0; offset < admitted.length && calls.length < 64; offset++) {
       const call = admitted[offset], result = results[offset];
       if (!tools.has(call.name) || !result || result.status === 'approval_required') continue;
+      // A command-based verifier needs the exact admitted arguments and the
+      // observed workspace revision, not model-authored output or a preview.
+      const boundCommand = commandVerifier && call.name === 'run_command';
+      if (boundCommand && typeof call.arguments.command !== 'string') continue;
       append(calls, { operationKey: admitted.length > 1 ? `${operationKey}:call:${offset + 1}` : operationKey,
-        eventId: event.eventId, call, status: result.status, content: result.content ?? null });
+        eventId: event.eventId, call: boundCommand ? { name: call.name, arguments: {
+          command: call.arguments.command,
+          ...(call.arguments.cwd === undefined ? {} : { cwd: call.arguments.cwd }),
+          ...(call.arguments.background === undefined ? {} : { background: call.arguments.background }),
+          ...(call.arguments.env && Object.keys(call.arguments.env).length ? { hasEnvironmentOverride: true } : {}),
+        } } : call, status: result.status,
+        content: boundCommand ? { exit_code: result.content?.exit_code ?? null,
+          status: result.content?.status ?? null, evidence_incomplete: result.content?.evidence_incomplete ?? true }
+          : result.content ?? null,
+        ...(boundCommand ? { workspaceChangeObservation: result.workspaceChangeObservation ?? null } : {}) });
     }
   }
   return { calls, context };
 }
 
-export function engineVerificationPort(store, callHostVerification, digest) {
+export function engineVerificationPort(store, callHostVerification, digest, captureWorkspaceRevision) {
   return {
     available: configuration => !!configuration.hostVerification,
     async verify(request) {
@@ -78,14 +93,22 @@ export function engineVerificationPort(store, callHostVerification, digest) {
       const candidate = request.candidate;
       invariant(definition && item?.verifierRef === definition.verifierRef
         && item.verifierVersion === definition.verifierVersion && candidate.binding, 'engine_verification_unbound');
+      const commandVerifier = definition.verifierRef === ENGINE_COMMAND_VERIFIER;
+      let workspaceRevision = null;
+      if (commandVerifier) {
+        try { workspaceRevision = captureWorkspaceRevision(request); }
+        catch { request.signal.throwIfAborted(); }
+      }
       const input = { contract: ENGINE_VERIFICATION, runId: request.runId,
         operationKey: request.operationKey, definition, candidateId: candidate.candidateId,
         contractRevision: request.contract.revision, candidateBinding: candidate.binding,
         goal: request.snapshot.goal, goalRevision: request.snapshot.goalRevision,
-        evidence: verificationEvidence(record, definition) };
+        evidence: verificationEvidence(record, definition),
+        ...(commandVerifier ? { workspaceRevision } : {}) };
       const inputDigest = digest(input);
       const base = { candidateId: candidate.candidateId, contractRevision: request.contract.revision,
-        binding: candidate.binding, workspaceRevision: candidate.workspaceRevision, workspaceDependency: 'none' };
+        binding: candidate.binding, workspaceRevision: candidate.workspaceRevision,
+        workspaceDependency: commandVerifier ? 'required' : 'none' };
       const unavailable = { status: 'blocked', reason: 'host_verification_unavailable',
         safeSummary: 'The bound host could not verify the requested result.', evidenceRefs: [] };
       let result = unavailable;
@@ -97,7 +120,10 @@ export function engineVerificationPort(store, callHostVerification, digest) {
           && typeof reply.safeSummary === 'string' && reply.safeSummary.length <= 2048
           && Array.isArray(reply.evidenceRefs) && reply.evidenceRefs.length <= 16
           && reply.evidenceRefs.every(ref => typeof ref === 'string' && ref.trim() && ref.length <= 256)
-          && (reply.status === 'blocked' || reply.evidenceRefs.length > 0)) result = reply;
+          && (reply.status === 'blocked' || reply.evidenceRefs.length > 0)) {
+          if (!commandVerifier || reply.status === 'blocked'
+            || workspaceRevision && workspaceRevision === captureWorkspaceRevision(request)) result = reply;
+        }
       } catch {
         request.signal.throwIfAborted();
       }

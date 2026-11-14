@@ -11,7 +11,8 @@ import { projectEngineEvent } from '../src/native/engine-server.mjs';
 import { createEngineViewStore } from '../src/native/engine-view-store.mjs';
 import { ENGINE_CONTEXT } from '../src/native/engine-context.mjs';
 import { ENGINE_HOST_EFFECT, waitForHostReceipt } from '../src/native/engine-host-effects.mjs';
-import { ENGINE_EXECUTION_POLICY } from '../src/native/engine-runtime.mjs';
+import { engineProviderCompatibilityRule, ENGINE_EXECUTION_POLICY } from '../src/native/engine-runtime.mjs';
+import { admitProviderCompatibilityPolicy, applyProviderChatCompatibility } from '../src/native/model-provider-compat.mjs';
 import { ENGINE_VERIFICATION } from '../src/native/engine-verification.mjs';
 import { deliveryNetChanges, engineDeliveryEvidence } from '../src/native/engine-delivery-evidence.mjs';
 
@@ -120,12 +121,32 @@ test('delivery evidence uses committed effects from the current Run, not inherit
     intents: tools.map((name, index) => ({ operationKey: String(index), kind: 'tool', payload: { calls: [{ name }] } })),
     receipts: [
       receipt('0', { workspaceChangedPaths: ['app.js'], content: { path: 'app.js', diff_additions: 10, diff_deletions: 0 } }),
-      receipt('1', { workspaceChangedPaths: ['app.js', 'index.html', '../outside'] }),
+      receipt('1', { workspaceChangedPaths: ['app.js', 'index.html', '../outside', '__pycache__/module.cpython-312.pyc',
+        'nested/__pycache__/source.py', 'nested/__pycache__'] }),
       receipt('2', { content: { screenshot_path: '.artifacts/preview.png' } }),
     ],
   };
-  assert.deepEqual(engineDeliveryEvidence(record), { files: [{ path: 'app.js' }, { path: 'index.html' }],
+  assert.deepEqual(engineDeliveryEvidence(record), { files: [{ path: 'app.js' }, { path: 'index.html' },
+    { path: 'nested/__pycache__/source.py' }, { path: 'nested/__pycache__' }],
     screenshots: ['declared.png', '.artifacts/preview.png'], truncated: false });
+});
+
+test('the engine binds GLM proxy compatibility without guessing Z.ai from the model name', () => {
+  const model = 'glm-5.3-flash';
+  for (const [baseUrl, compatibilityRule, expected, thinking, effort] of [
+    ['https://proxy.example/kspmas/v1', undefined, 'permissive', undefined, undefined],
+    ['https://proxy.example/v1', 'kspmas-gateway', 'kspmas-gateway', undefined, 'low'],
+    ['https://kspmas.ksyun.com/v1', undefined, 'kspmas-gateway', undefined, 'low'],
+    ['https://open.bigmodel.cn/api/paas/v4', undefined, 'zai', { type: 'disabled' }, undefined],
+  ]) {
+    const rule = engineProviderCompatibilityRule({ protocol: 'openai-chat', modelName: model, baseUrl, compatibilityRule });
+    assert.equal(rule, expected);
+    const payload = applyProviderChatCompatibility({ model, stream: true, max_tokens: 8192, messages: [],
+      tools: [{ type: 'function', function: { name: 'read_workspace_file' } }] },
+    { beforeFirstTool: true, profile: { providerCompatibilityPolicy: admitProviderCompatibilityPolicy(rule) } }, { model, baseUrl });
+    assert.deepEqual(payload.thinking, thinking);
+    assert.equal(payload.reasoning_effort, effort);
+  }
 });
 
 test('delivery line counts compare the opening and final content and omit reverted paths', () => {

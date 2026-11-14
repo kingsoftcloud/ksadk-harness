@@ -37,7 +37,7 @@ import { ENGINE_TOOL_POLICY } from './engine-tool-policy.mjs';
 import { ENGINE_CONTEXT } from './engine-context.mjs';
 import { ENGINE_HOOKS } from './engine-hooks.mjs';
 import { ENGINE_HOST_EFFECT, RECEIPT_WAIT_MS, hostReceiptReply, hostReceiptSource, waitForHostReceipt } from './engine-host-effects.mjs';
-import { ENGINE_VERIFICATION } from './engine-verification.mjs';
+import { ENGINE_COMMAND_VERIFIER, ENGINE_VERIFICATION } from './engine-verification.mjs';
 import { nativeTodoPlan } from './activity-status.mjs';
 import { nativeModelStopMessage } from './native-terminal-failure.mjs';
 export { ENGINE_VIEW_CONTRACT };
@@ -103,12 +103,16 @@ export function projectEngineEvent(event, requiredVerification = false, thinking
       }
       if (event.kind === 'model.stream_interrupted') return { ...base, category: 'model', ...(text(thinking) ? { thinking, ...modelRequest } : {}) };
       return { ...base, category: 'model', title: payload.kind ?? 'model',
-      ...(text(thinking) ? { thinking, ...modelRequest } : {}),
+      ...modelRequest, ...(text(thinking) ? { thinking } : {}),
       ...(text(payload.text) && !(requiredVerification && payload.kind === 'final_candidate') ? { detail: payload.text } : {}),
       ...(Array.isArray(payload.toolCalls) && payload.toolCalls.length ? { tools: payload.toolCalls.map(call => call.name),
         calls: payload.toolCalls.map(call => ({ callId: call.callId, name: call.name, arguments: bounded(call.arguments) })) } : {}),
       ...(payload.usage ? { usage: modelUsage(payload.usage) } : {}) };
     }
+    case 'model.retry_scheduled':
+      return { ...base, category: 'model', title: 'waiting',
+        ...(Number.isSafeInteger(payload.retryAt) && payload.retryAt > 0 ? { retryAt: payload.retryAt } : {}),
+        ...(Number.isSafeInteger(payload.failure?.httpStatus) ? { httpStatus: payload.failure.httpStatus } : {}) };
     case 'context.summary_completed':
     case 'completion.delivery_review_completed':
       return { ...base, category: 'model', ...(payload.usage ? { usage: modelUsage(payload.usage) } : {}) };
@@ -202,15 +206,20 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
   const reportActivity = () => onActivity(handlersInFlight.size > 0 || active.size > 0);
   const liveModelDisplay = new Map();
   function captureModelDisplay({ runId, operationKey }, event) {
-    if (!['thinking', 'tool_delta'].includes(event.kind)) return;
+    if (!['text', 'thinking', 'tool_delta'].includes(event.kind)) return;
     let current = liveModelDisplay.get(runId);
     if (current?.operationKey !== operationKey) {
-      current = { operationKey, id: randomUUID(), text: '', end: 0, tools: new Map(), draftRevision: 0 };
+      current = { operationKey, id: randomUUID(), text: '', end: 0, body: '', bodyEnd: 0, tools: new Map(), draftRevision: 0 };
       liveModelDisplay.set(runId, current);
     }
     if (event.kind === 'thinking') {
       current.end += event.text.length;
       current.text = (current.text + event.text).slice(-THINKING_HISTORY_CHARS);
+      return;
+    }
+    if (event.kind === 'text') {
+      current.bodyEnd += event.text.length;
+      current.body = (current.body + event.text).slice(-THINKING_HISTORY_CHARS);
       return;
     }
     // A draft has no call ID, argument data, or authority to execute.
@@ -382,13 +391,13 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
       return { protocolVersion: ENGINE_PROTOCOL, engine: { name: '@kingsoftcloud/agentkit-harness-node', version: packageVersion(), ...runtime.info() },
         capabilities: { methods: detachOnShutdown ? [...METHODS, DURABLE_APPROVAL_METHOD,
           ...(host.services.toolEffects ? [HOST_OBSERVATIONS_METHOD] : [])] : METHODS,
-          eventSchema: ENGINE_EVENT_SCHEMA, liveThinking: true, liveToolDrafts: true, hostServices: ['approvals', 'tools'],
+          eventSchema: ENGINE_EVENT_SCHEMA, liveThinking: true, liveToolDrafts: true, liveText: true, hostServices: ['approvals', 'tools'],
           approvals: host.services.durableApprovals ? 'durable' : host.services.approvals ? 'host' : startup.approval,
           hostTools: host.services.tools, toolPolicy: ENGINE_TOOL_POLICY, executionPolicy: ENGINE_EXECUTION_POLICY,
           ...(detachOnShutdown ? { scopedHostRequests: true } : {}),
           ...(host.services.context ? { hostContext: ENGINE_CONTEXT } : {}),
           ...(host.services.hooks ? { hostHooks: ENGINE_HOOKS } : {}),
-          ...(host.services.verification ? { hostVerification: ENGINE_VERIFICATION } : {}),
+          ...(host.services.verification ? { hostVerification: ENGINE_VERIFICATION, workspaceCommandVerification: ENGINE_COMMAND_VERIFIER } : {}),
           ...(host.services.toolEffects ? { hostToolEffects: ENGINE_HOST_EFFECT } : {}),
           ...(host.services.toolReceipts ? { hostToolReceipts: TOOL_RECEIPT_OBSERVATION_CONTRACT } : {}),
           ...(runtime.info().model.images ? { inputImages: ENGINE_INPUT_IMAGES } : {}),
@@ -449,14 +458,16 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
       const cursor = Number.isSafeInteger(params.cursor) && params.cursor >= 0 ? params.cursor : 0;
       const thinkingPresentation = typeof params.thinkingCursor === 'string';
       const draftPresentation = typeof params.toolDraftCursor === 'string';
+      const textPresentation = typeof params.textCursor === 'string';
+      const textCursor = textPresentation ? /^([\da-f-]{36}):(\d{1,16})$/.exec(params.textCursor) : null;
       const thinkingCursor = thinkingPresentation ? /^([\da-f-]{36}):(\d{1,16})$/.exec(params.thinkingCursor) : null;
       const deadline = Date.now() + Math.min(Math.max(Number(params.waitMs) || 0, 0), 30000);
       // The wait reads only the journal suffix; the Run record is loaded once, on return.
       for (;;) {
         lifetime.signal.throwIfAborted();
         const running = active.has(params.runId), events = runtime.events(params.runId, cursor);
-        const live = (thinkingPresentation || draftPresentation) && running ? liveModelDisplay.get(runId) : null;
-        let thinking, toolDraft;
+        const live = (thinkingPresentation || draftPresentation || textPresentation) && running ? liveModelDisplay.get(runId) : null;
+        let thinking, toolDraft, body;
         if (live) {
           const first = live.end - live.text.length;
           const after = thinkingCursor?.[1] === live.id ? Number(thinkingCursor[2]) : first;
@@ -464,7 +475,15 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
           const draftCursor = `${live.id}:${live.draftRevision}`;
           const hasThinking = thinkingPresentation && start < live.end;
           const hasDraft = draftPresentation && live.draftRevision > 0 && draftCursor !== params.toolDraftCursor;
-          if ((hasThinking || hasDraft) && runtime.authority(runId).snapshot.pendingIntent === live.operationKey) {
+          const bodyFirst = live.bodyEnd - live.body.length;
+          const bodyAfter = textCursor?.[1] === live.id ? Number(textCursor[2]) : bodyFirst;
+          const bodyStart = Math.max(bodyFirst, bodyAfter);
+          const hasText = textPresentation && bodyStart < live.bodyEnd;
+          if ((hasThinking || hasDraft || hasText) && runtime.authority(runId).snapshot.pendingIntent === live.operationKey) {
+            if (hasText) {
+              const chunk = live.body.slice(bodyStart - bodyFirst, bodyStart - bodyFirst + THINKING_PAGE_CHARS);
+              body = { requestId: publicRequestId(live.operationKey), cursor: `${live.id}:${bodyStart + chunk.length}`, offset: bodyStart, text: chunk };
+            }
             if (hasThinking) {
               const chunk = live.text.slice(start - first, start - first + THINKING_PAGE_CHARS);
               thinking = { id: live.id, cursor: `${live.id}:${start + chunk.length}`, text: chunk };
@@ -473,12 +492,12 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
               tools: [...live.tools].map(([index, name]) => ({ index, name })) };
           }
         }
-        if (events.length || thinking || toolDraft || !running || Date.now() >= deadline) {
+        if (events.length || thinking || toolDraft || body || !running || Date.now() >= deadline) {
           const next = events.length ? events.at(-1).seq : cursor;
           if (next > (seen.get(params.runId) ?? 0)) seen.set(params.runId, next);
           const { snapshot } = runtime.authority(runId);
           return { events: events.map(event => {
-            const projected = projectEngineEvent(event, !!configuration.hostVerification, thinkingPresentation || draftPresentation);
+            const projected = projectEngineEvent(event, !!configuration.hostVerification, thinkingPresentation || draftPresentation || textPresentation);
             if (projected.kind !== 'run.terminal' || projected.title !== 'completed' || !text(projected.detail)) return projected;
             const artifacts = currentDeliveryManifest(snapshot)?.artifacts;
             return { ...projected, ...(artifacts?.length ? { deliverables: artifacts } : {}),
@@ -486,6 +505,7 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
           }), cursor: next,
             ...(thinking ? { thinking } : {}),
             ...(toolDraft ? { toolDraft } : {}),
+            ...(body ? { text: body } : {}),
             terminal: runtime.terminal(snapshot), running: active.has(runId) };
         }
         await wait(250, undefined, { signal: lifetime.signal });
@@ -613,6 +633,7 @@ export function engineStartupFromArgs(argv, env) {
     sessionId: values.session ?? 'engine-session', approval, approvalTimeoutMs: number('AGENTKIT_ENGINE_APPROVAL_TIMEOUT_MS') ?? 600000,
     scope: { tenantId: values.tenant ?? 'local', workspaceId: 'local', userId: values.user ?? 'local-user', agentId: values.agent ?? 'engine' },
     model: { protocol: env.AGENTKIT_ENGINE_MODEL_PROTOCOL ?? 'openai-chat', name: need(env.AGENTKIT_ENGINE_MODEL_NAME, 'AGENTKIT_ENGINE_MODEL_NAME'),
+      compatibilityRule: env.AGENTKIT_ENGINE_MODEL_COMPAT_RULE ?? env.KSADK_MODEL_COMPAT_RULE,
       baseUrl: need(env.AGENTKIT_ENGINE_MODEL_BASE_URL, 'AGENTKIT_ENGINE_MODEL_BASE_URL'),
       apiKeyEnv: env.AGENTKIT_ENGINE_MODEL_API_KEY_ENV ?? 'AGENTKIT_ENGINE_MODEL_API_KEY',
       contextWindow: number('AGENTKIT_ENGINE_MODEL_CONTEXT_WINDOW'), maxOutputTokens: number('AGENTKIT_ENGINE_MODEL_MAX_OUTPUT_TOKENS'),

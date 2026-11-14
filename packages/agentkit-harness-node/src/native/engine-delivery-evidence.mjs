@@ -8,6 +8,7 @@ import { currentDeliveryManifest } from '@kingsoftcloud/agentkit-harness-core';
 const safePath = path => typeof path === 'string' && path.length <= 2048
   && !/[\\:\u0000-\u001f\u007f?#]/u.test(path) && path.split('/').every(part => part && part !== '.' && part !== '..');
 const screenshotPath = path => safePath(path) && /\.(?:png|jpe?g|webp)$/i.test(path);
+const generatedPythonCache = path => path.split('/').includes('__pycache__') && /\.py[co]$/i.test(path);
 
 /** Committed effects for this Run only. The snapshot's workspaceModifiedPaths
  * also contains paths inherited from earlier Turns. */
@@ -27,7 +28,7 @@ export function engineDeliveryEvidence(record, netChanges) {
       if (tool === 'browser_inspect_workspace' && ['ok', 'error'].includes(result.status) && screenshotPath(screenshot)) screenshots.add(screenshot);
       if (result.status !== 'ok') continue;
       for (const changed of result.workspaceChangedPaths ?? []) {
-        if (!safePath(changed)) continue;
+        if (!safePath(changed) || tool === 'run_command' && generatedPythonCache(changed)) continue;
         const counts = changed === path && [added, removed].every(value => Number.isSafeInteger(value) && value >= 0)
           ? { added, removed } : {};
         // Overlapping edits cannot be counted as a net diff from their tool deltas.

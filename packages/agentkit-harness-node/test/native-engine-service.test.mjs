@@ -11,7 +11,8 @@ import { projectEngineEvent } from '../src/native/engine-server.mjs';
 import { createEngineViewStore } from '../src/native/engine-view-store.mjs';
 import { ENGINE_CONTEXT } from '../src/native/engine-context.mjs';
 import { ENGINE_HOST_EFFECT, waitForHostReceipt } from '../src/native/engine-host-effects.mjs';
-import { ENGINE_EXECUTION_POLICY } from '../src/native/engine-runtime.mjs';
+import { engineProviderCompatibilityRule, ENGINE_EXECUTION_POLICY } from '../src/native/engine-runtime.mjs';
+import { admitProviderCompatibilityPolicy, applyProviderChatCompatibility } from '../src/native/model-provider-compat.mjs';
 import { ENGINE_VERIFICATION } from '../src/native/engine-verification.mjs';
 import { deliveryNetChanges, engineDeliveryEvidence } from '../src/native/engine-delivery-evidence.mjs';
 
@@ -120,12 +121,32 @@ test('delivery evidence uses committed effects from the current Run, not inherit
     intents: tools.map((name, index) => ({ operationKey: String(index), kind: 'tool', payload: { calls: [{ name }] } })),
     receipts: [
       receipt('0', { workspaceChangedPaths: ['app.js'], content: { path: 'app.js', diff_additions: 10, diff_deletions: 0 } }),
-      receipt('1', { workspaceChangedPaths: ['app.js', 'index.html', '../outside'] }),
+      receipt('1', { workspaceChangedPaths: ['app.js', 'index.html', '../outside', '__pycache__/module.cpython-312.pyc',
+        'nested/__pycache__/source.py', 'nested/__pycache__'] }),
       receipt('2', { content: { screenshot_path: '.artifacts/preview.png' } }),
     ],
   };
-  assert.deepEqual(engineDeliveryEvidence(record), { files: [{ path: 'app.js' }, { path: 'index.html' }],
+  assert.deepEqual(engineDeliveryEvidence(record), { files: [{ path: 'app.js' }, { path: 'index.html' },
+    { path: 'nested/__pycache__/source.py' }, { path: 'nested/__pycache__' }],
     screenshots: ['declared.png', '.artifacts/preview.png'], truncated: false });
+});
+
+test('the engine binds GLM proxy compatibility without guessing Z.ai from the model name', () => {
+  const model = 'glm-5.3-flash';
+  for (const [baseUrl, compatibilityRule, expected, thinking, effort] of [
+    ['https://proxy.example/kspmas/v1', undefined, 'permissive', undefined, undefined],
+    ['https://proxy.example/v1', 'kspmas-gateway', 'kspmas-gateway', undefined, 'low'],
+    ['https://kspmas.ksyun.com/v1', undefined, 'kspmas-gateway', undefined, 'low'],
+    ['https://open.bigmodel.cn/api/paas/v4', undefined, 'zai', { type: 'disabled' }, undefined],
+  ]) {
+    const rule = engineProviderCompatibilityRule({ protocol: 'openai-chat', modelName: model, baseUrl, compatibilityRule });
+    assert.equal(rule, expected);
+    const payload = applyProviderChatCompatibility({ model, stream: true, max_tokens: 8192, messages: [],
+      tools: [{ type: 'function', function: { name: 'read_workspace_file' } }] },
+    { beforeFirstTool: true, profile: { providerCompatibilityPolicy: admitProviderCompatibilityPolicy(rule) } }, { model, baseUrl });
+    assert.deepEqual(payload.thinking, thinking);
+    assert.equal(payload.reasoning_effort, effort);
+  }
 });
 
 test('delivery line counts compare the opening and final content and omit reverted paths', () => {
@@ -189,12 +210,13 @@ test('a live cursor delivers reasoning and tool drafts, and accepts guidance for
   await rpc('initialize', { protocolVersions: ['agentkit.engine/v1'] });
   const runId = 'thinking-run';
   await rpc('run/start', { runId, objective: 'Answer the fixture.' });
-  let cursor = 0, thinkingCursor = '', toolDraftCursor = '', received = '', requestId;
+  let cursor = 0, thinkingCursor = '', toolDraftCursor = '', textCursor = '', received = '', body = '', requestId;
   async function poll() {
-    const page = await rpc('run/events', { runId, cursor, thinkingCursor, toolDraftCursor, waitMs: 500 });
+    const page = await rpc('run/events', { runId, cursor, thinkingCursor, toolDraftCursor, textCursor, waitMs: 500 });
     cursor = page.cursor;
     if (page.thinking) { thinkingCursor = page.thinking.cursor; received += page.thinking.text; }
     if (page.toolDraft) toolDraftCursor = page.toolDraft.cursor;
+    if (page.text) { textCursor = page.text.cursor; body += page.text.text; assert.equal(page.text.requestId, requestId); }
     requestId ??= page.events.find(event => event.kind === 'effect.prepared' && event.category === 'model')?.requestId;
     return page;
   }
@@ -203,6 +225,14 @@ test('a live cursor delivers reasoning and tool drafts, and accepts guidance for
   const before = cursor;
   assert.equal((await poll()).thinking, undefined, 'an acknowledged live chunk is not repeated');
   assert.equal(cursor, before);
+  stream.enqueue(frame({ content: 'Checking ' }));
+  for (let n = 0; n < 10 && !body; n++) await poll();
+  assert.equal(body, 'Checking ');
+  assert.equal((await poll()).text, undefined, 'acknowledged text is not repeated');
+  stream.enqueue(frame({ content: 'file.' }));
+  for (let n = 0; n < 10 && body === 'Checking '; n++) await poll();
+  assert.equal(body, 'Checking file.');
+  assert.equal(modelRequests.length, 1, 'visible body arrives before the model finishes');
   stream.enqueue(frame({ tool_calls: [{ index: 0, id: 'call-fixture', type: 'function',
     function: { name: 'read_workspace_file', arguments: '{"path":"fixture.txt' } }] }));
   const { toolDraft } = await poll();

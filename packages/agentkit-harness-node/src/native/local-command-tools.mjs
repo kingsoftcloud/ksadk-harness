@@ -58,7 +58,8 @@ function utf8Preview(text, maxBytes) {
  */
 export function createLocalCommandTransport({ workspaceRoot, stateRoot, sessionId, settings = {}, sourceEnv = {},
   authorize, resolveOwnedCommand, captureWorkspace, artifacts, assertAuthority = () => true,
-  durableForeground = false, outputPolicy = null, environmentPolicy = null, shellPolicy = LOCAL_COMMAND_SHELL } = {}) {
+  durableForeground = false, outputPolicy = null, environmentPolicy = null, shellPolicy = LOCAL_COMMAND_SHELL,
+  classifyApproval = false } = {}) {
   invariant(typeof authorize === 'function' && typeof resolveOwnedCommand === 'function'
     && typeof captureWorkspace === 'function' && typeof assertAuthority === 'function'
     && typeof durableForeground === 'boolean', 'local_command_host_capabilities_missing');
@@ -161,7 +162,23 @@ export function createLocalCommandTransport({ workspaceRoot, stateRoot, sessionI
       const rejection = toolInputRejection(definition, request.call);
       if (rejection) return { status: 'error', content: rejection };
       const args = structuredClone(request.call.arguments);
-      const decision = await authorize(request); guard();
+      let command, cwd, readOnlyCommand = false;
+      if (request.call.name === 'run_command') {
+        command = args.command.trim();
+        if (!command) return errorResult('command_required');
+        if (!args.background && args.background_timeout != null) return errorResult('background_timeout_requires_background');
+        cwd = cwdFor(args.cwd || args.env?.KSADK_COMMAND_CWD);
+        const finding = await checkGovernedCommand(command, { cwd, allowedRoots: [root], signal: request.signal });
+        guard();
+        if (finding) return errorResult('command_policy_blocked', { finding, exit_code: 126, executed: false, retryable: false });
+        if (request.planMode !== undefined && !await checkPlanMode(request))
+          return { status: 'error', content: { code: 'plan_mode_write_denied', executed: false } };
+        if (classifyApproval && request.definition.approvalPolicy && !request.definition.hostApprovalRequired
+          && !request.interaction && !args.background && !args.env)
+          readOnlyCommand = await checkPlanCommand(command, { cwd, workspaceRoot: root, signal: request.signal });
+      }
+      guard();
+      const decision = await authorize(request, { readOnlyCommand }); guard();
       if (decision !== 'allow') return decision?.status === 'approval_required' && typeof decision.interactionId === 'string'
         ? decision : errorResult('policy_denied');
       if (request.call.name === 'sandbox_status') return { status: 'ok', content: { ok: true, backend: 'local_process', enabled: true,
@@ -191,16 +208,6 @@ export function createLocalCommandTransport({ workspaceRoot, stateRoot, sessionI
         }
         guard(); const result = await budget(known, request); guard(); return result;
       }
-      const command = args.command.trim();
-      if (!command) return errorResult('command_required');
-      if (!args.background && args.background_timeout != null) return errorResult('background_timeout_requires_background');
-      const cwd = cwdFor(args.cwd || args.env?.KSADK_COMMAND_CWD);
-      const finding = await checkGovernedCommand(command, { cwd, allowedRoots: [root], signal: request.signal });
-      guard();
-      if (finding) return errorResult('command_policy_blocked', { finding, exit_code: 126, executed: false });
-      if (request.planMode !== undefined && !await checkPlanMode(request))
-        return { status: 'error', content: { code: 'plan_mode_write_denied', executed: false } };
-      guard();
       request.signal.throwIfAborted(); checkRoot(); cwdFor(args.cwd || args.env?.KSADK_COMMAND_CWD);
       const env = buildScriptEnvironment({ ...environment, ...args.env }, { settings: policy, environmentPolicy: envPolicy });
       const observedChanges = request.definition?.workspaceChangePolicy === 'observed-command/v1';

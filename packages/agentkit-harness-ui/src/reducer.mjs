@@ -36,6 +36,7 @@ export function initialState() {
     modelRequestActive: false,
     modelRequestRetry: false,
     modelRequestPurpose: null,
+    modelWait: null,
     modelThinkingId: null,
     contextMarkers: [],
     subagents: new Map(),
@@ -89,7 +90,11 @@ function apply(state, e) {
     case EventType.TaskStarted: return applyTaskStarted(state, e);
     case EventType.TaskState: return applyTaskState(state, e);
     case EventType.TaskFinished: return applyTaskFinished(state, e);
+    case EventType.ModelWait:
+      if (state.taskState === TaskState.Running) state.modelWait = { retryAt: e.retryAt, httpStatus: e.httpStatus };
+      return;
     case EventType.ModelRequest:
+      if (e.active) state.modelWait = null;
       if (e.active && state.taskState === TaskState.Paused && state.taskReason === 'provider_unavailable')
         applyTaskState(state, { state: TaskState.Running, reason: null, message: null });
       if (!e.active || state.modelThinkingId !== e.itemId) settleModelPresentation(state);
@@ -98,6 +103,15 @@ function apply(state, e) {
       state.modelRequestPurpose = e.active ? e.purpose ?? null : null;
       state.modelThinkingId = e.active ? e.itemId : null;
       return;
+    case EventType.TextPreview: {
+      if (!state.modelRequestActive || !e.responseId || e.responseId !== state.modelThinkingId || !e.itemId || !e.text) return;
+      const index = findItemIndex(state, e.itemId);
+      if (index >= 0 && !state.items[index].preview) return;
+      settlePriorReasoning(state, e);
+      const item = { kind: 'text', id: e.itemId, text: e.text, responseId: e.responseId, streaming: true, preview: true, receivedChars: e.receivedChars };
+      if (index >= 0) state.items[index] = item; else state.items.push(item);
+      return;
+    }
     case EventType.TextDelta: return applyTextDelta(state, e);
     case EventType.TextDone: return applyTextDone(state, e);
     case EventType.ThinkingStart: return applyThinkingStart(state, e);
@@ -158,7 +172,7 @@ function applyTaskStarted(state, e) {
 function settleModelPresentation(state) {
   if (!state.modelThinkingId) return;
   applyThinkingDone(state, { itemId: state.modelThinkingId });
-  state.items = state.items.filter(item => item.kind !== 'tool-preview' || item.responseId !== state.modelThinkingId);
+  state.items = state.items.filter(item => !(item.kind === 'tool-preview' || item.preview === true) || item.responseId !== state.modelThinkingId);
 }
 
 function applyTaskState(state, e) {
@@ -166,6 +180,7 @@ function applyTaskState(state, e) {
   state.taskState = e.state;
   if (e.state !== TaskState.Running) {
     settleModelPresentation(state);
+    state.modelWait = null;
     state.modelRequestActive = false;
     state.modelRequestRetry = false;
     state.modelRequestPurpose = null;
@@ -181,6 +196,7 @@ function applyTaskState(state, e) {
 
 function applyTaskFinished(state, e) {
   settleModelPresentation(state);
+  state.modelWait = null;
   state.modelRequestActive = false;
   state.modelRequestRetry = false;
   state.modelRequestPurpose = null;

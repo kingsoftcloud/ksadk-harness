@@ -765,6 +765,9 @@ export class NativeKernel {
             messageCursor: changes.messages?.length ?? snapshot.messages.length,
             usageReported: result.usageReported !== false,
             toolCalls: planning ? [] : result.toolCalls.map(objectValue), usage: objectValue(result.usage) } });
+          if (typeof changes.retryNotBefore === 'number' && changes.retryNotBefore > 0)
+            facts.push({ kind: 'model.retry_scheduled', payload: { retryAt: Math.ceil(changes.retryNotBefore),
+              ...(result.failureDiagnostic ? { failure: objectValue(result.failureDiagnostic) } : {}) } });
           break;
         }
         case 'input':

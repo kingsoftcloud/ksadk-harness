@@ -36,6 +36,7 @@ export function initialState() {
     modelRequestActive: false,
     modelRequestRetry: false,
     modelRequestPurpose: null,
+    modelWait: null,
     modelThinkingId: null,
     contextMarkers: [],
     subagents: new Map(),
@@ -89,7 +90,11 @@ function apply(state, e) {
     case EventType.TaskStarted: return applyTaskStarted(state, e);
     case EventType.TaskState: return applyTaskState(state, e);
     case EventType.TaskFinished: return applyTaskFinished(state, e);
+    case EventType.ModelWait:
+      if (state.taskState === TaskState.Running) state.modelWait = { retryAt: e.retryAt, httpStatus: e.httpStatus };
+      return;
     case EventType.ModelRequest:
+      if (e.active) state.modelWait = null;
       if (e.active && state.taskState === TaskState.Paused && state.taskReason === 'provider_unavailable')
         applyTaskState(state, { state: TaskState.Running, reason: null, message: null });
       if (!e.active || state.modelThinkingId !== e.itemId) settleModelPresentation(state);
@@ -175,6 +180,7 @@ function applyTaskState(state, e) {
   state.taskState = e.state;
   if (e.state !== TaskState.Running) {
     settleModelPresentation(state);
+    state.modelWait = null;
     state.modelRequestActive = false;
     state.modelRequestRetry = false;
     state.modelRequestPurpose = null;
@@ -190,6 +196,7 @@ function applyTaskState(state, e) {
 
 function applyTaskFinished(state, e) {
   settleModelPresentation(state);
+  state.modelWait = null;
   state.modelRequestActive = false;
   state.modelRequestRetry = false;
   state.modelRequestPurpose = null;

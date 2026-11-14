@@ -177,7 +177,7 @@ export function buildViewModel(state, options = {}) {
 
 function timelineList(state, items, opts) {
   const kids = [];
-  const modelActive = state.taskState === "running" && state.modelRequestActive;
+  const modelActive = state.taskState === "running" && (state.modelRequestActive || state.modelWait);
   if (!modelActive && isWaitingForFirstToken(state)) kids.push(waitingPlaceholder(opts));
   const transcript = state.taskState === 'running' ? items.filter(item =>
     !(item.kind === 'tool' && item.status === 'failed' && toolIdentity(item.name).family === 'edit'
@@ -275,6 +275,14 @@ function textBlock(item, opts) {
 }
 
 function modelActivity(opts, state) {
+  if (state.modelWait) {
+    const zh = String(opts.locale ?? '').startsWith('zh'), status = state.modelWait.httpStatus;
+    const label = status === 429 ? (zh ? '网关限流，等待重试' : 'Gateway rate limited; waiting to retry')
+      : zh ? '模型请求暂未成功，等待重试' : 'Model request delayed; waiting to retry';
+    return h('div', { className: 'harness-thought-summary harness-model-activity', role: 'status',
+      'data-testid': 'model-backoff', 'data-retry-at': state.modelWait.retryAt },
+      brainIcon('harness-thought-icon'), h('span', {}, label));
+  }
   const zh = String(opts.locale ?? '').startsWith('zh');
   const compacting = state.modelRequestPurpose === 'compaction', retry = state.modelRequestRetry;
   const label = compacting ? (retry ? (zh ? '正在重试上下文压缩…' : 'Retrying context compaction…')

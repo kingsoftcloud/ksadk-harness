@@ -109,6 +109,10 @@ export function projectEngineEvent(event, requiredVerification = false, thinking
         calls: payload.toolCalls.map(call => ({ callId: call.callId, name: call.name, arguments: bounded(call.arguments) })) } : {}),
       ...(payload.usage ? { usage: modelUsage(payload.usage) } : {}) };
     }
+    case 'model.retry_scheduled':
+      return { ...base, category: 'model', title: 'waiting',
+        ...(Number.isSafeInteger(payload.retryAt) && payload.retryAt > 0 ? { retryAt: payload.retryAt } : {}),
+        ...(Number.isSafeInteger(payload.failure?.httpStatus) ? { httpStatus: payload.failure.httpStatus } : {}) };
     case 'context.summary_completed':
     case 'completion.delivery_review_completed':
       return { ...base, category: 'model', ...(payload.usage ? { usage: modelUsage(payload.usage) } : {}) };

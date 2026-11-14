@@ -7,6 +7,9 @@
 - Stream bounded model body previews over an independent cursor, and retire
   provisional text on settlement, retry and cancellation. Keep the committed
   final answer and verification result authoritative across history replay.
+- Show committed provider backoff separately from an active retry, and render
+  pending inputs with the same user bubble as their durable counterpart.
+  Deduplicate optimistic echoes by request receipt rather than message text.
 - Honor an exact approved command at command-policy enforcement, reduce
   Workspace Write prompts for scoped safe operations, and bind formal
   acceptance reports to the actual delivered workspace revision.

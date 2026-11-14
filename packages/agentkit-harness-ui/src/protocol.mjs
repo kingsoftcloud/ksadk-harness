@@ -22,6 +22,7 @@ export const EventType = Object.freeze({
   TaskState: "task.state",
   TaskFinished: "task.finished",
   ModelRequest: "model.request",
+  ModelWait: "model.wait",
   TextDelta: "text.delta",
   TextDone: "text.done",
   TextPreview: "text.preview",
@@ -164,6 +165,9 @@ function normalizePayload(type, event) {
         ...(hostTime(event.startedAt) !== null ? { startedAt: event.startedAt } : {}) };
     case EventType.TaskState:
       return { state: requiredChoice(event.state, TASK_STATES, "task state"), reason: str(event.reason) || null, message: str(event.message) || null };
+    case EventType.ModelWait:
+      if (!Number.isSafeInteger(event.retryAt) || event.retryAt <= 0) throw new TypeError('model wait requires a committed deadline');
+      return { retryAt: event.retryAt, ...(Number.isSafeInteger(event.httpStatus) ? { httpStatus: event.httpStatus } : {}) };
     case EventType.ModelRequest:
       if (typeof event.active !== "boolean") throw new TypeError("model request requires an active flag");
       return { active: event.active, itemId: str(event.itemId), ...(event.retry === true ? { retry: true } : {}),

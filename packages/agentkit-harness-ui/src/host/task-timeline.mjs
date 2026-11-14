@@ -8,6 +8,7 @@ import { nativeTaskWorkspaceRoot, taskWorkspaceFileTarget } from './state/task-l
 import { resolveNativeRuntimeRoute, nativeRuntimeRouteInput } from './state/native-runtime-route.mjs';
 import { createNativeTaskReadModel } from './state/native-task-read-model.mjs';
 import { createTimelineEventFeed } from './state/timeline-event-feed.mjs';
+import { pendingInputStates } from './pending-inputs.mjs';
 import { createSessionTaskProjector, nativeTaskState, nativeStatusForTurn, bindNativeSubagents, nativeHistoricalToolState } from './session-task-events.mjs';
 
 const labels = { result: '执行结果', thought: '思考', running: '执行中', thinking: '思考中…', ended: '本轮已结束', contextRunning: '正在压缩上下文', contextCompleted: '上下文已自动压缩',
@@ -43,7 +44,7 @@ export function installTaskTimeline(ctx, { ui, hostRemote, resolveAgentFromPrese
       onOpenFileLink: onOpenFile && (({ href }) => { const target = taskWorkspaceFileTarget(href, cwd); if (target) onOpenFile(target); }) }, text) });
   const markdownLabels = { copyCode: '复制代码', copied: '已复制', wrapLines: '自动换行', languageLabel: '代码' };
   function TaskView({ sessionId, useHarnessEvents, useSession, useSessions, useProjection, cwd, openFile, openExternalLink,
-    branchAt, renderAssistantActions, turnAnchors, fallback, statusPanel }) {
+    branchAt, renderAssistantActions, turnAnchors, pendingInputs, fallback, statusPanel }) {
     const [variant, setVariant] = useState(() => {
       try { const saved = localStorage.getItem('native.status-panel.variant'); return ['auto', 'mini', 'panel'].includes(saved) ? saved : 'auto'; }
       catch { return 'auto'; }
@@ -184,7 +185,10 @@ export function installTaskTimeline(ctx, { ui, hostRemote, resolveAgentFromPrese
           onCopyCode: text => navigator.clipboard.writeText(text),
           onOpenExternalUrl: openExternalLink ?? (url => { if (['http:', 'https:'].includes(new URL(url).protocol)) window.open(url, '_blank', 'noopener,noreferrer'); }),
           onOpenFileLink: ({ href }) => openWorkspaceFile(href) }, text) })),
-      ...(pending ?? []).filter(item => item.placement === 'transcript').map(item => h('p', { key: item.requestId, 'aria-label': '待发送输入' }, item.text)),
+      ...pendingInputStates(pendingInputs ?? pending, eventWindow).map(({ requestId, state }) => h(HarnessTurn, {
+        key: `pending:${requestId}`, state, labels, locale: 'zh-CN', showPlanDock: false, theme: theme.active.colorScheme,
+        containerProps: { 'aria-label': '待发送输入', 'data-pending-request-id': requestId },
+      })),
       error ? h('p', { role: 'alert' }, error) : null,
       status?.canResume ? h('button', { type: 'button', onClick: () => void resume() }, '恢复原任务') : null);
 

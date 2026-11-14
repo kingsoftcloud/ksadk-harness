@@ -96,6 +96,9 @@ export function engineEventToTimeline(event, { runId = "run", time, startedAt = 
           items: event.result.todos.map((item, index) => ({ ...item, id: `todo:${index}` })) });
       return out;
     }
+    case "model.retry_scheduled":
+      return Number.isSafeInteger(event.retryAt) && event.retryAt > 0
+        ? [{ v, id: id("model-wait"), type: "model.wait", retryAt: event.retryAt, httpStatus: event.httpStatus }] : [];
     case "model.retry_exhausted":
       return [{ v, id: id("paused"), type: "task.state", state: "paused", reason: "provider_unavailable",
         message: event.modelError }];

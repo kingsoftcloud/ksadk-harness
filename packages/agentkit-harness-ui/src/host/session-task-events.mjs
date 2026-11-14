@@ -121,6 +121,18 @@ export function createSessionTaskProjector({ sessionId } = {}) {
     if (event.type === 'user/message' && ['user', 'user-rpc'].includes(data.source?.kind))
       emit('text.done', { itemId: `user:${data.id ?? event.seq}`, text: textOf(data.content), role: 'user' });
     const engine = engineTurns.get(turn);
+    if (event.type === 'agentkit/native-engine-text') {
+      if (event.ignorable !== true || engine?.runId !== data.runId || !task.modelThinkingId
+        || !/^[a-f0-9]{64}$/.test(data.requestId) || task.modelThinkingId !== `${data.runId}:thought:${data.requestId}`
+        || !/^[\da-f-]{36}:\d{1,16}$/.test(data.cursor) || typeof data.delta !== 'string' || data.delta.length > 8192
+        || !Number.isSafeInteger(data.offset) || data.offset < 0) return;
+      const itemId = `${task.modelThinkingId}:text`, previous = task.items.find(item => item.id === itemId && item.preview);
+      const prefix = previous?.receivedChars === data.offset ? previous.text : '';
+      task = reduce(task, { v: 1, type: 'text.preview', id: `${data.runId}:text:${data.requestId}:${data.cursor}`,
+        itemId, responseId: task.modelThinkingId, text: prefix + data.delta, receivedChars: data.offset + data.delta.length });
+      tasks.set(turn, task);
+      return;
+    }
     if (event.type === 'agentkit/native-engine-tool-draft') {
       if (event.ignorable !== true || engine?.runId !== data.runId || !task.modelThinkingId
         || !/^[a-f0-9]{64}$/.test(data.requestId) || task.modelThinkingId !== `${data.runId}:thought:${data.requestId}`

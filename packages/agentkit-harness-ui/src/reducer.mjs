@@ -98,6 +98,15 @@ function apply(state, e) {
       state.modelRequestPurpose = e.active ? e.purpose ?? null : null;
       state.modelThinkingId = e.active ? e.itemId : null;
       return;
+    case EventType.TextPreview: {
+      if (!state.modelRequestActive || !e.responseId || e.responseId !== state.modelThinkingId || !e.itemId || !e.text) return;
+      const index = findItemIndex(state, e.itemId);
+      if (index >= 0 && !state.items[index].preview) return;
+      settlePriorReasoning(state, e);
+      const item = { kind: 'text', id: e.itemId, text: e.text, responseId: e.responseId, streaming: true, preview: true, receivedChars: e.receivedChars };
+      if (index >= 0) state.items[index] = item; else state.items.push(item);
+      return;
+    }
     case EventType.TextDelta: return applyTextDelta(state, e);
     case EventType.TextDone: return applyTextDone(state, e);
     case EventType.ThinkingStart: return applyThinkingStart(state, e);
@@ -158,7 +167,7 @@ function applyTaskStarted(state, e) {
 function settleModelPresentation(state) {
   if (!state.modelThinkingId) return;
   applyThinkingDone(state, { itemId: state.modelThinkingId });
-  state.items = state.items.filter(item => item.kind !== 'tool-preview' || item.responseId !== state.modelThinkingId);
+  state.items = state.items.filter(item => !(item.kind === 'tool-preview' || item.preview === true) || item.responseId !== state.modelThinkingId);
 }
 
 function applyTaskState(state, e) {

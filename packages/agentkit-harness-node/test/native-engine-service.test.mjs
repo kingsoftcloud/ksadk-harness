@@ -210,12 +210,13 @@ test('a live cursor delivers reasoning and tool drafts, and accepts guidance for
   await rpc('initialize', { protocolVersions: ['agentkit.engine/v1'] });
   const runId = 'thinking-run';
   await rpc('run/start', { runId, objective: 'Answer the fixture.' });
-  let cursor = 0, thinkingCursor = '', toolDraftCursor = '', received = '', requestId;
+  let cursor = 0, thinkingCursor = '', toolDraftCursor = '', textCursor = '', received = '', body = '', requestId;
   async function poll() {
-    const page = await rpc('run/events', { runId, cursor, thinkingCursor, toolDraftCursor, waitMs: 500 });
+    const page = await rpc('run/events', { runId, cursor, thinkingCursor, toolDraftCursor, textCursor, waitMs: 500 });
     cursor = page.cursor;
     if (page.thinking) { thinkingCursor = page.thinking.cursor; received += page.thinking.text; }
     if (page.toolDraft) toolDraftCursor = page.toolDraft.cursor;
+    if (page.text) { textCursor = page.text.cursor; body += page.text.text; assert.equal(page.text.requestId, requestId); }
     requestId ??= page.events.find(event => event.kind === 'effect.prepared' && event.category === 'model')?.requestId;
     return page;
   }
@@ -224,6 +225,14 @@ test('a live cursor delivers reasoning and tool drafts, and accepts guidance for
   const before = cursor;
   assert.equal((await poll()).thinking, undefined, 'an acknowledged live chunk is not repeated');
   assert.equal(cursor, before);
+  stream.enqueue(frame({ content: 'Checking ' }));
+  for (let n = 0; n < 10 && !body; n++) await poll();
+  assert.equal(body, 'Checking ');
+  assert.equal((await poll()).text, undefined, 'acknowledged text is not repeated');
+  stream.enqueue(frame({ content: 'file.' }));
+  for (let n = 0; n < 10 && body === 'Checking '; n++) await poll();
+  assert.equal(body, 'Checking file.');
+  assert.equal(modelRequests.length, 1, 'visible body arrives before the model finishes');
   stream.enqueue(frame({ tool_calls: [{ index: 0, id: 'call-fixture', type: 'function',
     function: { name: 'read_workspace_file', arguments: '{"path":"fixture.txt' } }] }));
   const { toolDraft } = await poll();

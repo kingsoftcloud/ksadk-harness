@@ -24,6 +24,7 @@ export const EventType = Object.freeze({
   ModelRequest: "model.request",
   TextDelta: "text.delta",
   TextDone: "text.done",
+  TextPreview: "text.preview",
   ThinkingStart: "thinking.start",
   ThinkingDelta: "thinking.delta",
   ThinkingDone: "thinking.done",
@@ -150,7 +151,7 @@ export function normalizeEvent(event) {
   const base = { v, type, id, ts: typeof event.ts === "number" ? event.ts : null, seq: typeof event.seq === "number" ? event.seq : null };
   // Optional presentation lineage, supplied by the Host's response boundary.
   // It is never a Run identity, tool claim or an execution permission.
-  if (['text.delta', 'text.done', 'thinking.delta', 'thinking.done', 'tool.preview', 'tool.scheduled'].includes(type)
+  if (['text.preview', 'text.delta', 'text.done', 'thinking.delta', 'thinking.done', 'tool.preview', 'tool.scheduled'].includes(type)
     && typeof event.responseId === 'string' && event.responseId.length > 0 && event.responseId.length <= 1024)
     base.responseId = event.responseId;
   return Object.assign(base, normalizePayload(type, event));
@@ -177,6 +178,9 @@ function normalizePayload(type, event) {
         ...(event.executionState === TaskState.Interrupted ? { executionState: TaskState.Interrupted } : {}),
         verificationRequired: typeof event.verificationRequired === 'boolean' ? event.verificationRequired : null };
     }
+    case EventType.TextPreview:
+      return { itemId: str(event.itemId), text: str(event.text).slice(-128 * 1024),
+        ...(Number.isSafeInteger(event.receivedChars) && event.receivedChars >= 0 ? { receivedChars: event.receivedChars } : {}) };
     case EventType.TextDelta:
       return { itemId: str(event.itemId), delta: str(event.delta) };
     case EventType.TextDone:

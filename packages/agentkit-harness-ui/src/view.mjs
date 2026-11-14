@@ -187,7 +187,7 @@ function timelineList(state, items, opts) {
   const interrupted = interruptedWorkLabel(state, opts.locale);
   for (const [index, segment] of segments.entries()) {
     const showModelActivity = modelActive && index === segments.length - 1
-      && !segment.process.some(item => item.streaming && ["thought", "tool-preview"].includes(item.kind));
+      && !segment.process.some(item => item.streaming && ["text", "thought", "tool-preview"].includes(item.kind));
     kids.push(...renderTimelineItems(segment.inputs, opts));
     if (segment.collapsible) {
       const open = Boolean(opts.historyOpen?.get(segment.id));

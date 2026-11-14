@@ -24,7 +24,8 @@ Harness 作为独立的 Runtime 工作负载和镜像部署，初期一个服务
 
 - `GET /healthz` 报告服务进程状态、工具策略及宿主回调能力。检查能力无需创建会话。
 - `POST /v1/sessions/{id}/rpc` 使用现有 `agentkit.engine/v1` JSON-RPC 请求与响应。首次初始化后执行 Start/Status/Events/Resume/Cancel 或获取任务视图。
-- 图像模型在握手中提供 `capabilities.inputImages`，其中声明图片数量和编码字节上限。客户端仅把当前请求内的图片以 `run/start.inputImages` 提交，接受 PNG、JPEG、WebP、GIF 的内联数据。原始像素进入引擎账本和模型请求，公开任务流仅包含展示事件。
+- 图像模型在握手中提供 `capabilities.inputImages`，其中声明图片数量和编码字节上限。能力来自实际模型绑定；命令行服务通过 `AGENTKIT_ENGINE_MODEL_IMAGES=1`、程序化服务通过 `model.images: true` 配置，不能只根据模型名称推断网关支持。客户端仅把当前请求内的图片以 `run/start.inputImages` 提交，接受 PNG、JPEG、WebP、GIF 的内联数据。原始像素进入引擎账本和模型请求，公开任务流仅包含展示事件。
+- `capabilities.liveText` 声明正文预览能力。`run/events` 接收独立的 `textCursor`，返回绑定请求 ID、偏移和游标的有界文本分片；它们是生成中的展示，不构成最终答案或验收结果。结束、重试和取消会清除相应草稿，最终答案仍以持久化终态为准。
 - 宿主用 `run/events` 的 `follow: true` 订阅正在执行的 Run。替换后的服务首次收到订阅时，从原账本接续可恢复的 Run；待审批、主动暂停和待核对的操作仍等待对应的决定。已有执行租约时，新服务等待租约到期。
 - 宿主在 `initialize.services.durableApprovals` 声明支持后，引擎把内置工具的审批写入原 Run。宿主从 `run/status.pendingApproval` 获取待审批操作，用 `run/approve` 提交 `runId`、`interactionId` 和 `allow` 或 `deny`。服务重启后仍可提交。同一决定重复提交返回已有回执，反向决定会被拒绝。
 - 宿主通过 `capabilities.toolPolicy` 协商规则版本，通过 `run/start.toolPolicy` 传入已冻结的 Agent 工具规则。严格模式和要求用户确认的规则需要持久审批能力。确认请求在 `pendingApproval` 标记 `requiresUserApproval`，由宿主请求同一会话的审批决定。直接干预内核流程控制的规则会在接入时明确拒绝。

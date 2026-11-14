@@ -29,6 +29,7 @@ import { nativeLocalExecutionMethods } from './local-execution-profile.mjs';
 import { bindNativeModelSurface } from './model-surface-host.mjs';
 import { nativeToolModelGuidance } from './tool-guidance.mjs';
 import { createNativeWebTools } from './web-tools.mjs';
+import { engineWebConfig } from './engine-web-config.mjs';
 import { createNativeChildren, nativeChildRoles } from './children.mjs';
 import { nativeChildToolDefinitions } from './child-tools.mjs';
 import { nativeChildReaderDefinitions } from './child-readers.mjs';
@@ -235,7 +236,11 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
     artifacts, authorize: (request, info) => decide(request, true, info?.readOnlyCommand),
     classifyApproval: true, captureWorkspace: request => workspace.capture(request),
     resolveOwnedCommand: createOwnedCommandResolver({ scope, store }) });
-  const web = createNativeWebTools({ fetch: fetchImpl, providerConfig: { provider: '' }, authorize: decide, sessionId, inlineMaxChars: 6000 });
+  const search = engineWebConfig(sourceEnv);
+  const web = createNativeWebTools({ fetch: fetchImpl, providerConfig: search.providerConfig, authorize: decide, sessionId, inlineMaxChars: 6000 });
+  // Do not advertise a search which can only return provider_not_configured.
+  // Public page fetching remains available independently of search credentials.
+  if (!search.configured) web.definitions = web.definitions.filter(tool => tool.name !== 'web_search');
   const owners = [workspace, commands, web];
   const route = new Map(owners.flatMap(port => port.definitions.map(definition => [definition.name, port])));
   // Anything a Run advertises that the engine does not own was admitted as a host tool.
@@ -447,6 +452,7 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
           description: 'Verify the requested result using the bound host owner.' }] } : {}) },
       ...(media.length || scopedCallbacks || originalInput ? { inputMessages } : {}), ...preset.policies,
       hostBindingDigest: digest({ contract: ENGINE_RUNTIME_CONTRACT, workspaceRoot: root, description, tools: runtimeTools, instructions,
+        webBinding: digest(search.providerConfig),
         ...(commandSandbox ? { commandSandbox } : {}), ...(durableApprovals && roles.length ? { roles } : {}),
         ...(contextSources.length ? { contextSources } : {}),
         ...(hooks.definitions.length ? { hooks: hooks.definitions, ...hooks.configuration } : {}),
@@ -482,6 +488,7 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
       model: { name: description.modelName, protocol: description.protocol, contextWindow: description.contextWindow,
         requestOutputTokens: description.maxOutputTokens, images: supportsImages },
       tools: bound.map(tool => tool.name),
+      webSearch: { available: search.configured, reason: search.configured ? null : 'provider_not_configured' },
       // Every name a host tool may not use: engine tools plus the control tools the preset or discovery can add.
       reservedToolNames: [...new Set([...[...bound, ...childDefinitions, ...enginePresetToolDefinitions(resolveEnginePreset()), ...toolDiscoveryDefinitions(),
         ...todoToolDefinitions(true), ...todoToolDefinitions(false)].map(tool => tool.name), ...KERNEL_TOOL_NAMES])].sort(),

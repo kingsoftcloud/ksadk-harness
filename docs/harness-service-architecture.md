@@ -22,6 +22,19 @@ Harness 作为独立的 Runtime 工作负载和镜像部署，初期一个服务
 
 ## 网络传输原型
 
+### 独立服务的联网搜索
+
+搜索后端在 Harness 服务进程启动时配置，不能依赖 Studio 进程里的环境变量自动跨进程生效。
+设置 `AGENTKIT_ENGINE_WEB_SEARCH_PROVIDER=http` 和 `AGENTKIT_ENGINE_WEB_SEARCH_BASE_URL`，可连接返回
+`{ "results": [{ "title": "…", "url": "https://…", "snippet": "…" }] }` 的 HTTP 搜索服务；引擎以 GET 发送
+`q`、`max_results` 和可选的 `recency_days`。可选密钥 `AGENTKIT_ENGINE_WEB_SEARCH_API_KEY` 只用于 Bearer 请求头。
+金山云搜索使用 `AGENTKIT_ENGINE_WEB_SEARCH_PROVIDER=ksyun`，必须配置独立搜索密钥；地址可省略以采用该提供方的默认端点。
+可选 `AGENTKIT_ENGINE_WEB_SEARCH_SCOPE` 默认为 `webpage`。现有 `KSADK_WEB_SEARCH_*` 和 `OPENCLAW_WEB_SEARCH_*` 配置仍可使用。
+
+未配置有效后端时，引擎握手声明 `engine.webSearch.available=false`、原因 `provider_not_configured`，并且不向模型提供
+`web_search`。`web_fetch` 仍可读取已知的公开网页。引擎不会把模型网关密钥当作搜索密钥，也不会在生产服务启用假搜索。
+搜索绑定在启动时固定，并参与 Run 的宿主绑定摘要；修改配置需要重启独立服务。
+
 - `GET /healthz` 报告服务进程状态、工具策略及宿主回调能力。检查能力无需创建会话。
 - `POST /v1/sessions/{id}/rpc` 使用现有 `agentkit.engine/v1` JSON-RPC 请求与响应。首次初始化后执行 Start/Status/Events/Resume/Cancel 或获取任务视图。
 - 图像模型在握手中提供 `capabilities.inputImages`，其中声明图片数量和编码字节上限。能力来自实际模型绑定；命令行服务通过 `AGENTKIT_ENGINE_MODEL_IMAGES=1`、程序化服务通过 `model.images: true` 配置，不能只根据模型名称推断网关支持。客户端仅把当前请求内的图片以 `run/start.inputImages` 提交，接受 PNG、JPEG、WebP、GIF 的内联数据。原始像素进入引擎账本和模型请求，公开任务流仅包含展示事件。

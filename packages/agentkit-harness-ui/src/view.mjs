@@ -198,7 +198,9 @@ function timelineList(state, items, opts) {
           chevronIcon('harness-work-history-chevron')),
         open ? h('div', { className: 'harness-work-items harness-work-history-content', 'data-testid': 'work-history-content' },
           ...renderTimelineItems(segment.process, opts)) : null));
-    } else if (segment.process.length || showModelActivity) kids.push(h('div', { className: 'harness-work-items', 'data-testid': 'work-process' },
+    } else if (segment.showDuration) kids.push(h('div', { className: 'harness-work-history-summary harness-work-duration', 'data-testid': 'work-duration' },
+      completedWorkLabel(state, opts.locale)));
+    else if (segment.process.length || showModelActivity) kids.push(h('div', { className: 'harness-work-items', 'data-testid': 'work-process' },
       ...renderTimelineItems(segment.process, opts, state.taskState === 'running'
         && index === segments.length - 1 && segment.following.length === 0),
       showModelActivity ? modelActivity(opts, state) : null));
@@ -266,12 +268,17 @@ function textBlock(item, opts) {
   const streaming = Boolean(item.streaming);
   const text = item.text || "";
   return h("div", {
-    className: item.role === "user" ? "harness-user-message" : "harness-text",
+    className: item.role === "user" ? "harness-user-input" : "harness-text",
     "data-role": item.role || "assistant",
     "data-testid": "text-block",
     "data-item-id": item.id,
     "data-streaming": streaming ? "true" : "false",
-  }, h("span", { className: "harness-text-content" }, text));
+  }, ...(item.role === 'user' && item.images?.length ? [h('div', { className: 'harness-user-images', 'data-testid': 'user-images' },
+    ...item.images.map((image, i) => h('span', { 'data-testid': 'user-image', 'data-item-id': `${item.id}:image:${i}`, image },
+      image.attachment?.name ?? image.name ?? (String(opts.locale ?? '').startsWith('zh') ? '图片' : 'Image'))))] : []),
+    ...(item.role === 'user' ? text ? [h('div', { className: 'harness-user-message' },
+      h('span', { className: 'harness-text-content' }, text))] : []
+      : [h('span', { className: 'harness-text-content' }, text)]));
 }
 
 function modelActivity(opts, state) {

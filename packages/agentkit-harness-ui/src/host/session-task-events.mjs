@@ -119,7 +119,8 @@ export function createSessionTaskProjector({ sessionId } = {}) {
       if (value.type === 'reasoning') emit(done ? 'thinking.done' : 'thinking.delta', { itemId, ...(responseId ? { responseId } : {}), ...(sourceMessageId ? { sourceMessageId } : {}), ...(done ? { text: value.text } : { delta: value.text }) });
     };
     if (event.type === 'user/message' && ['user', 'user-rpc'].includes(data.source?.kind))
-      emit('text.done', { itemId: `user:${data.id ?? event.seq}`, text: textOf(data.content), role: 'user' });
+      emit('text.done', { itemId: `user:${data.id ?? event.seq}`, text: textOf(data.content), role: 'user',
+        images: (data.content ?? []).filter(part => part.type === 'image').map(part => part.attachment) });
     const engine = engineTurns.get(turn);
     if (event.type === 'agentkit/native-engine-text') {
       if (event.ignorable !== true || engine?.runId !== data.runId || !task.modelThinkingId

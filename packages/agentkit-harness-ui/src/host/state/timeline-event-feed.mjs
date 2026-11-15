@@ -16,7 +16,7 @@ export function createTimelineEventFeed(source, {
   const changed = () => {
     const change = source.getSnapshot().change;
     const transient = change?.kind === 'append' && change.entries.length > 0
-      && change.entries.every(entry => entry.event?.type === 'assistant/live-chunk');
+      && change.entries.every(entry => ['assistant/live-chunk', 'agentkit/native-engine-text', 'agentkit/native-engine-tool-draft'].includes(entry.event?.type));
     if (!transient) { cancelPending(); publish(); return; }
     if (frame !== null) return;
     const current = generation;

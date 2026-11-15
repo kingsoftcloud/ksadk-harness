@@ -11,6 +11,8 @@
 // The reducer accepts `v` up to its known ceiling and normalizes missing
 // optional fields. See README for host integration.
 
+import { userImages } from './user-images.mjs';
+
 export const PROTOCOL_VERSION = 1;
 
 /**
@@ -189,7 +191,7 @@ function normalizePayload(type, event) {
       return { itemId: str(event.itemId), delta: str(event.delta) };
     case EventType.TextDone:
       return { itemId: str(event.itemId), ...(typeof event.sourceMessageId === "string" ? { sourceMessageId: event.sourceMessageId } : {}), ...(typeof event.text === "string" ? { text: event.text } : {}),
-        ...(event.role === "user" ? { role: "user" } : {}) };
+        ...(event.role === "user" ? { role: "user", ...(event.images ? { images: userImages(event.images) } : {}) } : {}) };
     case EventType.ThinkingStart:
       return { itemId: str(event.itemId), provider: true };
     case EventType.ThinkingDelta:

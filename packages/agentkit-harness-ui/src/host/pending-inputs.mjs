@@ -1,4 +1,5 @@
 import { initialState } from '../reducer.mjs';
+import { imagePreviewUrl } from '../user-images.mjs';
 
 /** Only an exact durable request identity replaces its optimistic bubble.
  * Repeating the same text intentionally remains a distinct user message. */
@@ -16,7 +17,9 @@ export function pendingInputStates(inputs, eventWindow) {
       || committed.has(item.requestId) || seen.has(item.requestId) || typeof item.text !== 'string') return [];
     seen.add(item.requestId);
     return [{ requestId: item.requestId, state: { ...initialState(), items: [
-      { kind: 'text', id: `pending:${item.requestId}`, role: 'user', text: item.text, streaming: false },
+      { kind: 'text', id: `pending:${item.requestId}`, role: 'user', text: item.text, streaming: false,
+        images: (item.attachments ?? []).filter(a => a.type === 'image' && imagePreviewUrl(a.value?.previewUrl))
+          .slice(0, 32).map(a => ({ previewUrl: a.value.previewUrl, name: a.value.name })) },
     ] } }];
   });
 }

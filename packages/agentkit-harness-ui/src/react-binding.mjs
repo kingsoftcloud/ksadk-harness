@@ -24,6 +24,7 @@ import { styles } from "./styles.mjs";
 import { visibleItems } from "./project.mjs";
 
 import { createSummaryPlayback } from './summary-playback.mjs';
+import { imagePreviewUrl } from './user-images.mjs';
 
 const FOLLOW_THRESHOLD_PX = 8;
 
@@ -93,7 +94,7 @@ export function createHarnessComponents(React) {
     const {
       state, className, workspaceRoot, labels, locale, showPlanDock, theme = "system", renderText, initiallyExpandedThoughts,
       initiallyExpandedTools, autoFollow, styleSheet, onJumpLatest, onOpenFile, onCopy,
-      onOpenTerminal, onRetrieveFullDiff, onInspectTool, onOpenSubagent,
+      onOpenTerminal, onRetrieveFullDiff, onInspectTool, onOpenSubagent, loadImage,
     } = props || {};
     const [thoughtOpen, setThoughtOpen] = useState(() => new Map((initiallyExpandedThoughts || []).map(id => [id, true])));
     const [toolOpen, setToolOpen] = useState(() => new Map((initiallyExpandedTools || []).map(id => [id, true])));
@@ -243,8 +244,8 @@ export function createHarnessComponents(React) {
       "data-reduced-motion": reducedMotion ? "true" : "false",
       "data-theme": theme,
     };
-    const callbacks = useMemo(() => ({ onOpenFile, onCopy, onOpenTerminal, onRetrieveFullDiff, onInspectTool, onOpenSubagent }),
-      [onOpenFile, onCopy, onOpenTerminal, onRetrieveFullDiff, onInspectTool, onOpenSubagent]);
+    const callbacks = useMemo(() => ({ onOpenFile, onCopy, onOpenTerminal, onRetrieveFullDiff, onInspectTool, onOpenSubagent, loadImage }),
+      [onOpenFile, onCopy, onOpenTerminal, onRetrieveFullDiff, onInspectTool, onOpenSubagent, loadImage]);
     // Tool view trees contain action descriptors, not callback closures. Stable
     // completed items can retain both their parsed view and React subtree while
     // the live tail changes. Disclosure and presentation options invalidate it.
@@ -274,6 +275,8 @@ function renderTree(node, renderText, callbacks, React, reducedMotion, toolEleme
   const { createElement } = React;
   const testid = node.props?.["data-testid"];
   const props = node.props || {};
+  if (testid === 'user-image') return createElement(UserImage, { key: props['data-item-id'], image: props.image,
+    loadImage: callbacks.loadImage, id: props['data-item-id'] });
   if (testid === 'tool-block' && toolElementCache?.has(node)) return toolElementCache.get(node);
 
   if (testid === "execute-command") {
@@ -330,6 +333,36 @@ function renderTree(node, renderText, callbacks, React, reducedMotion, toolEleme
   const element = createElement(node.type, { key: props["data-item-id"] ?? props["data-call-id"], ...props }, ...children);
   if (testid === "tool-block") toolElementCache?.set(node, element);
   return element;
+}
+
+function UserImage({ image, loadImage, id }) {
+  const { attachment, previewUrl } = image;
+  const [source, setSource] = useState(() => imagePreviewUrl(previewUrl ?? loadImage?.peek?.(attachment)));
+  const [error, setError] = useState(false), [attempt, setAttempt] = useState(0), [open, setOpen] = useState(false);
+  const dialog = useRef(null);
+  const identity = JSON.stringify(attachment ?? previewUrl);
+  useEffect(() => {
+    let active = true;
+    setError(false);
+    setSource(imagePreviewUrl(previewUrl ?? (attachment && loadImage?.peek?.(attachment))));
+    if (attachment && loadImage) Promise.resolve().then(() => loadImage(attachment)).then(url => {
+      if (active) { const valid = imagePreviewUrl(url); setSource(valid); setError(!valid); }
+    }).catch(() => { if (active) setError(true); });
+    else if (!previewUrl) setError(true);
+    return () => { active = false; };
+  }, [identity, loadImage, attempt]);
+  useEffect(() => {
+    if (open) dialog.current?.showModal?.();
+    else dialog.current?.close?.();
+  }, [open]);
+  const name = attachment?.name || image.name || '图片';
+  return createElement('span', { className: 'harness-user-image', 'data-testid': 'user-image', 'data-item-id': id },
+    source ? createElement('button', { type: 'button', className: 'harness-image-preview', 'aria-label': `查看图片：${name}`, onClick: () => setOpen(true) },
+      createElement('img', { src: source, alt: name, onError: () => { setSource(null); setError(true); } }))
+      : createElement('button', { type: 'button', disabled: !error, onClick: () => setAttempt(value => value + 1) }, error ? `${name} · 点击重新加载` : `${name} · 加载中…`),
+    open ? createElement('dialog', { ref: dialog, className: 'harness-image-dialog', 'aria-label': `图片预览：${name}`, onClose: () => setOpen(false) },
+      createElement('button', { type: 'button', onClick: () => setOpen(false) }, '关闭'),
+      createElement('img', { src: source, alt: name })) : null);
 }
 
 // ── scroll mask helpers (reasoning.tsx / scrollMask.ts semantics) ───────────

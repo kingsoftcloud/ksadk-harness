@@ -44,7 +44,7 @@ export function installTaskTimeline(ctx, { ui, hostRemote, resolveAgentFromPrese
       onOpenFileLink: onOpenFile && (({ href }) => { const target = taskWorkspaceFileTarget(href, cwd); if (target) onOpenFile(target); }) }, text) });
   const markdownLabels = { copyCode: '复制代码', copied: '已复制', wrapLines: '自动换行', languageLabel: '代码' };
   function TaskView({ sessionId, useHarnessEvents, useSession, useSessions, useProjection, cwd, openFile, openExternalLink,
-    branchAt, renderAssistantActions, turnAnchors, pendingInputs, fallback, statusPanel }) {
+    branchAt, renderAssistantActions, turnAnchors, pendingInputs, fallback, statusPanel, loadImage }) {
     const [variant, setVariant] = useState(() => {
       try { const saved = localStorage.getItem('native.status-panel.variant'); return ['auto', 'mini', 'panel'].includes(saved) ? saved : 'auto'; }
       catch { return 'auto'; }
@@ -172,7 +172,7 @@ export function installTaskTimeline(ctx, { ui, hostRemote, resolveAgentFromPrese
           onOpenTerminal: terminal => commandPane.open({ ...terminal, agentId: nativeAgent, sessionId }),
           onOpenSubagentDirectory: () => childPane.openDirectory({ agentId: nativeAgent, parentSessionId: sessionId }) })), statusPanel.target) : null,
       ...presented.map(({ turn, state, reply, deliveries, deliverySeq }) => h(HarnessTurn, { key: turn,
-        state, reply, onBranch: branchAt, assistantActions: reply?.messageId ? renderAssistantActions?.(reply.messageId) : null,
+        state, reply, loadImage, onBranch: branchAt, assistantActions: reply?.messageId ? renderAssistantActions?.(reply.messageId) : null,
         deliveries, resolveWebDelivery: resolveDelivery, deliverySeq, loadDeliveryEvidence: loadEvidence,
         containerProps: { 'data-chat-anchor-key': turnAnchors?.get(turn), 'data-chat-paging-anchor': true },
         labels, locale: 'zh-CN', showPlanDock: !statusPanel, theme: theme.active.colorScheme,
@@ -186,7 +186,7 @@ export function installTaskTimeline(ctx, { ui, hostRemote, resolveAgentFromPrese
           onOpenExternalUrl: openExternalLink ?? (url => { if (['http:', 'https:'].includes(new URL(url).protocol)) window.open(url, '_blank', 'noopener,noreferrer'); }),
           onOpenFileLink: ({ href }) => openWorkspaceFile(href) }, text) })),
       ...pendingInputStates(pendingInputs ?? pending, eventWindow).map(({ requestId, state }) => h(HarnessTurn, {
-        key: `pending:${requestId}`, state, labels, locale: 'zh-CN', showPlanDock: false, theme: theme.active.colorScheme,
+        key: `pending:${requestId}`, state, loadImage, labels, locale: 'zh-CN', showPlanDock: false, theme: theme.active.colorScheme,
         containerProps: { 'aria-label': '待发送输入', 'data-pending-request-id': requestId },
       })),
       error ? h('p', { role: 'alert' }, error) : null,

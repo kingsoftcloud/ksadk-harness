@@ -249,7 +249,9 @@ function applyTextDone(state, e) {
     item.streaming = false;
     if (e.sourceMessageId) item.sourceMessageId = e.sourceMessageId;
     if (e.responseId) item.responseId = e.responseId;
-  } else if (e.itemId && e.text) state.items.push({ kind: "text", id: e.itemId, text: e.text, role: e.role ?? "assistant", streaming: false,
+    if (e.role === 'user' && e.images) item.images = e.images;
+  } else if (e.itemId && (e.text || e.images?.length)) state.items.push({ kind: "text", id: e.itemId, text: e.text ?? '', role: e.role ?? "assistant", streaming: false,
+    ...(e.images?.length ? { images: e.images } : {}),
     ...(e.responseId ? { responseId: e.responseId } : {}), ...(e.sourceMessageId ? { sourceMessageId: e.sourceMessageId } : {}) });
 }
 

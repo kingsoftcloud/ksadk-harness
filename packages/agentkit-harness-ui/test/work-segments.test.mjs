@@ -17,6 +17,20 @@ const events=[
 ];
 const replay=items=>items.reduce((state,event,index)=>reduce(state,{v:1,id:`event-${index}`,...event}),initialState());
 
+test('every completed direct reply keeps its real duration without an empty disclosure', () => {
+  for (const turn of [1, 2, 3]) {
+    const state = replay([{ type: 'task.started', taskId: String(turn), startedAt: 1000 },
+      { type: 'text.done', itemId: 'user', role: 'user', text: 'Continue' },
+      { type: 'text.done', itemId: 'answer', text: 'Direct answer' },
+      { type: 'task.finished', outcome: 'unverified', finalAnswerId: 'answer', endedAt: 9000 }]);
+    const tree = buildViewModel(state, { locale: 'zh-CN' });
+    assert.equal(textOf(findByTestId(tree, 'work-duration')), '已工作 8 秒');
+    assert.equal(findByTestId(tree, 'work-history'), null);
+    assert.match(textOf(tree), /Direct answer/);
+    assert.ok(textOf(tree).indexOf('已工作') < textOf(tree).indexOf('Direct answer'));
+  }
+});
+
 test('completion collapses the process, retains the final answer, and row expansion restores all source evidence',()=>{
   const state=replay([...events,{type:'task.finished',outcome:'unverified',finalAnswerId:'answer',endedAt:134000}]);
   const before=structuredClone(state), tree=buildViewModel(state,{locale:'zh-CN'});

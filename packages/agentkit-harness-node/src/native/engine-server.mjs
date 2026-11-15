@@ -40,6 +40,7 @@ import { ENGINE_HOST_EFFECT, RECEIPT_WAIT_MS, hostReceiptReply, hostReceiptSourc
 import { ENGINE_COMMAND_VERIFIER, ENGINE_VERIFICATION } from './engine-verification.mjs';
 import { nativeTodoPlan } from './activity-status.mjs';
 import { nativeModelStopMessage } from './native-terminal-failure.mjs';
+import { createDisplayWakeup } from './engine-display-wakeup.mjs';
 export { ENGINE_VIEW_CONTRACT };
 
 export const ENGINE_PROTOCOL = 'agentkit.engine/v1';
@@ -205,6 +206,7 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
   const handlersInFlight = new Set(), lifetime = new AbortController();
   const reportActivity = () => onActivity(handlersInFlight.size > 0 || active.size > 0);
   const liveModelDisplay = new Map();
+  const displayWakeup = createDisplayWakeup();
   function captureModelDisplay({ runId, operationKey }, event) {
     if (!['text', 'thinking', 'tool_delta'].includes(event.kind)) return;
     let current = liveModelDisplay.get(runId);
@@ -215,11 +217,13 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
     if (event.kind === 'thinking') {
       current.end += event.text.length;
       current.text = (current.text + event.text).slice(-THINKING_HISTORY_CHARS);
+      displayWakeup.notify(runId);
       return;
     }
     if (event.kind === 'text') {
       current.bodyEnd += event.text.length;
       current.body = (current.body + event.text).slice(-THINKING_HISTORY_CHARS);
+      displayWakeup.notify(runId);
       return;
     }
     // A draft has no call ID, argument data, or authority to execute.
@@ -230,6 +234,7 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
     if (current.tools.get(index) === label) return;
     current.tools.set(index, label);
     current.draftRevision++;
+    displayWakeup.notify(runId);
   }
   let host = null, runtime = null, runtimePromise, closing = false;
   const viewRef = viewStore ? viewStore.archive(engineView()) : null;
@@ -508,7 +513,7 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
             ...(body ? { text: body } : {}),
             terminal: runtime.terminal(snapshot), running: active.has(runId) };
         }
-        await wait(250, undefined, { signal: lifetime.signal });
+        await displayWakeup.wait(runId, Math.min(250, Math.max(1, deadline - Date.now())), lifetime.signal);
       }
     },
     async 'run/resume'(params) {

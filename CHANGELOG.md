@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 0.0.23 - 2026-11-15
+
+- Retain the actual completed duration for direct answers, without an empty
+  disclosure. Preserve sent image thumbnails, authorized reload and full preview,
+  including image-only messages and receipt-based optimistic replacement.
+- Wake live presentation readers when model text arrives rather than waiting for
+  a fixed 250 ms poll; coalesce transient UI updates at the next paint.
+
+## 0.0.22 - 2026-11-14
+
+- Configure independent-service web search without reusing model credentials;
+  omit unconfigured search tools and keep secrets out of public metadata.
+- Render terminal failures as neutral, collapsed summaries with full reasons.
+- Verify npm registry propagation before publishing the next package.
+
 ## 0.0.21 - 2026-11-14
 
 - Stream bounded model body previews over an independent cursor, and retire

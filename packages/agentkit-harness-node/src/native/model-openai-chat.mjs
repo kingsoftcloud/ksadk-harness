@@ -17,6 +17,7 @@ import { inlineReasoningMarker, projectInlineReasoning, createInlineReasoningPro
 import { applyProviderChatCompatibility, resolveProviderCompatibility } from './model-provider-compat.mjs';
 import { classifyOpenAIProviderError } from './model-provider-error.mjs';
 import { mergeChatUsage } from './model-chat-usage.mjs';
+import { createDeepSeekContentProjector } from './model-deepseek-dsml.mjs';
 // parseModelJson is the kernel's strict finite JSON parser: it rejects
 // duplicate object keys and non-finite numbers (e.g. 1e400). Using it here keeps
 // provider-envelope and tool-argument decoding consistent with the kernel's
@@ -240,6 +241,8 @@ export function parseOpenAIBuffered(bodyText, request, { captureReplay = false, 
   let text = message.content;
   if (text == null) text = '';
   if (typeof text !== 'string') throw new ProtocolError('unsupported assistant content');
+  const dsml = createDeepSeekContentProjector(binding);
+  text = dsml.push(text) + dsml.seal();
   text = projectInlineReasoning(text, inlineReasoningMarker(request.profile.inlineReasoningPolicy, binding), request.profile.inlineReasoningPolicy);
   let calls;
   // tool_calls truthiness mirrors Python: an empty array carries no calls.
@@ -354,6 +357,7 @@ export function createOpenAIStreamTurn(profile, binding) {
   const emitThinking = profile.providerThinkingDisplay ?? profile.providerReplayMode !== 'none';
   const marker = inlineReasoningMarker(profile.inlineReasoningPolicy, binding);
   const projector = createInlineReasoningProjector(marker, profile.inlineReasoningPolicy);
+  const dsml = createDeepSeekContentProjector(binding);
   let emitContent;
   return {
     text: '',
@@ -444,8 +448,9 @@ export function createOpenAIStreamTurn(profile, binding) {
         this.finish = finish;
         if (reported) this.usageAtFinish = true;
       }
-      this.text += content;
-      const publicContent = projector.push(content);
+      const visibleText = dsml.push(content);
+      this.text += visibleText;
+      const publicContent = projector.push(visibleText);
       if (publicContent) emit({ kind: 'text', text: publicContent });
       if (reasoning && emitThinking) emit({ kind: 'thinking', text: reasoning });
       try {
@@ -499,9 +504,11 @@ export function createOpenAIStreamTurn(profile, binding) {
     },
 
     finalize({ errorKind = null, failureKind = null } = {}) {
+      const wireTail = dsml.seal();
+      this.text += wireTail;
       const result = this.rawResult({ errorKind, failureKind });
       if (!['provider_retryable_error', 'provider_terminal_error'].includes(result.kind)) {
-        const tail = projector.seal();
+        const tail = projector.push(wireTail) + projector.seal();
         if (tail) emitContent?.({ kind: 'text', text: tail });
       }
       const text = projectInlineReasoning(result.text, marker, profile.inlineReasoningPolicy);

@@ -448,9 +448,9 @@ export function createOpenAIStreamTurn(profile, binding) {
         this.finish = finish;
         if (reported) this.usageAtFinish = true;
       }
-      const wireText = dsml.push(content);
-      this.text += wireText;
-      const publicContent = projector.push(wireText);
+      const visibleText = dsml.push(content);
+      this.text += visibleText;
+      const publicContent = projector.push(visibleText);
       if (publicContent) emit({ kind: 'text', text: publicContent });
       if (reasoning && emitThinking) emit({ kind: 'thinking', text: reasoning });
       try {

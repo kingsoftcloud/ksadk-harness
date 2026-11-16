@@ -227,6 +227,17 @@ test('DeepSeek DSML stays out of sealed replies and incremental text over HTTP',
         kind: 'tool_calls', structured: true },
       { name: 'literal code and ordinary HTML', body: `${literal}\n<div>1 < 2</div>${closers}`,
         expected: `${literal}\n<div>1 < 2</div>`, kind: 'final_candidate', model: 'deepseek-ai/DeepSeek-V4.1-Flash' },
+      ...['proxy-deepseek-v4', 'my-deepseek-v4-proxy', 'deepseek/v4', 'deepseek-chat', 'deepseek-reasoner',
+        'DeepSeek-V3.2', 'deepseek_v4', 'deepseek.v4'].map(model => ({
+        name: `DeepSeek alias ${model}`, body: `Before${closers}After`, expected: 'BeforeAfter',
+        kind: 'final_candidate', model,
+      })),
+      { name: 'literal vertical bars and delimiter fragments',
+        body: `a｜b｜｜c\n~ ~~ \n${closers}x<|DSM`, expected: 'a｜b｜｜c\n~ ~~ \nx<|DSM', kind: 'final_candidate' },
+      { name: 'unclosed literal code fence', body: `prefix\n~~~xml\n${closers}`,
+        expected: `prefix\n~~~xml\n${closers}`, kind: 'final_candidate' },
+      { name: 'code fence inside a hidden block', body: `Before<|DSML| calls>~~~\n${closers}After`,
+        expected: 'BeforeAfter', kind: 'final_candidate' },
       { name: 'other models retain literal content', body: closers, expected: closers,
         kind: 'final_candidate', model: 'glm-5.3-flash' },
     ]) await t.test(`${streaming ? 'SSE' : 'buffered'} ${name}`, async () => {
@@ -246,7 +257,7 @@ test('DeepSeek DSML stays out of sealed replies and incremental text over HTTP',
       if (streaming) {
         const deltas = events.filter(event => event.kind === 'text');
         assert.equal(deltas.map(event => event.text).join(''), expected);
-        if (expected.startsWith('Before')) assert.equal(deltas[0]?.text, 'B');
+        if (expected === 'BeforeAfter') assert.deepEqual(deltas.map(event => event.text), Array.from(expected));
       }
     });
   }

@@ -2,12 +2,12 @@ const markerHeads = ['<', '</'].flatMap(start => ['|', '||'].flatMap(left =>
   ['||', '|'].map(right => `${start}${left}DSML${right}`)));
 const maxHeadLength = Math.max(...markerHeads.map(head => head.length));
 const tagNames = ['calls', 'tool_calls', 'function_calls', 'invoke', 'parameter'];
-const tagPrefix = /^(calls|tool_calls|function_calls|invoke|parameter)(?=[\t />])/u;
+const tagPrefix = new RegExp(`^(${tagNames.join('|')})(?=[\\t />])`, 'u');
+const deepSeekModelId = /(?:^|[-/.:_@])deepseek[-/._](?:v(?:3[._-]2|4)|chat|reasoner)(?=$|[-/.:_@])/iu;
 
 export function createDeepSeekContentProjector(binding) {
-  // Gate on the model ID so DeepSeek behind an OpenAI-compatible proxy behaves
-  // the same as a direct connection, and other models keep their wire content.
-  if (!/(?:^|[/.:])deepseek[-_.]v(?:3[._-]2|4)(?=$|[._:-])/iu.test(binding?.model ?? '')) {
+  // Recognize versioned and standard DeepSeek IDs inside proxy model aliases.
+  if (!deepSeekModelId.test(binding?.model ?? '')) {
     return { push: text => text, seal: () => '' };
   }
   let pending = '';
@@ -46,7 +46,7 @@ export function createDeepSeekContentProjector(binding) {
 
       if (!codeDelimiter) {
         const prefix = pending.slice(0, maxHeadLength).replaceAll('｜', '|');
-        if (markerHeads.some(head => head.startsWith(prefix))) {
+        if (markerHeads.some(head => head.length > prefix.length && head.startsWith(prefix))) {
           if (!sealed) break;
           if (prefix.endsWith('DSML')) {
             pending = '';

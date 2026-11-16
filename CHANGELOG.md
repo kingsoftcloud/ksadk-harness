@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.0.25 - 2026-11-16
+
+- Resume streaming DeepSeek reply text immediately after DSML closing tags.
+- Apply the DSML filter to standard DeepSeek aliases and proxy model IDs that
+  identify DeepSeek V3.2 or V4. Markup from an unclosed DSML block is suppressed
+  through the end of the reply.
+
 ## 0.0.24 - 2026-11-16
 
 - Remove DeepSeek DSML transport fragments before publishing streamed or buffered

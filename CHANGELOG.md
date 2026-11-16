@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.0.24 - 2026-11-16
+
+- Remove DeepSeek DSML transport fragments before publishing streamed or buffered
+  assistant text. Preserve literal code examples and existing structured tool calls.
+- Route replies containing only leaked markup through the existing bounded
+  empty-response recovery.
+
 ## 0.0.23 - 2026-11-15
 
 - Retain the actual completed duration for direct answers, without an empty

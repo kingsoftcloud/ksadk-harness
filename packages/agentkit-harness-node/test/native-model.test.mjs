@@ -211,6 +211,47 @@ test('inline reasoning: incomplete streams never release pending private content
   assert.equal(events.some(event => event.kind === 'text'), false);
 });
 
+test('DeepSeek DSML stays out of sealed replies and incremental text over HTTP', async t => {
+  const closers = '</｜｜DSML｜｜ parameter></｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls>';
+  const rawCall = '<｜DSML｜ calls><｜DSML｜ invoke name="write">'
+    + '<｜DSML｜ parameter name="path" string="true">raw-arguments</｜DSML｜ parameter>'
+    + '</｜DSML｜ invoke></｜DSML｜ calls>';
+  const literal = '`</｜DSML｜ calls>`\n~~~xml\n</｜DSML｜ calls>\n~~~';
+  for (const streaming of [false, true]) {
+    for (const { name, body, expected, kind, structured = false, model = 'deepseek-v4.1-flash' } of [
+      { name: 'orphan closers and truncated tail', body: `Before${closers}After</||DSML`,
+        expected: 'BeforeAfter', kind: 'final_candidate' },
+      { name: 'orphan closers alone', body: closers, expected: '', kind: 'empty_response' },
+      { name: 'raw call is never executable', body: rawCall, expected: '', kind: 'empty_response' },
+      { name: 'structured call remains authoritative', body: rawCall + closers, expected: '',
+        kind: 'tool_calls', structured: true },
+      { name: 'literal code and ordinary HTML', body: `${literal}\n<div>1 < 2</div>${closers}`,
+        expected: `${literal}\n<div>1 < 2</div>`, kind: 'final_candidate', model: 'deepseek-ai/DeepSeek-V4.1-Flash' },
+      { name: 'other models retain literal content', body: closers, expected: closers,
+        kind: 'final_candidate', model: 'glm-5.3-flash' },
+    ]) await t.test(`${streaming ? 'SSE' : 'buffered'} ${name}`, async () => {
+      const call = { id: 'one', type: 'function', function: { name: 'read', arguments: '{"path":"index.html"}' } };
+      const finish = structured ? 'tool_calls' : 'stop';
+      const response = streaming ? { headers: SSE_HEADERS, body: [
+        ...Array.from(body, content => sse(ochunk({ content }))),
+        sse(ochunk(structured ? { tool_calls: [{ index: 0, ...call }] } : {}, finish)), sseDone(),
+      ] } : { headers: JSON_HEADERS, body: JSON.stringify({ choices: [{ finish_reason: finish,
+        message: { role: 'assistant', content: body, ...(structured ? { tool_calls: [call] } : {}) },
+      }] }) };
+      const { result, events } = await collect(null, 'openai-chat', () => response, makeRequest(),
+        { bindingExtra: { model } });
+      assert.equal(result.kind, kind);
+      assert.equal(result.text, expected);
+      looseEqual(result.toolCalls, structured ? [{ callId: 'one', name: 'read', arguments: { path: 'index.html' } }] : []);
+      if (streaming) {
+        const deltas = events.filter(event => event.kind === 'text');
+        assert.equal(deltas.map(event => event.text).join(''), expected);
+        if (expected.startsWith('Before')) assert.equal(deltas[0]?.text, 'B');
+      }
+    });
+  }
+});
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // --- fixtures -------------------------------------------------------------

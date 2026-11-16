@@ -171,7 +171,7 @@ test('a live cursor delivers reasoning and tool drafts, and accepts guidance for
   mkdirSync(workspace);
   const reasoning = 'first\n' + 'a'.repeat(10000) + '\nlast';
   const encoder = new TextEncoder();
-  let stream, modelCalls = 0;
+  let stream, nextStream, modelCalls = 0;
   const modelRequests = [];
   const frame = (delta, finish_reason = null) => encoder.encode(`data: ${JSON.stringify({
     id: 'thinking-fixture', choices: [{ index: 0, delta, finish_reason }],
@@ -188,9 +188,8 @@ test('a live cursor delivers reasoning and tool drafts, and accepts guidance for
           stream = controller;
           controller.enqueue(frame({ reasoning_content: reasoning }));
         } else {
-          controller.enqueue(frame({ content: 'Finished.' }, 'stop'));
-          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-          controller.close();
+          nextStream = controller;
+          controller.enqueue(frame({ content: 'Finished.' }));
         }
       },
       }), { headers: { 'content-type': 'text/event-stream' } });
@@ -210,13 +209,19 @@ test('a live cursor delivers reasoning and tool drafts, and accepts guidance for
   await rpc('initialize', { protocolVersions: ['agentkit.engine/v1'] });
   const runId = 'thinking-run';
   await rpc('run/start', { runId, objective: 'Answer the fixture.' });
-  let cursor = 0, thinkingCursor = '', toolDraftCursor = '', textCursor = '', received = '', body = '', requestId;
+  let cursor = 0, thinkingCursor = '', toolDraftCursor = '', textCursor = '', received = '', requestId;
+  const textByRequest = new Map();
+  const body = () => textByRequest.get(requestId) ?? '';
   async function poll() {
     const page = await rpc('run/events', { runId, cursor, thinkingCursor, toolDraftCursor, textCursor, waitMs: 500 });
     cursor = page.cursor;
     if (page.thinking) { thinkingCursor = page.thinking.cursor; received += page.thinking.text; }
     if (page.toolDraft) toolDraftCursor = page.toolDraft.cursor;
-    if (page.text) { textCursor = page.text.cursor; body += page.text.text; assert.equal(page.text.requestId, requestId); }
+    if (page.text) {
+      textCursor = page.text.cursor;
+      const { requestId: textRequestId, text } = page.text;
+      textByRequest.set(textRequestId, (textByRequest.get(textRequestId) ?? '') + text);
+    }
     requestId ??= page.events.find(event => event.kind === 'effect.prepared' && event.category === 'model')?.requestId;
     return page;
   }
@@ -226,12 +231,12 @@ test('a live cursor delivers reasoning and tool drafts, and accepts guidance for
   assert.equal((await poll()).thinking, undefined, 'an acknowledged live chunk is not repeated');
   assert.equal(cursor, before);
   stream.enqueue(frame({ content: 'Checking ' }));
-  for (let n = 0; n < 10 && !body; n++) await poll();
-  assert.equal(body, 'Checking ');
+  for (let n = 0; n < 10 && !body(); n++) await poll();
+  assert.equal(body(), 'Checking ');
   assert.equal((await poll()).text, undefined, 'acknowledged text is not repeated');
   stream.enqueue(frame({ content: 'file.' }));
-  for (let n = 0; n < 10 && body === 'Checking '; n++) await poll();
-  assert.equal(body, 'Checking file.');
+  for (let n = 0; n < 10 && body() === 'Checking '; n++) await poll();
+  assert.equal(body(), 'Checking file.');
   assert.equal(modelRequests.length, 1, 'visible body arrives before the model finishes');
   stream.enqueue(frame({ tool_calls: [{ index: 0, id: 'call-fixture', type: 'function',
     function: { name: 'read_workspace_file', arguments: '{"path":"fixture.txt' } }] }));
@@ -247,6 +252,13 @@ test('a live cursor delivers reasoning and tool drafts, and accepts guidance for
   stream.enqueue(encoder.encode('data: [DONE]\n\n'));
   stream.close();
   const events = [];
+  for (let n = 0; n < 10 && textByRequest.size < 2; n++) events.push(...(await poll()).events);
+  const nextRequest = events.find(event => event.kind === 'effect.prepared' && event.category === 'model' && event.requestId !== requestId);
+  assert.ok(nextRequest);
+  assert.deepEqual([...textByRequest], [[requestId, 'Checking file.'], [nextRequest.requestId, 'Finished.']]);
+  nextStream.enqueue(frame({}, 'stop'));
+  nextStream.enqueue(encoder.encode('data: [DONE]\n\n'));
+  nextStream.close();
   for (let n = 0; n < 10 && !events.some(event => event.kind === 'run.terminal'); n++)
     events.push(...(await poll()).events);
   const completed = events.find(event => event.kind === 'model.completed');

@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -121,7 +122,7 @@ test('a checkpoint with no workspace or verification capability does not dispatc
 test('a real process lost inside a checkpoint verifier is never redispatched', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'native-checkpoint-crash-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const child = spawnSync(process.execPath, [new URL('./fixtures/checkpoint-worker.mjs', import.meta.url).pathname, directory],
+  const child = spawnSync(process.execPath, [fileURLToPath(new URL('./fixtures/checkpoint-worker.mjs', import.meta.url)), directory],
     { encoding: 'utf8', env: { ...process.env, PATH: '/no-programs' } });
   assert.equal(child.status, 77, child.stderr);
   const store = new SqliteRunStore(join(directory, 'runs.sqlite'));

@@ -177,7 +177,7 @@ export function buildViewModel(state, options = {}) {
 
 function timelineList(state, items, opts) {
   const kids = [];
-  const modelActive = state.taskState === "running" && state.modelRequestActive;
+  const modelActive = state.taskState === "running" && (state.modelRequestActive || state.modelWait);
   if (!modelActive && isWaitingForFirstToken(state)) kids.push(waitingPlaceholder(opts));
   const transcript = state.taskState === 'running' ? items.filter(item =>
     !(item.kind === 'tool' && item.status === 'failed' && toolIdentity(item.name).family === 'edit'
@@ -187,7 +187,7 @@ function timelineList(state, items, opts) {
   const interrupted = interruptedWorkLabel(state, opts.locale);
   for (const [index, segment] of segments.entries()) {
     const showModelActivity = modelActive && index === segments.length - 1
-      && !segment.process.some(item => item.streaming && ["thought", "tool-preview"].includes(item.kind));
+      && !segment.process.some(item => item.streaming && ["text", "thought", "tool-preview"].includes(item.kind));
     kids.push(...renderTimelineItems(segment.inputs, opts));
     if (segment.collapsible) {
       const open = Boolean(opts.historyOpen?.get(segment.id));
@@ -198,7 +198,9 @@ function timelineList(state, items, opts) {
           chevronIcon('harness-work-history-chevron')),
         open ? h('div', { className: 'harness-work-items harness-work-history-content', 'data-testid': 'work-history-content' },
           ...renderTimelineItems(segment.process, opts)) : null));
-    } else if (segment.process.length || showModelActivity) kids.push(h('div', { className: 'harness-work-items', 'data-testid': 'work-process' },
+    } else if (segment.showDuration) kids.push(h('div', { className: 'harness-work-history-summary harness-work-duration', 'data-testid': 'work-duration' },
+      completedWorkLabel(state, opts.locale)));
+    else if (segment.process.length || showModelActivity) kids.push(h('div', { className: 'harness-work-items', 'data-testid': 'work-process' },
       ...renderTimelineItems(segment.process, opts, state.taskState === 'running'
         && index === segments.length - 1 && segment.following.length === 0),
       showModelActivity ? modelActivity(opts, state) : null));
@@ -266,15 +268,28 @@ function textBlock(item, opts) {
   const streaming = Boolean(item.streaming);
   const text = item.text || "";
   return h("div", {
-    className: item.role === "user" ? "harness-user-message" : "harness-text",
+    className: item.role === "user" ? "harness-user-input" : "harness-text",
     "data-role": item.role || "assistant",
     "data-testid": "text-block",
     "data-item-id": item.id,
     "data-streaming": streaming ? "true" : "false",
-  }, h("span", { className: "harness-text-content" }, text));
+  }, ...(item.role === 'user' && item.images?.length ? [h('div', { className: 'harness-user-images', 'data-testid': 'user-images' },
+    ...item.images.map((image, i) => h('span', { 'data-testid': 'user-image', 'data-item-id': `${item.id}:image:${i}`, image },
+      image.attachment?.name ?? image.name ?? (String(opts.locale ?? '').startsWith('zh') ? '图片' : 'Image'))))] : []),
+    ...(item.role === 'user' ? text ? [h('div', { className: 'harness-user-message' },
+      h('span', { className: 'harness-text-content' }, text))] : []
+      : [h('span', { className: 'harness-text-content' }, text)]));
 }
 
 function modelActivity(opts, state) {
+  if (state.modelWait) {
+    const zh = String(opts.locale ?? '').startsWith('zh'), status = state.modelWait.httpStatus;
+    const label = status === 429 ? (zh ? '网关限流，等待重试' : 'Gateway rate limited; waiting to retry')
+      : zh ? '模型请求暂未成功，等待重试' : 'Model request delayed; waiting to retry';
+    return h('div', { className: 'harness-thought-summary harness-model-activity', role: 'status',
+      'data-testid': 'model-backoff', 'data-retry-at': state.modelWait.retryAt },
+      brainIcon('harness-thought-icon'), h('span', {}, label));
+  }
   const zh = String(opts.locale ?? '').startsWith('zh');
   const compacting = state.modelRequestPurpose === 'compaction', retry = state.modelRequestRetry;
   const label = compacting ? (retry ? (zh ? '正在重试上下文压缩…' : 'Retrying context compaction…')

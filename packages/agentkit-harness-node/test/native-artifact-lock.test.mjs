@@ -18,6 +18,7 @@
 // (also run on the Node22 binary; see artifact-lock-review-evidence.txt)
 
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
@@ -28,7 +29,7 @@ import { createNativeArtifactStore } from '../src/native/artifact-store.mjs';
 import { scopeDigest, runDigest, identityDigest } from '../src/native/artifact-codec.mjs';
 
 const SCOPE = Object.freeze({ tenantId: 'tenant', workspaceId: 'ws', userId: 'user', agentId: 'agent' });
-const HARNESS_DIR = new URL('..', import.meta.url).pathname;
+const HARNESS_DIR = fileURLToPath(new URL('..', import.meta.url));
 
 // Subprocess writer: a real, separate Node process with its own store instance
 // against the same directory. Supports crash-after (exit at a publish position,

@@ -40,17 +40,54 @@ function fixture(script) {
     close: () => new Promise(closed => { server.closeAllConnections(); server.close(closed); }) })));
 }
 
-async function launch(t, script, { approval = 'deny', onApproveTool, onCallTool } = {}) {
+async function launch(t, script, { approval = 'deny', onApproveTool, onCallTool, searchEnv = {} } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'engine-proc-')), workspace = join(dir, 'workspace');
   mkdirSync(workspace);
   const model = await fixture(script);
   let log = '';
   const engine = spawnEngine({ command: process.execPath, args: [entry, '--workspace', workspace, '--state-dir', join(dir, 'state'), '--approval', approval],
     env: { PATH: process.env.PATH, HOME: dir, AGENTKIT_ENGINE_MODEL_NAME: 'fixture-model', AGENTKIT_ENGINE_MODEL_BASE_URL: model.url,
-      AGENTKIT_ENGINE_MODEL_API_KEY: 'fixture-secret-key' }, onApproveTool, onCallTool, hostName: 'engine-test', onLog: chunk => { log += chunk; } });
+      AGENTKIT_ENGINE_MODEL_API_KEY: 'fixture-secret-key', ...searchEnv }, onApproveTool, onCallTool, hostName: 'engine-test', onLog: chunk => { log += chunk; } });
   t.after(async () => { await engine.close().catch(() => {}); await model.close(); rmSync(dir, { recursive: true, force: true }); });
   return { engine, model, workspace, log: () => log };
 }
+
+test('an unconfigured engine does not advertise web search, but can fetch public pages', async t => {
+  const f = await launch(t, [final('Done.')]);
+  const hello = await f.engine.initialize();
+  assert.ok(hello.engine.tools.includes('web_fetch'));
+  assert.ok(!hello.engine.tools.includes('web_search'));
+  assert.deepEqual(hello.engine.webSearch, { available: false, reason: 'provider_not_configured' });
+});
+
+test('the standalone engine searches through its configured HTTP backend without exposing its credential', async t => {
+  let searches = 0;
+  const search = createServer((req, res) => {
+    searches++;
+    assert.equal(req.headers.authorization, 'Bearer search-private-fixture');
+    const url = new URL(req.url, 'http://localhost');
+    assert.equal(url.searchParams.get('q'), 'native search fixture');
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ results: [{ title: 'Search fixture', url: 'https://example.com/native-search', snippet: 'Verified search result.' }] }));
+  });
+  await new Promise(resolve => search.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => { search.closeAllConnections(); search.close(resolve); }));
+  const f = await launch(t, [toolCall('search', 'web_search', { query: 'native search fixture' }), final('Search complete.')], {
+    approval: 'allow', searchEnv: { AGENTKIT_ENGINE_WEB_SEARCH_PROVIDER: 'http',
+      AGENTKIT_ENGINE_WEB_SEARCH_BASE_URL: 'http://127.0.0.1:' + search.address().port,
+      AGENTKIT_ENGINE_WEB_SEARCH_API_KEY: 'search-private-fixture' },
+  });
+  const hello = await f.engine.initialize();
+  assert.ok(hello.engine.tools.includes('web_search'));
+  assert.equal(hello.engine.webSearch.available, true);
+  const started = await f.engine.startRun({ objective: 'Search for native search fixture.' });
+  const events = [];
+  await f.engine.follow(started.runId, event => events.push(event));
+  assert.equal(searches, 1);
+  assert.ok(events.some(event => event.kind === 'tool.completed' && event.title === 'web_search' && event.status === 'ok'));
+  assert.match(JSON.stringify(f.model.requests.at(-1).body), /Verified search result/);
+  assert.doesNotMatch(JSON.stringify({ hello, events, requests: f.model.requests, log: f.log() }), /search-private-fixture/);
+});
 
 test('a host completes a file-writing task through the protocol alone, approving the write', async t => {
   const approvals = [];

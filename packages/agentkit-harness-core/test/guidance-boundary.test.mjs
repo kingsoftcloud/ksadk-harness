@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -298,7 +299,7 @@ for (const position of ['applied', 'receipted']) test(`SQLite: actual process ex
   // The file path belongs to the fixture's temporary directory, not a user database.
   const file = run.file;
   assert.equal(typeof file, 'string');
-  const worker = spawnSync(process.execPath, [new URL('./fixtures/guidance-crash-worker.mjs', import.meta.url).pathname,
+  const worker = spawnSync(process.execPath, [fileURLToPath(new URL('./fixtures/guidance-crash-worker.mjs', import.meta.url)),
     file, position, marker], { encoding: 'utf8', timeout: 20000 });
   assert.equal(worker.status, position === 'applied' ? 77 : 78, worker.stderr);
   run.reopen();

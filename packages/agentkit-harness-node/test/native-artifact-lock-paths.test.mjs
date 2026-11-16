@@ -23,7 +23,6 @@ import { createNativeArtifactStore } from '../src/native/artifact-store.mjs';
 import { scopeDigest, runDigest } from '../src/native/artifact-codec.mjs';
 
 const SCOPE = Object.freeze({ tenantId: 'tenant', workspaceId: 'ws', userId: 'user', agentId: 'agent' });
-const HARNESS_DIR = new URL('..', import.meta.url).pathname;
 
 function freshDir() { return mkdtempSync(join(tmpdir(), 'native-art-lock-paths-')); }
 

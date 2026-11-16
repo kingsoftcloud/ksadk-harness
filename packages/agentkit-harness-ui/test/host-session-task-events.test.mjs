@@ -266,3 +266,36 @@ test('retired browser closure stays interrupted and unknown on both live project
  assert.match(state.taskSummary,/原操作结果仍未知/);
  assert.deepEqual(createSessionTaskProjector().project(window(2,rows))[0].state,state);
 });
+
+test('independent model text previews update in place and retire on retry, settlement and replay', () => {
+  const requestId = 'a'.repeat(64), nextId = 'b'.repeat(64), runId = 'fixture';
+  const engine = (seq, kind, extra = {}) => {
+    const row = entry(seq, 'agentkit/native-engine-event', { runId,
+      event: { schema: 'agentkit.engine-event/v1', seq, kind, ...extra } });
+    row.event.ignorable = true; return row;
+  };
+  const preview = (seq, text, id = requestId, cursor = '00000000-0000-0000-0000-000000000000:12') => {
+    const row = entry(seq, 'agentkit/native-engine-text', { runId, requestId: id, cursor, delta: text, offset: seq === 4 ? 5 : 0 });
+    row.event.ignorable = true; return row;
+  };
+  const rows = [entry(0, 'turn/start', {}), engine(1, 'run.started'),
+    engine(2, 'effect.prepared', { category: 'model', title: 'request', requestId }), preview(3, 'First')];
+  const projector = createSessionTaskProjector({ sessionId: 'session' });
+  let state = projector.project(window(1, rows))[0].state;
+  assert.equal(state.items.find(item => item.preview)?.text, 'First');
+  assert.equal(state.finalAnswerId, null);
+  rows.push(preview(4, ' second', requestId, '00000000-0000-0000-0000-000000000000:24'));
+  state = projector.project(window(2, rows))[0].state;
+  assert.deepEqual(state.items.filter(item => item.preview).map(item => item.text), ['First second']);
+  rows.push(engine(5, 'effect.settled', { category: 'model', title: 'request', requestId }),
+    engine(6, 'effect.prepared', { category: 'model', title: 'request', requestId: nextId, retry: true }),
+    preview(7, 'late stale output'), preview(8, 'Successful', nextId));
+  state = projector.project(window(3, rows))[0].state;
+  assert.deepEqual(state.items.filter(item => item.preview).map(item => item.text), ['Successful']);
+  rows.push(engine(9, 'effect.settled', { category: 'model', title: 'request', requestId: nextId }),
+    engine(10, 'run.terminal', { title: 'completed', status: 'unverified', detail: 'Successful answer' }));
+  const settled = projector.project(window(4, rows));
+  assert.equal(settled[0].state.items.some(item => item.preview), false);
+  assert.deepEqual(settled[0].state.items.filter(item => item.kind === 'text').map(item => item.text), ['Successful answer']);
+  assert.deepEqual(createSessionTaskProjector({ sessionId: 'session' }).project(window(5, rows)), settled);
+});

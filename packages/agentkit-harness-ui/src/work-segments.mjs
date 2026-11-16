@@ -23,7 +23,7 @@ export function conversationWorkSegments(state, items) {
       || final.sourceMessageId && item.sourceMessageId === final.sourceMessageId)) : -1;
     const process = answerIndex >= 0 ? rows.slice(0, answerIndex) : rows;
     return { ...segment, process, following: answerIndex >= 0 ? rows.slice(answerIndex) : [],
-      collapsible: ended && process.length > 0 };
+      collapsible: ended && process.length > 0, showDuration: ended && rows.length > 0 };
   });
 }
 

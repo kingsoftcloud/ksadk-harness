@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, readdirSync, existsSync, rmSync } from 'node:fs';
@@ -8,7 +9,7 @@ import { createNativeArtifactStore } from '../src/native/artifact-store.mjs';
 import { scopeDigest, runDigest, identityDigest } from '../src/native/artifact-codec.mjs';
 
 const SCOPE = Object.freeze({ tenantId: 'tenant', workspaceId: 'ws', userId: 'user', agentId: 'agent' });
-const HARNESS_DIR = new URL('..', import.meta.url).pathname; // packages/agentkit-harness/
+const HARNESS_DIR = fileURLToPath(new URL('..', import.meta.url)); // packages/agentkit-harness/
 
 // Subprocess writer: a real, separate Node process that opens its own store
 // instance against the same directory. Inert unless NATIVE_ARTIFACT_CRASH_AFTER

@@ -12,6 +12,8 @@ const normalizeModel = value => String(value ?? '').toLowerCase().replaceAll('_'
 const pythonLeftSpace = /^[\u0009-\u000d\u001c-\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*/u;
 const startsThinking = text => text.replace(pythonLeftSpace, '').startsWith('<think>');
 
+export const isProviderCompatibilityRule = value => rules.has(value);
+
 export function admitInlineReasoningPolicy(override, { contract = 'profiled-content/v2' } = {}) {
   if (!['profiled-content/v1', 'profiled-content/v2'].includes(contract)) throw new Error('invalid_inline_reasoning_policy');
   const rule = typeof override === 'string' ? override.trim() : '';

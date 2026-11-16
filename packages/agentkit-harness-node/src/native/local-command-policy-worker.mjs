@@ -46,13 +46,13 @@ function inside(path) {
 function gatewayPolicy(args) {
   for (let i = 0; i + 1 < args.length; i++) if (args[i] === 'rm'
     && args.slice(i + 1, i + 3).some(flag => flag.startsWith('-') && /[rR]/.test(flag)))
-    return finding('command_rejected', 'recursive rm is not allowed without explicit approval');
+    return finding('command_rejected', 'recursive removal is blocked by the command policy');
   if (args.some(arg => ['sudo', 'kubectl', 'docker'].includes(arg)))
     return finding('command_rejected', `${args[0]} command is not allowed by default policy`);
   if (args[0] === 'git' && args.length > 1) {
     if (['status', 'diff', 'log', 'show', 'branch', 'ls-files'].includes(args[1])) return null;
     if (['reset', 'clean', 'push', 'checkout'].includes(args[1]))
-      return finding('command_rejected', `git ${args[1]} is not allowed without explicit approval`);
+      return finding('command_rejected', `git ${args[1]} is blocked by the command policy`);
   }
   if (args.join(' ').includes('169.254.169.254') || args.join(' ').includes('metadata.google.internal'))
     return finding('command_rejected', 'metadata/private endpoint access is not allowed by default policy');

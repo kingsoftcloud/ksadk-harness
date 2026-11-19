@@ -6,7 +6,7 @@ import { contextTimelineItems } from './context-markers.mjs';
 // active tool, errors) without mutating state. Kept separate from the view so
 // the same projections can be tested and reused by hosts and screens readers.
 
-import { TaskState, ToolStatus } from "./protocol.mjs";
+import { TaskOutcome, TaskState, ToolStatus } from "./protocol.mjs";
 import { toolConversationVisible } from './tool-identity.mjs';
 
 /**
@@ -95,6 +95,30 @@ export function activeTool(state) {
 /** Failed tool items, newest first, for concise error surfacing. */
 export function failedTools(state) {
   return visibleItems(state).filter(item => item.kind === "tool" && item.status === ToolStatus.Failed);
+}
+
+/** Recognize a corrected delegation in the same turn after its child has returned. */
+export function resolvedDelegateAttempts(items) {
+  const preceding = new Map();
+  const recovered = new Set();
+  for (const item of items) {
+    if (item.kind === 'text' && item.role === 'user') preceding.clear();
+    if (item.kind !== 'tool' || item.name !== 'native_delegate') continue;
+    const { output_contract, output_format, ...request } = item.input ?? {};
+    if (typeof request.role !== 'string' || typeof request.task !== 'string') continue;
+    const key = JSON.stringify(Object.entries(request).sort(([a], [b]) => a.localeCompare(b)));
+    const earlier = preceding.get(key);
+    preceding.set(key, item);
+    if (item.status !== ToolStatus.Completed || item.child?.phase !== 'completed'
+      || ![TaskOutcome.Completed, TaskOutcome.Unverified].includes(item.child.outcome)
+      || output_contract !== undefined || output_format !== undefined) continue;
+    if (earlier?.status === ToolStatus.Failed && !earlier.child
+      && earlier.input.output_contract === 'parent' && earlier.input.output_format === 'text'
+      && /^(?:Error: )?studio_native_child_parent_output_invalid$/.test(earlier.error?.trim())) {
+      recovered.add(earlier.callId);
+    }
+  }
+  return recovered;
 }
 
 /** A one-line concise status string for the task, host-declared only. */

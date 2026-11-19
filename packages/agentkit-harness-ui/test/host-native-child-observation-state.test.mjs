@@ -13,6 +13,9 @@ test('parallel child identities follow parent call IDs even when children arrive
   const next = bindNativeSubagents(state, [child('child-b', 'call-b'), child('child-a', 'call-a'), child('other', 'missing')]);
   assert.equal(next.items[0].child.runId, 'child-a'); assert.equal(next.items[1].child.runId, 'child-b');
   assert.equal(state.items[0].child, undefined);
+  const settled = bindNativeSubagents(next, [{ ...child('child-b', 'call-b'), snapshotRevision: 2, phase: 'completed', outcome: 'unverified' }]);
+  assert.equal(settled.items[0].child.outcome, undefined);
+  assert.equal(settled.items[1].child.outcome, 'unverified');
 });
 test('read-only child mapping retains live provider content, known failures and scope identity', () => {
   const detail = { task: { childRunId: 'child', sessionId: 's' }, observation: { contract: 'agentkit.native-child-observation/v1',

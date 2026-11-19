@@ -16,7 +16,7 @@
 // callbacks, so the tree stays serializable and testable with node:test.
 
 import { h, terminalIcon, fileTextIcon, searchIcon, pencilIcon, wrenchIcon, chevronIcon, skillIcon, globeIcon } from "./view.mjs";
-import { ToolStatus } from "./protocol.mjs";
+import { TaskOutcome, ToolStatus } from "./protocol.mjs";
 import { toolTitle, toolDetailLines, toolInputPreview, redactError } from "./tool-detail.mjs";
 import { truncateText, latestNonEmptyLine, redactValue, boundedDetailLines } from "./summary.mjs";
 import { parseDiffHunks, countChangeStat, inferOperationKind } from "./diff.mjs";
@@ -85,7 +85,8 @@ const toolIsLive = item => item.kind === 'tool-preview' ? item.streaming === tru
  *
  * Policy-blocked commands put the reason inside the disclosure.
  */
-function toolShell(item, opts, { icon, summary, body, canToggle = true, defaultOpen, actions = [], summaryAction, commandBlocked = false }) {
+function toolShell(item, opts, { icon, summary, body, canToggle = true, defaultOpen, actions = [], summaryAction,
+  commandBlocked = false, errorInDetails = false, summaryStatus }) {
   const status = item.status;
   const provisional = item.kind === 'tool-preview';
   const streaming = toolIsLive(item);
@@ -102,17 +103,19 @@ function toolShell(item, opts, { icon, summary, body, canToggle = true, defaultO
   const errorSummary = error ? toolErrorSummary(item.error, opts) : null;
   // Non-toggleable tools have no body to expand into, so their error must live
   // in the summary; toggleable tools show it inline only when collapsed.
-  const showInlineError = error && !commandBlocked && (canToggle ? !open : true);
+  const showInlineError = error && !commandBlocked && !errorInDetails && (!canToggle || !open);
   if (showInlineError) summaryKids.push(h("span", {
     className: "harness-tool-error harness-tool-error-inline",
     role: "alert",
     "data-testid": "tool-error",
   }, errorSummary));
-  if ([ToolStatus.Failed, ToolStatus.Uncertain, ToolStatus.Interrupted, ToolStatus.Waiting, ToolStatus.NotDispatched].includes(status)) summaryKids.push(h("span", {
-    className: `harness-tool-status harness-tool-status-${status}`,
+  const visibleStatus = summaryStatus === undefined ? status : summaryStatus;
+  if ([ToolStatus.Failed, ToolStatus.Uncertain, ToolStatus.Interrupted, ToolStatus.Waiting, ToolStatus.NotDispatched,
+    TaskOutcome.Unverified].includes(visibleStatus)) summaryKids.push(h("span", {
+    className: `harness-tool-status harness-tool-status-${visibleStatus}`,
     "data-testid": "tool-status",
-    "data-status": status,
-  }, commandBlocked ? (String(opts.locale).startsWith("zh") ? "未执行" : "Not executed") : statusLabel(status, opts)));
+    "data-status": visibleStatus,
+  }, commandBlocked ? (String(opts.locale).startsWith("zh") ? "未执行" : "Not executed") : statusLabel(visibleStatus, opts)));
   for (const action of actions) {
     if (action) summaryKids.push(action);
   }
@@ -154,16 +157,25 @@ function agentRenderer(item, opts) {
   const activityPath = activity && readMeta(activity).path;
   const primary = activityPath ? `${opts.labels.readKind || 'Read'} ${leafName(activityPath)}` : title;
   const role = child?.role || item.input?.role || item.input?.subagent_type || '';
-  let hash = 0; for (let i = 0; i < role.length; i++) hash = (hash * 31 + role.charCodeAt(i)) >>> 0;
-  const colors = ['yellow', 'red', 'orange', 'green', 'cyan', 'blue', 'purple', 'pink'];
   const icon = h('svg', { className: 'harness-icon harness-tool-kind-icon', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
     h('path', { d: 'M12 8V4H8' }), h('rect', { width: 16, height: 12, x: 4, y: 8, rx: 2 }),
     h('path', { d: 'M2 14h2M20 14h2M15 13v2M9 13v2' }));
-  return toolShell(item, opts, { icon, canToggle: false, body: [],
-    summaryAction: child && opts.onOpenSubagent ? { type: 'button', 'data-action': 'open-subagent', 'data-call-id': item.callId,
-      'aria-label': opts.labels.openSubagent || 'Open on the right', title: String(title).slice(0, 512) } : undefined,
+  if (opts.resolvedDelegateAttempts?.has(item.callId)) {
+    return toolShell(item, opts, { icon, errorInDetails: true, summaryStatus: null, body: [],
+      summary: h('span', { className: 'harness-agent-title' }, opts.labels.toolRetryHistory || 'Retry history') });
+  }
+  const hasErrorDetails = item.status === ToolStatus.Failed && Boolean(item.error);
+  const openLabel = opts.labels.openSubagent || 'Open on the right';
+  const openAction = child && opts.onOpenSubagent ? { type: 'button', 'data-action': 'open-subagent', 'data-call-id': item.callId } : null;
+  const completedUnverified = item.status === ToolStatus.Completed && child?.phase === 'completed'
+    && child.outcome === TaskOutcome.Unverified;
+  return toolShell(item, opts, { icon, canToggle: hasErrorDetails, errorInDetails: hasErrorDetails,
+    summaryStatus: completedUnverified ? TaskOutcome.Unverified : undefined,
+    body: hasErrorDetails && openAction ? [h('button', { ...openAction, className: 'harness-tool-action' }, openLabel)] : [],
+    summaryAction: !hasErrorDetails && openAction
+      ? { ...openAction, 'aria-label': openLabel, title: String(title).slice(0, 512) } : undefined,
     summary: [h('span', { className: running ? 'harness-tool-title harness-tool-title-streaming' : 'harness-tool-title' }, opts.labels.subagent || 'SubAgent'),
-      role ? h('span', { className: 'harness-agent-name', 'data-color': colors[hash % colors.length] }, role) : null,
+      role ? h('span', { className: 'harness-agent-name' }, role) : null,
       h('span', { className: 'harness-agent-separator', 'aria-hidden': true }, '·'),
       h('span', { className: 'harness-agent-title' }, String(primary).slice(0, 512))] });
 }
@@ -180,6 +192,7 @@ function statusLabel(status, opts) {
     case "scheduled": return l.toolScheduled || "queued";
     case "running": return l.toolRunning || "running";
     case "completed": return l.toolCompleted || "done";
+    case "unverified": return l.toolCompletedUnverified || "Completed, unverified";
     case "failed": return l.toolFailed || "failed";
     case "not_dispatched": return l.toolNotDispatched || (String(opts.locale ?? '').startsWith('zh') ? '未执行' : 'not executed');
     case "uncertain": return l.toolUncertain || "outcome unknown";

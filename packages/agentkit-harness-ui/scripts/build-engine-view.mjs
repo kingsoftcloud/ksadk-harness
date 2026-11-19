@@ -24,3 +24,16 @@ const html = `<!doctype html>
 mkdirSync(dirname(out), { recursive: true });
 writeFileSync(out, html);
 console.log(`engine view ${pkg.version}: ${html.length} bytes, sha256 ${createHash("sha256").update(html).digest("hex").slice(0, 16)}`);
+
+// The signed distribution also carries the full Studio browser integration.
+const studio = await build({
+  entryPoints: [join(here, "../src/studio-client.mjs")],
+  outfile: join(here, "../dist/studio-client.mjs"),
+  bundle: true, format: "esm", platform: "browser", target: ["es2022"],
+  minify: true, legalComments: "inline", metafile: true, write: false,
+  define: { "globalThis.__STUDIO_HARNESS_UI_VERSION__": JSON.stringify(pkg.version) },
+});
+if (Object.values(studio.metafile.outputs).some(output => output.imports.length))
+  throw new Error("Studio Harness UI must be a self-contained module");
+mkdirSync(join(here, "../dist"), { recursive: true });
+writeFileSync(studio.outputFiles[0].path, studio.outputFiles[0].contents);

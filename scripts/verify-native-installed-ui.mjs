@@ -47,11 +47,19 @@ try {
   const nestedVerified = verifyInstalledDependencyTree(directory, manifest);
   run(process.execPath, ['--input-type=module', '-e', `
     import assert from 'node:assert/strict';
-    import { mkdirSync, writeFileSync } from 'node:fs';
+    import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
     import { createHash } from 'node:crypto';
     import { verifyPackageFiles } from '@kingsoftcloud/agentkit-harness-node/package-integrity';
     import { redactDiagnosticText } from '@kingsoftcloud/agentkit-harness-core/error-presentation';
     import { redactError } from '@kingsoftcloud/agentkit-harness-ui';
+    import * as studioUI from './node_modules/@kingsoftcloud/agentkit-harness-ui/dist/studio-client.mjs';
+    const studioManifest = ${JSON.stringify(manifest.studio)};
+    const clientBytes = readFileSync('node_modules/@kingsoftcloud/agentkit-harness-ui/dist/studio-client.mjs');
+    assert.equal(createHash('sha256').update(clientBytes).digest('hex'), studioManifest.uiSha256);
+    assert.equal(studioUI.contract, studioManifest.uiContract);
+    assert.equal(studioUI.version, ${JSON.stringify(manifest.packages.find(item => item.name.endsWith('-ui')).version)});
+    assert.equal(typeof studioUI.installTaskTimeline, 'function');
+    assert.equal(typeof studioUI.createNativeChildPanel, 'function');
     mkdirSync('integrity-probe'); writeFileSync('integrity-probe/index.mjs', 'export const value=1;');
     const files = { 'index.mjs': createHash('sha256').update('export const value=1;').digest('hex') };
     assert.equal(verifyPackageFiles('integrity-probe', files), 1);

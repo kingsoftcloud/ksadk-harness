@@ -21,8 +21,9 @@ jobs:
       group: npm-release-${{ github.ref }}
       cancel-in-progress: false
     permissions:
-      contents: read
+      contents: write
       id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -49,6 +50,25 @@ jobs:
       - run: make public-gate
       - name: Publish packages with provenance
         run: node scripts/publish-native-release.mjs
+      - name: Calculate the tested manifest digest
+        id: studio-manifest-digest
+        run: |
+          digest="$(sha256sum .artifacts/packages/manifest.json | cut -d ' ' -f 1)"
+          echo "digest=sha256:$digest" >> "$GITHUB_OUTPUT"
+      - name: Attest the tested Studio upgrade manifest
+        id: studio-manifest
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-name: manifest.json
+          subject-digest: ${{ steps.studio-manifest-digest.outputs.digest }}
+      - name: Publish the signed Studio upgrade manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ATTESTATION: ${{ steps.studio-manifest.outputs.bundle-path }}
+        run: |
+          cp .artifacts/packages/manifest.json .artifacts/studio-harness-release.json
+          cp "$ATTESTATION" .artifacts/studio-harness-release.bundle.json
+          gh release upload "${GITHUB_REF_NAME}" .artifacts/studio-harness-release.json .artifacts/studio-harness-release.bundle.json --clobber
       - uses: actions/upload-artifact@v4
         if: always()
         with:

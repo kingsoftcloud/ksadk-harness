@@ -16,7 +16,7 @@
 // callbacks, so the tree stays serializable and testable with node:test.
 
 import { h, terminalIcon, fileTextIcon, searchIcon, pencilIcon, wrenchIcon, chevronIcon, skillIcon, globeIcon } from "./view.mjs";
-import { TaskOutcome, ToolStatus } from "./protocol.mjs";
+import { ToolStatus } from "./protocol.mjs";
 import { toolTitle, toolDetailLines, toolInputPreview, redactError } from "./tool-detail.mjs";
 import { truncateText, latestNonEmptyLine, redactValue, boundedDetailLines } from "./summary.mjs";
 import { parseDiffHunks, countChangeStat, inferOperationKind } from "./diff.mjs";
@@ -38,6 +38,27 @@ export function toolRendererKind(name) {
   if (['file', 'list', 'search'].includes(family)) return 'read';
   if (['edit', 'write', 'delete'].includes(family)) return 'edit';
   return 'default';
+}
+
+const SUBAGENT_COLORS = ['blue', 'violet', 'teal', 'amber', 'green', 'indigo'];
+const subagentRole = item => item.child?.role || item.input?.role || item.input?.subagent_type || '';
+
+/** Give different visible roles different colors until the palette is full. */
+export function subagentRoleColors(items) {
+  const roles = new Map(), used = new Set();
+  for (const item of items) {
+    if (item.kind !== 'tool' || !item.child && toolRendererKind(item.name) !== 'agent') continue;
+    const role = subagentRole(item);
+    if (typeof role !== 'string' || !role || roles.has(role)) continue;
+    let hash = 2166136261;
+    for (const char of role) hash = Math.imul(hash ^ char.codePointAt(0), 16777619) >>> 0;
+    const start = hash % SUBAGENT_COLORS.length;
+    const colors = [...SUBAGENT_COLORS.slice(start), ...SUBAGENT_COLORS.slice(0, start)];
+    const color = colors.find(candidate => !used.has(candidate)) ?? colors[0];
+    roles.set(role, color);
+    used.add(color);
+  }
+  return roles;
 }
 
 /** "read" splits internally into a file read vs a search/list summary. */
@@ -110,8 +131,7 @@ function toolShell(item, opts, { icon, summary, body, canToggle = true, defaultO
     "data-testid": "tool-error",
   }, errorSummary));
   const visibleStatus = summaryStatus === undefined ? status : summaryStatus;
-  if ([ToolStatus.Failed, ToolStatus.Uncertain, ToolStatus.Interrupted, ToolStatus.Waiting, ToolStatus.NotDispatched,
-    TaskOutcome.Unverified].includes(visibleStatus)) summaryKids.push(h("span", {
+  if ([ToolStatus.Failed, ToolStatus.Uncertain, ToolStatus.Interrupted, ToolStatus.Waiting, ToolStatus.NotDispatched].includes(visibleStatus)) summaryKids.push(h("span", {
     className: `harness-tool-status harness-tool-status-${visibleStatus}`,
     "data-testid": "tool-status",
     "data-status": visibleStatus,
@@ -156,7 +176,7 @@ function agentRenderer(item, opts) {
   const activity = running && child?.activity && toolRendererKind(child.activity.name) === 'read' ? child.activity : null;
   const activityPath = activity && readMeta(activity).path;
   const primary = activityPath ? `${opts.labels.readKind || 'Read'} ${leafName(activityPath)}` : title;
-  const role = child?.role || item.input?.role || item.input?.subagent_type || '';
+  const role = subagentRole(item);
   const icon = h('svg', { className: 'harness-icon harness-tool-kind-icon', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
     h('path', { d: 'M12 8V4H8' }), h('rect', { width: 16, height: 12, x: 4, y: 8, rx: 2 }),
     h('path', { d: 'M2 14h2M20 14h2M15 13v2M9 13v2' }));
@@ -167,15 +187,12 @@ function agentRenderer(item, opts) {
   const hasErrorDetails = item.status === ToolStatus.Failed && Boolean(item.error);
   const openLabel = opts.labels.openSubagent || 'Open on the right';
   const openAction = child && opts.onOpenSubagent ? { type: 'button', 'data-action': 'open-subagent', 'data-call-id': item.callId } : null;
-  const completedUnverified = item.status === ToolStatus.Completed && child?.phase === 'completed'
-    && child.outcome === TaskOutcome.Unverified;
   return toolShell(item, opts, { icon, canToggle: hasErrorDetails, errorInDetails: hasErrorDetails,
-    summaryStatus: completedUnverified ? TaskOutcome.Unverified : undefined,
     body: hasErrorDetails && openAction ? [h('button', { ...openAction, className: 'harness-tool-action' }, openLabel)] : [],
     summaryAction: !hasErrorDetails && openAction
       ? { ...openAction, 'aria-label': openLabel, title: String(title).slice(0, 512) } : undefined,
     summary: [h('span', { className: running ? 'harness-tool-title harness-tool-title-streaming' : 'harness-tool-title' }, opts.labels.subagent || 'SubAgent'),
-      role ? h('span', { className: 'harness-agent-name' }, role) : null,
+      role ? h('span', { className: 'harness-agent-name', 'data-role-color': opts.subagentRoleColors?.get(role) }, role) : null,
       h('span', { className: 'harness-agent-separator', 'aria-hidden': true }, '·'),
       h('span', { className: 'harness-agent-title' }, String(primary).slice(0, 512))] });
 }
@@ -192,7 +209,6 @@ function statusLabel(status, opts) {
     case "scheduled": return l.toolScheduled || "queued";
     case "running": return l.toolRunning || "running";
     case "completed": return l.toolCompleted || "done";
-    case "unverified": return l.toolCompletedUnverified || "Completed, unverified";
     case "failed": return l.toolFailed || "failed";
     case "not_dispatched": return l.toolNotDispatched || (String(opts.locale ?? '').startsWith('zh') ? '未执行' : 'not executed');
     case "uncertain": return l.toolUncertain || "outcome unknown";

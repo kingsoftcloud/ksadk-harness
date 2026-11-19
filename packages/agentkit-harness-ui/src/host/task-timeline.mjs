@@ -16,7 +16,7 @@ const labels = { result: '执行结果', thought: '思考', running: '执行中'
   failed: '任务失败', completed: '已完成', cancelled: '已停止', blocked: '任务受阻', unverified: '已结束，结果未验证',
   waiting: '等待确认或回执', paused: '已暂停', toolScheduled: '排队中', toolRunning: '执行中', toolCompleted: '已返回',
   toolFailed: '执行失败', toolUncertain: '执行结果未知', toolNotDispatched: '未执行',
-  toolCompletedUnverified: '已完成，未验证', toolRetryHistory: '重试记录', jumpLatest: '回到最新',
+  toolRetryHistory: '重试记录', jumpLatest: '回到最新',
   readKind: '读取', readReading: '读取中', listKind: '列出文件', listSearching: '列出文件中', searchKind: '搜索', searchSearching: '搜索中',
   searchQuery: '搜索词', searchScope: '搜索范围', searchGlob: '文件匹配规则', searchMatches: '返回命中数', searchResultsTruncated: '部分命中位置已省略',
   readPath: '文件路径', readLines: '已读取行', readRequestedLines: '请求读取行', readOffset: '起始偏移', readLimit: '读取上限',

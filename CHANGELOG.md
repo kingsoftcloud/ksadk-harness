@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.0.27 - 2026-11-19
+
+- Publish a signed Studio upgrade manifest with a matching engine and task UI.
+
 ## 0.0.26 - 2026-11-19
 
 - Show final subagent outcomes after retries, preserving attempt details.

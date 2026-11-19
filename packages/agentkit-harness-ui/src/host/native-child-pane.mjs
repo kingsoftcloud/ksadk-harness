@@ -23,7 +23,7 @@ export function installNativeChildPane(ctx, { React, hostRemote, labels, renderT
       const read = async () => {
         try {
           const detail = await hostRemote.nativeChildResult({ agentId: target.agentId, sessionId: target.parentSessionId,
-            runId: target.parentRunId, childRunId: target.runId }, controller.signal);
+            runId: target.parentRunId, childRunId: target.runId, limit: 16000 }, controller.signal);
           if (!controller.signal.aborted) { setView(nativeChildObservationState(detail)); setError(''); terminal = ['completed', 'failed', 'canceled'].includes(detail.observation.phase); }
         } catch { if (!controller.signal.aborted) setError('子会话同步失败，请重新打开'); }
         finally { if (!controller.signal.aborted) timer = setTimeout(read, terminal ? 3000 : 500); }

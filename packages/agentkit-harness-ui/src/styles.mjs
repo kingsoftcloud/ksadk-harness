@@ -267,6 +267,23 @@ button.harness-tool-summary { border: 0; background: none; color: inherit; font:
   color: var(--harness-agent-role); font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-weight: 500; line-height: 1.5;
 }
+.harness-agent-name[data-role-color="violet"] { color: #6d28d9; }
+.harness-agent-name[data-role-color="teal"] { color: #0f766e; }
+.harness-agent-name[data-role-color="amber"] { color: #92400e; }
+.harness-agent-name[data-role-color="green"] { color: #166534; }
+.harness-agent-name[data-role-color="indigo"] { color: #4338ca; }
+@media (prefers-color-scheme: dark) {
+  .harness-timeline-shell:not([data-theme="light"]) .harness-agent-name[data-role-color="violet"] { color: #d8b4fe; }
+  .harness-timeline-shell:not([data-theme="light"]) .harness-agent-name[data-role-color="teal"] { color: #5eead4; }
+  .harness-timeline-shell:not([data-theme="light"]) .harness-agent-name[data-role-color="amber"] { color: #fcd34d; }
+  .harness-timeline-shell:not([data-theme="light"]) .harness-agent-name[data-role-color="green"] { color: #86efac; }
+  .harness-timeline-shell:not([data-theme="light"]) .harness-agent-name[data-role-color="indigo"] { color: #a5b4fc; }
+}
+[data-theme="dark"] .harness-agent-name[data-role-color="violet"] { color: #d8b4fe; }
+[data-theme="dark"] .harness-agent-name[data-role-color="teal"] { color: #5eead4; }
+[data-theme="dark"] .harness-agent-name[data-role-color="amber"] { color: #fcd34d; }
+[data-theme="dark"] .harness-agent-name[data-role-color="green"] { color: #86efac; }
+[data-theme="dark"] .harness-agent-name[data-role-color="indigo"] { color: #a5b4fc; }
 .harness-agent-title { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--harness-fg-muted); }
 .harness-tool-summary:has(.harness-agent-title) .harness-tool-status { flex-shrink: 0; white-space: nowrap; }
 .harness-tool-details:has(.harness-agent-title) > .harness-tool-error { margin: 6px 0 0 24px; overflow-wrap: anywhere; }

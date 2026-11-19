@@ -18,7 +18,7 @@ import { latestSummaryLine } from './summary-playback.mjs';
 
 import { visibleItems, isWaitingForFirstToken, planProgress, resolvedDelegateAttempts, DEFAULT_LABELS } from "./project.mjs";
 import { latestNonEmptyLine, truncateText } from "./summary.mjs";
-import { renderTool } from "./renderers.mjs";
+import { renderTool, subagentRoleColors } from "./renderers.mjs";
 import { isRetryableEditFailure } from "./tool-error.mjs";
 import { toolIdentity } from "./tool-identity.mjs";
 import { activityGroups, activityGroupSummary } from './activity-groups.mjs';
@@ -161,6 +161,7 @@ export function buildViewModel(state, options = {}) {
   opts.labels = { ...DEFAULT_LABELS, ...(options.labels || {}) };
   const items = visibleItems(state);
   opts.resolvedDelegateAttempts = resolvedDelegateAttempts(items);
+  opts.subagentRoleColors = subagentRoleColors(items);
   const plan = planProgress(state);
   const rootChildren = [];
   if (plan && opts.showPlanDock !== false) rootChildren.push(planDock(plan, opts));

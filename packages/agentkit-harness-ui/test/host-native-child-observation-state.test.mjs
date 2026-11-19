@@ -30,3 +30,22 @@ test('read-only child mapping retains live provider content, known failures and 
   assert.equal(nativeChildObservationState(detail).state.taskState, 'interrupted');
   detail.observation.runId = 'other'; assert.throws(() => nativeChildObservationState(detail), /不一致/);
 });
+test('child observation shows its settled structured answer without a false interruption', () => {
+  const text = '{"currency":"CNY","net":180}';
+  const detail = { task: { childRunId: 'child', sessionId: 's', resultAvailable: true },
+    offset: 0, nextOffset: text.length, totalChars: text.length, complete: true, text,
+    observation: { contract: 'agentkit.native-child-observation/v1', runId: 'child', sessionId: 's',
+      snapshotRevision: 2, phase: 'completed', outcome: 'unverified', prompt: { text: 'Sum the orders' },
+      rows: [{ id: 'submission', kind: 'tool', name: 'submit_final_output',
+        input: { text: '{"output":{"net":999}}' }, status: 'interrupted' }] } };
+  const view = nativeChildObservationState(detail);
+  assert.equal(view.state.taskState, 'unverified');
+  assert.equal(view.state.verificationRequired, true);
+  assert.equal(view.state.finalAnswerId, 'final-answer');
+  assert.deepEqual(view.state.items.map(item => item.text), ['Sum the orders', text]);
+  detail.observation.rows.unshift({ id: 'observed', kind: 'text', text });
+  assert.deepEqual(nativeChildObservationState(detail).state.items.map(item => item.text), ['Sum the orders', text]);
+  detail.task.resultAvailable = false;
+  detail.observation.rows.shift();
+  assert.equal(nativeChildObservationState(detail).state.items.length, 1);
+});

@@ -207,6 +207,7 @@ function normalizePayload(type, event) {
         || !child.runId || !child.sessionId || !child.parentRunId || child.title.length > 512) throw Error('Invalid subagent identity');
       return { callId: str(event.callId), child: { runId: child.runId, sessionId: child.sessionId,
         parentRunId: child.parentRunId, role: child.role, title: child.title, phase: str(child.phase),
+        ...(TASK_OUTCOMES.has(child.outcome) ? { outcome: child.outcome } : {}),
         activity: child.activity && typeof child.activity.name === 'string' && TOOL_STATUSES.has(child.activity.status)
           ? { name: child.activity.name, input: asObject(child.activity.input), status: child.activity.status } : null } };
     }

@@ -7,6 +7,11 @@ streaming assistant text, provider-supplied thinking, and live tool calls —
 with ordered items, replay-safe deduplication, bounded summaries, and redacted
 errors.
 
+Subagent cards use one theme-aware blue for role names. The optional
+`subagent.bound.child.outcome` field shows when a completed child has an
+unverified result. Failed delegations keep detailed errors behind a disclosure,
+and a matching, completed retry moves the initial rejection into retry history.
+
 The package is intentionally free of Studio / DSH / Python imports. React is a
 **peer dependency** (`>=18`). Source is plain ESM (`.mjs`, no JSX) and is
 exposed directly, with no transpiler required at runtime. The optional Markdown

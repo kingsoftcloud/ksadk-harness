@@ -310,7 +310,7 @@ export function bindNativeSubagents(state, tasks) {
     if (!task.parentToolCallId || !state.items.some(item => item.kind === 'tool' && item.callId === task.parentToolCallId)) continue;
     next = reduce(next, { v: 1, type: 'subagent.bound', id: `child:${task.childRunId}:${task.snapshotRevision}`,
       callId: task.parentToolCallId, child: { runId: task.childRunId, sessionId: task.sessionId, parentRunId: task.parentRunId,
-        role: task.role, title: task.goalPreview, phase: task.phase, activity: task.activity } });
+        role: task.role, title: task.goalPreview, phase: task.phase, outcome: task.outcome, activity: task.activity } });
   }
   return next;
 }

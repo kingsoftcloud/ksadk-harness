@@ -12,6 +12,7 @@ export const styles = `
   --harness-bg: transparent;
   --harness-border: color-mix(in srgb, currentColor 14%, transparent);
   --harness-running: #0969da;
+  --harness-agent-role: #0369a1;
   --harness-error: #cf222e;
   --harness-added: #1a7f37;
   --harness-removed: #cf222e;
@@ -30,14 +31,15 @@ export const styles = `
 @media (prefers-color-scheme: dark) {
   .harness-timeline-shell {
     --harness-running: #4493f8;
+    --harness-agent-role: #7dd3fc;
     --harness-error: #ff7b72;
     --harness-added: #4ac26b;
     --harness-removed: #ff7b72;
     --harness-thought: color-mix(in srgb, currentColor 30%, transparent);
   }
 }
-.harness-timeline-shell[data-theme="dark"] { --harness-running: #4493f8; --harness-error: #ff7b72; --harness-added: #4ac26b; --harness-removed: #ff7b72; --harness-thought: color-mix(in srgb, currentColor 30%, transparent); }
-.harness-timeline-shell[data-theme="light"] { --harness-running: #0969da; --harness-error: #cf222e; --harness-added: #1a7f37; --harness-removed: #cf222e; --harness-thought: color-mix(in srgb, currentColor 40%, transparent); }
+.harness-timeline-shell[data-theme="dark"] { --harness-running: #4493f8; --harness-agent-role: #7dd3fc; --harness-error: #ff7b72; --harness-added: #4ac26b; --harness-removed: #ff7b72; --harness-thought: color-mix(in srgb, currentColor 30%, transparent); }
+.harness-timeline-shell[data-theme="light"] { --harness-running: #0969da; --harness-agent-role: #0369a1; --harness-error: #cf222e; --harness-added: #1a7f37; --harness-removed: #cf222e; --harness-thought: color-mix(in srgb, currentColor 40%, transparent); }
 .harness-timeline {
   display: flex;
   flex-direction: column;
@@ -259,17 +261,17 @@ export const styles = `
 .harness-context-marker > svg { flex-shrink: 0; }
 
 button.harness-tool-summary { border: 0; background: none; color: inherit; font: inherit; text-align: left; padding: 0; cursor: pointer; max-width: 100%; }
-.harness-agent-name { display: inline-flex; align-items: center; flex-shrink: 0; max-width: 9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 500; line-height: 1.5; }
+.harness-agent-name {
+  display: inline-flex; align-items: center; flex-shrink: 0; max-width: 9rem;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: var(--harness-agent-role); font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 500; line-height: 1.5;
+}
 .harness-agent-title { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--harness-fg-muted); }
+.harness-tool-summary:has(.harness-agent-title) .harness-tool-status { flex-shrink: 0; white-space: nowrap; }
+.harness-tool-details:has(.harness-agent-title) > .harness-tool-error { margin: 6px 0 0 24px; overflow-wrap: anywhere; }
+.harness-tool-details:has(.harness-agent-title) > summary .harness-tool-chevron { opacity: 1; }
 .harness-agent-separator { flex: 0 0 auto; color: var(--harness-fg-muted); }
-.harness-agent-name[data-color="blue"] { color: #0369a1; } .harness-agent-name[data-color="cyan"] { color: #0e7490; }
-.harness-agent-name[data-color="green"] { color: #047857; } .harness-agent-name[data-color="orange"] { color: #c2410c; }
-.harness-agent-name[data-color="pink"] { color: #be185d; } .harness-agent-name[data-color="purple"] { color: #6d28d9; }
-.harness-agent-name[data-color="red"] { color: #be123c; } .harness-agent-name[data-color="yellow"] { color: #b45309; }
-[data-theme="dark"] .harness-agent-name[data-color="blue"] { color: #7dd3fc; } [data-theme="dark"] .harness-agent-name[data-color="cyan"] { color: #67e8f9; }
-[data-theme="dark"] .harness-agent-name[data-color="green"] { color: #6ee7b7; } [data-theme="dark"] .harness-agent-name[data-color="orange"] { color: #fdba74; }
-[data-theme="dark"] .harness-agent-name[data-color="pink"] { color: #f9a8d4; } [data-theme="dark"] .harness-agent-name[data-color="purple"] { color: #c4b5fd; }
-[data-theme="dark"] .harness-agent-name[data-color="red"] { color: #fda4af; } [data-theme="dark"] .harness-agent-name[data-color="yellow"] { color: #fcd34d; }
 
 .harness-subagent-pane { padding: 16px; height: 100%; min-height: 0; overflow: auto; }
 .harness-subagent-window-notice { font-size: 12px; color: var(--harness-fg-muted, #888); }

@@ -16,7 +16,7 @@ import { latestSummaryLine } from './summary-playback.mjs';
 // React binding in components.mjs maps this tree to React.createElement and
 // attaches delegated event handlers on the root.
 
-import { visibleItems, isWaitingForFirstToken, planProgress, DEFAULT_LABELS } from "./project.mjs";
+import { visibleItems, isWaitingForFirstToken, planProgress, resolvedDelegateAttempts, DEFAULT_LABELS } from "./project.mjs";
 import { latestNonEmptyLine, truncateText } from "./summary.mjs";
 import { renderTool } from "./renderers.mjs";
 import { isRetryableEditFailure } from "./tool-error.mjs";
@@ -160,6 +160,7 @@ export function buildViewModel(state, options = {}) {
   // destructure must not clobber the defaults.
   opts.labels = { ...DEFAULT_LABELS, ...(options.labels || {}) };
   const items = visibleItems(state);
+  opts.resolvedDelegateAttempts = resolvedDelegateAttempts(items);
   const plan = planProgress(state);
   const rootChildren = [];
   if (plan && opts.showPlanDock !== false) rootChildren.push(planDock(plan, opts));

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.0.26 - 2026-11-19
+
+- Show final subagent outcomes after retries, preserving attempt details.
+- Show settled subagent results and distinguish roles by color. Keep acceptance
+  evidence in the ledger without adding acceptance badges to the conversation.
+- Tighten DeepSeek DSML filtering so transport fragments stay out of replies.
+
 ## 0.0.25 - 2026-11-16
 
 - Resume streaming DeepSeek reply text immediately after DSML closing tags.

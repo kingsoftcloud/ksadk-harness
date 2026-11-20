@@ -19,6 +19,7 @@ import { validateMediaBlock } from './model-media.mjs';
 import { admitProviderCompatibilityPolicy } from './model-provider-compat.mjs';
 import { isProviderCompatibilityRule } from './model-inline-reasoning.mjs';
 import { bindNativeContext, nativeContextDefaults } from './context-profile.mjs';
+import { privateDirectory } from './local-command-state.mjs';
 import { createEngineDeliveryJournal, engineDeliveryEvidence } from './engine-delivery-evidence.mjs';
 import { createNativeWorkspaceTools } from './workspace-tools.mjs';
 import { createNativeLocalCommandTools } from './local-command-tools.mjs';
@@ -215,6 +216,8 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
     && scope && ['tenantId', 'workspaceId', 'userId', 'agentId'].every(key => text(scope[key])), 'engine_runtime_invalid');
   const root = realpathSync(resolve(workspaceRoot));
   mkdirSync(stateDir, { recursive: true });
+  const windows = process.platform === 'win32';
+  if (windows) privateDirectory(realpathSync(stateDir));
   const description = admitEngineModel(model);
   const roles = nativeChildRoles({ subAgents });
   const supportsImages = description.input.includes('image');
@@ -230,7 +233,7 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
   const local = execution.localExecution(executionOptions);
   const workspace = createNativeWorkspaceTools({ workspaceRoot: root, stateDir: join(stateDir, 'workspace'), sessionId, authorize: decide });
   const deliveries = createEngineDeliveryJournal(join(stateDir, 'delivery'), () => workspace.captureDelivery());
-  const commands = createNativeLocalCommandTools({ workspaceRoot: root, stateRoot: join(stateDir, 'commands'), sessionId,
+  const commands = windows ? null : createNativeLocalCommandTools({ workspaceRoot: root, stateRoot: join(stateDir, 'commands'), sessionId,
     settings: local.settings, sourceEnv: local.environment, outputPolicy: local.outputPolicy, environmentPolicy: local.environmentPolicy,
     shellPolicy: commandSandbox,
     artifacts, authorize: (request, info) => decide(request, true, info?.readOnlyCommand),
@@ -241,7 +244,7 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
   // Do not advertise a search which can only return provider_not_configured.
   // Public page fetching remains available independently of search credentials.
   if (!search.configured) web.definitions = web.definitions.filter(tool => tool.name !== 'web_search');
-  const owners = [workspace, commands, web];
+  const owners = [workspace, ...(commands ? [commands] : []), web];
   const route = new Map(owners.flatMap(port => port.definitions.map(definition => [definition.name, port])));
   // Anything a Run advertises that the engine does not own was admitted as a host tool.
   const hostPort = {
@@ -330,17 +333,17 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
   const modelSurface = bindNativeModelSurface({ environment: execution.executionEnvironment(executionOptions), description });
   const modelPort = createNativeModelPort({ fetchImpl, resolveProfile: async () => ({ protocol: description.protocol, baseUrl: description.baseUrl,
     apiKey: await model.apiKey(), model: description.modelName, parameters: description.parameters }) });
-  const background = createBackgroundCommandPort({ scope, store, readers: { local_process: commands.reader } });
+  const background = createBackgroundCommandPort({ scope, store, readers: commands ? { local_process: commands.reader } : {} });
   const lifetime = new AbortController();
   const childDefinitions = [];
   let children;
   if (roles.length) {
     try {
-      const childTools = [...workspace.definitions, ...commands.definitions].map(tool => tool.readOnly
+      const childTools = [...workspace.definitions, ...(commands?.definitions ?? [])].map(tool => tool.readOnly
         ? tool : { ...tool, approvalPolicy: DURABLE_APPROVAL });
       const fileWorkspaces = createStudioNativeChildWorkspaces({ workspaceRoot: root, stateDir });
-      const commandResource = childCommandResource({ ...local.binding,
-        controls: { ...local.binding.controls, shellPolicy: commandSandbox ?? local.binding.controls.shellPolicy } });
+      const commandResource = commands ? childCommandResource({ ...local.binding,
+        controls: { ...local.binding.controls, shellPolicy: commandSandbox ?? local.binding.controls.shellPolicy } }) : null;
       children = await createNativeChildren({ roles, scope, sessionId, store, tools: childTools, fileWorkspaces,
         commandResource, isClosed: () => lifetime.signal.aborted, detachSignal: lifetime.signal,
         restrictTools: (tools, parent) => tools.flatMap(tool => {
@@ -360,7 +363,7 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
           const childState = join(stateDir, 'children', digest({ childScope, childSession }));
           const files = createNativeWorkspaceTools({ workspaceRoot: childRoot, stateDir: join(childState, 'workspace'),
             sessionId: childSession, authorize: decide });
-          const command = executionResource ? createNativeLocalCommandTools({ workspaceRoot: childRoot,
+          const command = commands && executionResource ? createNativeLocalCommandTools({ workspaceRoot: childRoot,
             stateRoot: join(childState, 'commands'), sessionId: childSession, settings: local.settings, sourceEnv: local.environment,
             outputPolicy: local.outputPolicy, environmentPolicy: local.environmentPolicy, shellPolicy: commandSandbox,
             authorize: decide, captureWorkspace: request => files.capture(request),

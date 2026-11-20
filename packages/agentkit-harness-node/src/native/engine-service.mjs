@@ -10,6 +10,8 @@ import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { engineStartupFromArgs, engineView, serveEngine } from './engine-server.mjs';
 import { ENGINE_EXECUTION_POLICY } from './engine-runtime.mjs';
+import { privateDirectory } from './local-command-state.mjs';
+import { isInside } from './workspace-paths.mjs';
 import { createEngineViewStore } from './engine-view-store.mjs';
 import { ENGINE_TOOL_POLICY } from './engine-tool-policy.mjs';
 import { ENGINE_CONTEXT } from './engine-context.mjs';
@@ -187,8 +189,9 @@ export function createEngineService({ startup, token, env = process.env, fetchIm
   mkdirSync(startup.stateDir, { recursive: true, mode: 0o700 });
   const stateDir = realpathSync(startup.stateDir);
   const workspace = realpathSync(startup.workspace);
-  if (workspace === stateDir || workspace.startsWith(stateDir + '/') || stateDir.startsWith(workspace + '/'))
+  if (isInside(workspace, stateDir) || isInside(stateDir, workspace))
     throw new Error('engine_service_workspace_state_overlap');
+  if (process.platform === 'win32') privateDirectory(stateDir);
   if (startup.commandSandbox !== undefined) {
     if (startup.commandSandbox !== ISOLATED_COMMAND_SHELL) throw new Error('engine_service_sandbox_invalid');
     const [command, ...args] = shellCommandArgv(':', startup.commandSandbox, { workspaceRoot: workspace, cwd: workspace });

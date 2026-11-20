@@ -4,6 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { constants, closeSync, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync,
   openSync, readFileSync, readSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { verifyWindowsPrivateState } from './windows-private-state.mjs';
 import { validCommandEvidence } from './local-command-evidence.mjs';
 
 export const LOCAL_BACKGROUND_CONTRACT = 'agentkit.local-background-command/v1';
@@ -24,6 +25,10 @@ function noSymlinks(path) {
     if (dirname(part) === part) break;
   }
 }
+function hasPrivatePermissions(path, stat) {
+  return process.platform === 'win32' ? verifyWindowsPrivateState(resolve(path), stat)
+    : stat.uid === process.getuid() && (stat.mode & 0o077) === 0;
+}
 export function privateDirectory(path, create = false) {
   noSymlinks(path);
   if (create) {
@@ -33,12 +38,12 @@ export function privateDirectory(path, create = false) {
     for (const part of missing.reverse()) { syncDirectory(part); syncDirectory(dirname(part)); }
   }
   const stat = lstatSync(path);
-  check(stat.isDirectory() && stat.uid === process.getuid() && (stat.mode & 0o077) === 0, 'background_state_not_private');
+  check(stat.isDirectory() && hasPrivatePermissions(path, stat), 'background_state_not_private');
 }
 export function privateFile(path, allowMissing = false) {
   try {
     const stat = lstatSync(path);
-    check(stat.isFile() && stat.uid === process.getuid() && (stat.mode & 0o077) === 0,
+    check(stat.isFile() && hasPrivatePermissions(path, stat),
       'background_state_not_private');
     // Atomic publication can unlink the inode while lstat is observing it.
     // It is never usable evidence; read-only callers may retry the new inode.
@@ -66,6 +71,9 @@ export function openPrivate(path, flags) {
   }
 }
 export function syncDirectory(directory) {
+  // Node opens directory handles read-only on Windows. File data is still
+  // flushed before rename, and SQLite journals use their native Windows VFS.
+  if (process.platform === 'win32') return;
   const fd = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   try { fsyncSync(fd); } finally { closeSync(fd); }
 }

@@ -7,9 +7,9 @@ export class ModelStreamLimitError extends ProtocolError {}
 export function createModelStreamBudget(maxOutputBytes, maxToolBytes) {
   let outputBytes = 0;
   const toolBytes = new WeakMap();
-  const retain = (bytes) => {
+  const retain = (bytes, code = 'stream_output_limit') => {
     if (outputBytes + bytes > maxOutputBytes) {
-      throw new ModelStreamLimitError('assembled model output exceeded the byte limit', 'stream_output_limit');
+      throw new ModelStreamLimitError('assembled model output exceeded the byte limit', code);
     }
     outputBytes += bytes;
   };
@@ -23,7 +23,8 @@ export function createModelStreamBudget(maxOutputBytes, maxToolBytes) {
       if (total > maxToolBytes) {
         throw new ModelStreamLimitError('assembled tool input exceeded the byte limit', 'tool_argument_limit');
       }
-      retain(bytes);
+      // A tool fragment exhausting the shared budget also needs smaller calls.
+      retain(bytes, 'tool_argument_limit');
       toolBytes.set(call, total);
     },
   };

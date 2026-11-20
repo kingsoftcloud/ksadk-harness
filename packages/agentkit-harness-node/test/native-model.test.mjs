@@ -1080,9 +1080,13 @@ test('default SSE reads a response larger than 8 MiB and dispatches the sealed w
 
 test('oversized tool batches never dispatch and one smaller generation can recover without replaying prior tools', async () => {
   const large = ['{"content":"', ...Array(17).fill('x'.repeat(512 * 1024)), '"}'];
+  // This batch exhausts the shared retention budget before the raw arguments
+  // hit their own limit, because its tool name, ID and slot also retain memory.
+  const sharedOverflow = ['{"content":"', ...Array(15).fill('x'.repeat(512 * 1024)),
+    'x'.repeat(512 * 1024 - 64), '"}'];
   const previous = streamedWrite(['{"content":"previous"}']);
   const smaller = streamedWrite(['{"content":"smaller"}']).join('').replace('write-1', 'write-2');
-  for (const recover of [true, false]) {
+  for (const [oversized, recover] of [[large, true], [large, false], [sharedOverflow, true]]) {
     const writes = [];
     let recoveryFeedback;
     const store = new MemoryRunStore();
@@ -1093,7 +1097,7 @@ test('oversized tool batches never dispatch and one smaller generation can recov
     await withServer((_req, body, attempt) => {
       if (attempt === 2) recoveryFeedback = body;
       const response = attempt === 0 ? previous : attempt === 1 || attempt === 2 && !recover
-        ? streamedWrite(large) : attempt === 2 ? smaller : sse(ochunk({ content: 'Delivered.' }, 'stop')) + sseDone();
+        ? streamedWrite(oversized) : attempt === 2 ? smaller : sse(ochunk({ content: 'Delivered.' }, 'stop')) + sseDone();
       return { headers: SSE_HEADERS, body: response };
     }, async server => {
       const model = createNativeModelPort({ resolveProfile: async () => ({

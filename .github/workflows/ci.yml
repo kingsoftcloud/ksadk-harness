@@ -42,3 +42,16 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npx --no-install playwright install --with-deps chromium
       - run: make browser-gate
+  windows-engine-storage:
+    name: windows-engine-storage
+    runs-on: windows-2025
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.4
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - run: node --test packages/agentkit-harness-node/test/native-engine-private-state.test.mjs

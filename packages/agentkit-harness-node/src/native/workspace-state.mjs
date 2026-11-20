@@ -21,7 +21,7 @@
  * JSON files for audit/inspection only.
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 
 const READ_STATE_VERSION = 'native-workspace-read-state/v1';
@@ -244,9 +244,9 @@ export class WorkspaceStateStore {
 
 /** Write JSON atomically (temp sibling + rename) to avoid torn reads on restart. */
 export function atomicWriteJson(dest, value) {
-  const dir = join(dest, '..');
+  const dir = dirname(dest);
   mkdirSync(dir, { recursive: true });
-  const tmp = join(dir, `.${dest.split('/').pop()}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`);
+  const tmp = join(dir, `.${basename(dest)}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`);
   writeFileSync(tmp, JSON.stringify(value), 'utf-8');
   renameSync(tmp, dest);
 }

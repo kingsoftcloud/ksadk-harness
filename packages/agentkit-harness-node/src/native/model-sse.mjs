@@ -1,7 +1,7 @@
 // Strict SSE byte framing for the native model transport.
 //
 // Ports ksadk._model_sse: UTF-8 is deliberately strict (replacing corrupt bytes
-// inside JSON changes model facts), a byte budget bounds the whole body, and a
+// inside JSON changes model facts), byte budgets bound partial lines and frames, and a
 // blank line is the only frame dispatch. A discarded terminal fragment at EOF
 // is an unfinished frame, never a complete response. Idle silence is bounded.
 //
@@ -38,14 +38,17 @@ function toAsyncIterator(body) {
 // Stateful line framer mirroring ksadk._model_sse._Framer. CRLF/CR/LF all
 // terminate lines; a blank line dispatches a frame from accumulated data lines.
 class SseFramer {
-  constructor() {
+  constructor(maxFrameBytes) {
+    this.maxFrameBytes = maxFrameBytes;
+    this.lineBytes = 0;
+    this.dataBytes = 0;
     this.lineParts = [];
     this.dataLines = [];
     this.eventName = '';
     this.afterCr = false;
   }
 
-  feed(text, frames) {
+  *feed(text) {
     if (!text) return;
     if (this.afterCr) {
       if (text.startsWith('\n')) text = text.slice(1);
@@ -53,15 +56,28 @@ class SseFramer {
     }
     let start = 0;
     for (const m of text.matchAll(/\r\n|\r|\n/g)) {
-      this.lineParts.push(text.slice(start, m.index));
+      this.appendLine(text.slice(start, m.index));
       const line = this.lineParts.join('');
       this.lineParts = [];
+      this.lineBytes = 0;
       start = m.index + m[0].length;
       this.afterCr = m[0] === '\r' && start === text.length;
       const frame = this.handleLine(line);
-      if (frame) frames.push(frame);
+      if (frame) yield frame;
     }
-    if (start < text.length) this.lineParts.push(text.slice(start));
+    if (start < text.length) this.appendLine(text.slice(start));
+  }
+
+  appendLine(part) {
+    this.lineBytes += Buffer.byteLength(part);
+    this.checkFrameBytes(this.lineBytes);
+    this.lineParts.push(part);
+  }
+
+  checkFrameBytes(bytes) {
+    if (bytes > this.maxFrameBytes) {
+      throw new SseFramingError('model SSE line or event exceeded the byte limit', 'stream_frame_limit');
+    }
   }
 
   handleLine(line) {
@@ -69,6 +85,7 @@ class SseFramer {
       if (this.dataLines.length === 0) { this.eventName = ''; return null; }
       const frame = { data: this.dataLines.join('\n'), event: this.eventName || '' };
       this.dataLines = [];
+      this.dataBytes = 0;
       this.eventName = '';
       return frame;
     }
@@ -77,8 +94,14 @@ class SseFramer {
     const name = sep === -1 ? line : line.slice(0, sep);
     let value = sep === -1 ? '' : line.slice(sep + 1);
     if (value.startsWith(' ')) value = value.slice(1);
-    if (name === 'data') this.dataLines.push(value);
-    else if (name === 'event') this.eventName = value;
+    if (name === 'data') {
+      this.dataBytes += Buffer.byteLength(value) + Number(this.dataLines.length > 0);
+      this.checkFrameBytes(this.dataBytes + Buffer.byteLength(this.eventName));
+      this.dataLines.push(value);
+    } else if (name === 'event') {
+      this.checkFrameBytes(this.dataBytes + Buffer.byteLength(value));
+      this.eventName = value;
+    }
     // `id` and `retry` are transport controls, not model payloads; ignore them.
     return null;
   }
@@ -96,20 +119,22 @@ class SseFramer {
  * Yield { data, event } SSE frames from a byte stream with strict framing.
  *
  * @param body fetch response body (ReadableStream or async iterable of bytes)
- * @param {maxBytes, idleTimeoutMs, abort} bounds. maxBytes bounds total bytes;
+ * @param {maxFrameBytes, maxBytes, idleTimeoutMs, abort} bounds. maxFrameBytes bounds a line or event;
+ *   maxBytes is an optional explicit whole-response ceiling for callers.
  *   idleTimeoutMs bounds silence between nonempty frames: when it fires, abort
  *   is called with an IdleTimeout so the underlying fetch aborts and the
  *   pending read rejects cleanly (no orphaned read to cancel). Throws
  *   SseFramingError (terminal) or propagates transport/abort errors.
  */
-export async function* readModelSse(body, { maxBytes = 8 * 1024 * 1024, idleTimeoutMs, abort, observeBytes } = {}) {
-  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+export async function* readModelSse(body, { maxFrameBytes = 8 * 1024 * 1024, maxBytes, idleTimeoutMs, abort, observeBytes } = {}) {
+  if (!Number.isSafeInteger(maxFrameBytes) || maxFrameBytes <= 0
+    || maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes <= 0)) {
     throw new SseFramingError('model SSE needs a positive byte budget');
   }
   const iter = toAsyncIterator(body);
   const decoder = new TextDecoder('utf-8', { fatal: true });
-  const framer = new SseFramer();
-  let total = 0;
+  const framer = new SseFramer(maxFrameBytes);
+  let wireBytes = 0;
   const idleEnabled = typeof idleTimeoutMs === 'number' && idleTimeoutMs > 0 && typeof abort === 'function';
   let idleTimer = null;
   const armIdle = () => {
@@ -120,7 +145,6 @@ export async function* readModelSse(body, { maxBytes = 8 * 1024 * 1024, idleTime
   };
   const disarmIdle = () => { if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; } };
   armIdle();
-  const frames = [];
   try {
     while (true) {
       let result;
@@ -130,18 +154,18 @@ export async function* readModelSse(body, { maxBytes = 8 * 1024 * 1024, idleTime
       if (!(chunk instanceof Uint8Array) && !(chunk instanceof ArrayBuffer)) {
         throw new SseFramingError('model SSE requires byte chunks');
       }
-      total += chunk.byteLength;
       observeBytes?.(chunk.byteLength);
-      if (total > maxBytes) throw new SseFramingError('model SSE byte budget exceeded', 'body_limit');
+      if (maxBytes !== undefined) {
+        wireBytes += chunk.byteLength;
+        if (wireBytes > maxBytes) throw new SseFramingError('model SSE byte budget exceeded', 'body_limit');
+      }
       let text;
       try {
         text = decoder.decode(chunk, { stream: true });
       } catch {
         throw new SseFramingError('invalid utf-8 in model stream', 'body_encoding');
       }
-      frames.length = 0;
-      framer.feed(text, frames);
-      for (const frame of frames) {
+      for (const frame of framer.feed(text)) {
         yield frame;
         // Time spent by the consumer is not provider idle time. Comments and
         // blank data do not reset the deadline; only nonempty data does.
@@ -154,11 +178,7 @@ export async function* readModelSse(body, { maxBytes = 8 * 1024 * 1024, idleTime
     } catch {
       throw new SseFramingError('invalid utf-8 in model stream', 'body_encoding');
     }
-    if (tail) {
-      frames.length = 0;
-      framer.feed(tail, frames);
-      for (const frame of frames) yield frame;
-    }
+    yield* framer.feed(tail);
     framer.finish();
   } finally {
     disarmIdle();

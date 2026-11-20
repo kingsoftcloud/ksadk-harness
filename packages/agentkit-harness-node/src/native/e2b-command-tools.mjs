@@ -34,7 +34,7 @@ export function e2bCommandToolDefinitions(foregroundTimeoutSeconds = 300) {
     && foregroundTimeoutSeconds <= 86400, 'e2b_command_foreground_limit_invalid');
   return [
     base('sandbox_status', 'Report the bound E2B remote sandbox backend and its execution boundary.', {}, [], false, 10000),
-    { ...base('run_command', 'Run a command inside the bound E2B remote sandbox. background=true returns an owned task_id for non-blocking reads via read_command_output; stop_command requests cancellation. The sandbox is remote — cwd is a remote path, not a host-local one. An unknown outcome is never re-launched.',
+    { ...base('run_command', 'Run a command inside the bound E2B remote sandbox. Background commands and foreground commands with large output return an owned task_id for read_command_output; stop_command requests cancellation. The sandbox is remote — cwd is a remote path, not a host-local one. An unknown outcome is never re-launched.',
       { command: { type: 'string', minLength: 1 }, cwd: { anyOf: [{ type: 'string' }, { type: 'null' }] },
         timeout: schemas.nullableSeconds, env: { anyOf: [{ type: 'object', additionalProperties: { type: 'string' } }, { type: 'null' }] },
         background: { type: 'boolean' }, background_timeout: schemas.nullableSeconds },
@@ -353,11 +353,19 @@ function createCommandTools({ sessionId, owner, storeFactory,
           }
           const guardResult = guard(request, before, false, known);
           if (guardResult) return guardResult;
-          const output = handle.readOutput({ stdoutCursor: args.stdout_cursor ?? 0,
-            stderrCursor: args.stderr_cursor ?? 0, maxBytes: args.max_bytes ?? 65536 });
-          const uncertain = output.status === 'unknown' || output.evidenceIncomplete;
-          known = { status: uncertain ? 'uncertain' : 'ok', content: { ok: !uncertain, task_id: args.task_id,
-            ...commandOutput(output), ...originLocator(before, undefined, taskId) } };
+          let pageBytes = args.max_bytes ?? 65536;
+          for (;;) {
+            const output = handle.readOutput({ stdoutCursor: args.stdout_cursor ?? 0,
+              stderrCursor: args.stderr_cursor ?? 0, maxBytes: pageBytes });
+            const uncertain = output.status === 'unknown' || output.evidenceIncomplete;
+            known = { status: uncertain ? 'uncertain' : 'ok', content: { ok: !uncertain, task_id: args.task_id,
+              ...commandOutput(output), ...originLocator(before, undefined, taskId) } };
+            if (Buffer.byteLength(canonical(known.content)) <= maxOutputBytes) break;
+            // Shrink the actual read window, so the cursor never skips bytes
+            // discarded while fitting the tool-result budget.
+            if (pageBytes === 4) return errorResult('e2b_command_output_window_budget_exceeded', { task_id: taskId });
+            pageBytes = Math.max(4, Math.floor(pageBytes / 2));
+          }
         }
         const afterRead = guard(request, before, dispatched, known); if (afterRead) return afterRead;
         return await budget(known, request, before, undefined, taskId);
@@ -440,14 +448,16 @@ function createCommandTools({ sessionId, owner, storeFactory,
         const guardResult3 = guard(request, before, dispatched, known);
         if (guardResult3) return guardResult3;
         // The model sees a bounded preview, but its artifact must contain all
-        // retained foreground output, not just the first 64 KiB cursor window.
+        // retained foreground output while it fits the attachment budget.
+        // Larger output stays available in the existing command spool.
         const stdout = [], stderr = []; let stdoutCursor = 0, stderrCursor = 0, bytes = 0;
+        let pagedOutput = false;
         for (;;) {
           const rejected = guard(request, before, dispatched, known); if (rejected) return rejected;
           output = syncValue(handle.readOutput({ stdoutCursor, stderrCursor, maxBytes: 65536 }));
           invariant(typeof output.stdout === 'string' && typeof output.stderr === 'string', 'e2b_command_output_invalid');
           bytes += Buffer.byteLength(output.stdout) + Buffer.byteLength(output.stderr);
-          invariant(bytes <= 16 * 1024 * 1024, 'e2b_command_retained_output_too_large');
+          if (bytes > 16 * 1024 * 1024) { pagedOutput = true; break; }
           stdout.push(output.stdout); stderr.push(output.stderr);
           if (!output.outputMayBeTruncated) break;
           invariant(Number.isSafeInteger(output.stdoutCursor) && output.stdoutCursor >= stdoutCursor
@@ -455,7 +465,8 @@ function createCommandTools({ sessionId, owner, storeFactory,
             && (output.stdoutCursor > stdoutCursor || output.stderrCursor > stderrCursor), 'e2b_command_output_cursor_stalled');
           stdoutCursor = output.stdoutCursor; stderrCursor = output.stderrCursor;
         }
-        output = { ...output, stdout: stdout.join(''), stderr: stderr.join('') };
+        output = { ...output, stdout: pagedOutput ? utf8Preview(stdout[0], 512) : stdout.join(''),
+          stderr: pagedOutput ? utf8Preview(stderr[0], 512) : stderr.join('') };
         const uncertain = output.status === 'unknown' || output.evidenceIncomplete
           || !TERMINAL.has(output.status)
           || (['timed_out', 'canceled'].includes(output.status) && output.exitCode === null);
@@ -467,7 +478,13 @@ function createCommandTools({ sessionId, owner, storeFactory,
             exit_code: uncertain ? null : output.exitCode,
             observed_exit_code: uncertain ? output.exitCode : null,
             evidence_incomplete: uncertain,
-            ...(output.outcomeReason ? { outcome_reason: output.outcomeReason } : {}) } };
+            ...(pagedOutput ? { output_may_be_truncated: true, stdout_cursor: 0, stderr_cursor: 0,
+              ...(!ownership.codeOnly ? { instruction: 'Read remaining output with read_command_output. Do not rerun the command.' } : {}) } : {}),
+            ...(output.outcomeReason ? { outcome_reason: output.outcomeReason } : {}) },
+          ...(pagedOutput && !uncertain && !ownership.codeOnly ? {
+            backgroundCommandRef: ownership.backgroundRef(before, taskId), backgroundCommandFinished: true,
+          } : {}) };
+        if (pagedOutput) return guard(request, before, dispatched, known) ?? boundResult(known);
       }
       const afterOutput = guard(request, before, dispatched, known); if (afterOutput) return afterOutput;
       return await budget(known, request, before, sandboxId, taskId);

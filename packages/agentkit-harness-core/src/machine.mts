@@ -295,6 +295,8 @@ export function validateModelResult(input: ModelResult): ModelResult {
   invariant(!failure || ['provider_terminal_error', 'provider_retryable_error', 'policy_abort', 'malformed_tool_call'].includes(result.kind)
     || result.kind === 'output_limit' && result.outputBoundary === 'no-visible-output/v1'
       && failure.phase === 'stream' && failure.code === 'reasoning_repetition'
+    || result.kind === 'output_limit' && failure.phase === 'stream'
+      && ['stream_frame_limit', 'stream_output_limit'].includes(failure.code)
     || result.kind === 'context_overflow' && failure.httpStatus === 400
       && (failure.gateway?.code === 'context_length_exceeded' || failure.gateway?.type === 'context_length_exceeded'),
     'model_failure_diagnostic_requires_failure');
@@ -471,7 +473,7 @@ export function reduceModel(snapshot: RunSnapshot, input: ModelResult, config: R
               : result.text ? 'The last response hit its output limit. Return only the exact missing suffix of that response. '
                 + (responseBoundaryRecovery(config) ? 'You may replay the final incomplete line verbatim before continuing; the Host joins this exact overlap. Do not replay any complete line. ' : '')
                 + 'Incomplete tool calls were not executed.'
-                : 'The last response hit its output limit without visible content or a committed tool call. Continue the task from the last committed state; take the next useful action or answer only if the task is complete.' }];
+                : 'The last response hit its output limit without visible content or a committed tool call. Continue from the last committed state in smaller steps; answer only if the task is complete.' }];
         return { mode, messages };
       };
       const exhausted = (): Partial<RunSnapshot> => resumable
@@ -517,18 +519,27 @@ export function reduceModel(snapshot: RunSnapshot, input: ModelResult, config: R
     case 'provider_retryable_error': {
       const provider = result.kind === 'provider_retryable_error';
       const attempts = (provider ? snapshot.providerErrors : snapshot.modelErrors) + 1;
-      const exhausted = attempts > (provider ? config.profile.maxProviderRetries : config.profile.maxRetries);
+      const oversizedTool = result.kind === 'malformed_tool_call' && result.failureDiagnostic?.code === 'tool_argument_limit';
+      const limit = provider ? config.profile.maxProviderRetries
+        : oversizedTool ? Math.min(config.profile.maxRetries, 1) : config.profile.maxRetries;
+      const exhausted = attempts > limit;
       const delay = retryDelay(result, attempts, config, random);
       // An unavailable provider is not a task failure: pause with a fresh budget so the Host can resume later.
       if (provider && exhausted && config.providerRecoveryPolicy === 'provider-recovery/v2') return { ...base, phase: 'paused',
         resumePhase: 'preparing_context', outcome: null, reason: 'provider_unavailable', providerErrors: 0, retryNotBefore: 0 };
+      const messages: Message[] = provider ? snapshot.messages : [...snapshot.messages, { role: 'user', kind: responseContinuationPending(snapshot, config)
+          ? 'response_continuation_feedback' : 'model_feedback',
+          content: oversizedTool
+            ? 'The last tool batch exceeded the tool input size limit and was not executed. Continue the task with smaller tool calls, splitting large file changes into separate edits. Keep all earlier tool results.'
+            : result.kind === 'empty_response' ? 'The last response was empty. Continue the task or provide a complete answer.'
+              : 'The last tool call was malformed and was not executed. Return complete valid tool arguments.' }];
+      if (oversizedTool && exhausted && config.outputRestartPolicy === 'per-response/v2') return { ...base,
+        phase: 'paused', resumePhase: 'preparing_context', outcome: null, reason: 'output_budget_exhausted',
+        modelErrors: 0, retryNotBefore: 0, messages };
       return { ...base, phase: exhausted ? 'finalizing' : 'preparing_context', outcome: exhausted ? 'failed' : null,
         reason: exhausted ? `${result.kind}_retry_exhausted` : null,
         providerErrors: provider ? attempts : base.providerErrors ?? snapshot.providerErrors,
-        modelErrors: provider ? snapshot.modelErrors : attempts, retryNotBefore: exhausted ? 0 : now + delay,
-        messages: provider ? snapshot.messages : [...snapshot.messages, { role: 'user', kind: responseContinuationPending(snapshot, config)
-          ? 'response_continuation_feedback' : 'model_feedback',
-          content: result.kind === 'empty_response' ? 'The last response was empty. Continue the task or provide a complete answer.' : 'The last tool call was malformed and was not executed. Return complete valid tool arguments.' }] };
+        modelErrors: provider ? snapshot.modelErrors : attempts, retryNotBefore: exhausted ? 0 : now + delay, messages };
     }
     case 'policy_abort': return { ...base, phase: 'finalizing', outcome: 'blocked', reason: 'model_policy_abort' };
     case 'user_abort': return { ...base, phase: 'finalizing', outcome: 'unverified', reason: 'model_user_abort' };

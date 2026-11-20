@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.0.28 - 2026-11-20
+
+- Bound individual SSE frames and assembled model output so a valid long response can finish even when transport overhead exceeds 8 MiB.
+- Report response size failures separately from protocol errors. Retry an oversized, unexecuted tool batch once with guidance to split edits when the model binding supports safe replay. Pause resumable Runs if that retry also exceeds the limit.
+- Allow escaped SSE terminal snapshots without increasing assembled-content retention. Continue safe task requests within their output recovery budget when stream limits are reached.
+- Preserve E2B command exit status and cursor access when foreground logs exceed the inline attachment budget.
+
 ## 0.0.27 - 2026-11-19
 
 - Publish a signed Studio upgrade manifest with a matching engine and task UI.

@@ -400,7 +400,7 @@ export function classifyAnthropicStreamError(errorObj) {
 // Streaming state for the Anthropic Messages SSE protocol. Accumulates text,
 // thinking (with signatures), an assembled tool batch and usage across
 // content_block_* and message_* events. Frame errors throw ProtocolError.
-export function createAnthropicStreamState(profile) {
+export function createAnthropicStreamState(profile, budget) {
   const captureReplay = profile.providerReplayMode !== 'none';
   const emitThinking = profile.providerThinkingDisplay ?? profile.providerReplayMode !== 'none';
   return {
@@ -510,6 +510,9 @@ export function createAnthropicStreamState(profile) {
       if (this.blockTypes.has(index) || this.closed.has(index)) {
         throw new ProtocolError('duplicate content block index');
       }
+      budget?.slot();
+      const { input: _input, ...replayMetadata } = block;
+      budget?.output(stringifyModelJson(replayMetadata));
       this.blockTypes.set(index, blockType);
       this.originals.set(index, deepCopy(block));
       for (const field of ['text', 'thinking', 'signature']) {
@@ -540,6 +543,7 @@ export function createAnthropicStreamState(profile) {
           // is the usual placeholder and still allows input_json_delta fragments.
           if (Object.keys(block.input).length > 0) {
             tool.arguments = stringifyModelJson(block.input);
+            budget?.tool(tool, tool.arguments);
             tool.initialInput = true;
             this.initialInputs.add(index);
           }
@@ -569,6 +573,7 @@ export function createAnthropicStreamState(profile) {
       }
       if (expected != null && previous == null && (expected === 'text' || expected === 'thinking')) {
         // Legacy proxy omitting block_start: pin the slot from the first delta.
+        budget?.slot();
         this.blockTypes.set(index, expected);
         this.implicitIndexes.add(index);
         this.originals.set(index, { type: expected });
@@ -576,19 +581,23 @@ export function createAnthropicStreamState(profile) {
       }
       if (deltaType === 'text_delta') {
         if (typeof delta.text !== 'string') throw new ProtocolError('invalid text delta');
+        budget?.output(delta.text);
         this.values.set(index, (this.values.get(index) || '') + delta.text);
       } else if (deltaType === 'thinking_delta') {
         if (typeof delta.thinking !== 'string') throw new ProtocolError('invalid thinking delta');
+        budget?.output(delta.thinking);
         this.values.set(index, (this.values.get(index) || '') + delta.thinking);
       } else if (deltaType === 'signature_delta') {
         if (typeof delta.signature !== 'string') throw new ProtocolError('invalid signature delta');
         const original = this.originals.get(index) || { type: 'thinking' };
+        budget?.output(delta.signature);
         original.signature = (original.signature || '') + delta.signature;
         this.originals.set(index, original);
       } else if (deltaType === 'input_json_delta') {
         if (typeof delta.partial_json !== 'string') throw new ProtocolError('invalid input_json delta');
         const tool = this.tools.get(index);
         if (!tool || this.initialInputs.has(index)) throw new ProtocolError('tool delta without an open block');
+        budget?.tool(tool, delta.partial_json);
         tool.arguments += delta.partial_json;
         if (delta.partial_json) {
           emit({ kind: 'tool_delta', text: delta.partial_json, metadata: { index,

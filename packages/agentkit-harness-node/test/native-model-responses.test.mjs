@@ -133,7 +133,7 @@ async function collect(handler, request, opts = {}) {
     const port = createNativeModelPort({
       resolveProfile: async () => ({ protocol: 'openai-responses', baseUrl: `http://127.0.0.1:${server.port}/v1`, apiKey: 'fake-key', model: 'fake-model', ...(opts.bindingExtra || {}) }),
       fetchImpl: opts.fetchImpl || fetch,
-      maxResponseBytes: opts.maxResponseBytes || 4 * 1024 * 1024,
+      maxResponseBytes: opts.useDefaultBounds ? undefined : opts.maxResponseBytes || 4 * 1024 * 1024,
       idleTimeoutMs: opts.idleTimeoutMs || 4000,
     });
     const events = [];
@@ -143,6 +143,18 @@ async function collect(handler, request, opts = {}) {
 }
 
 // ===================== request projection =================================
+
+test('responses: escaped terminal snapshot can exceed the semantic byte budget on the wire', async () => {
+  const text = '\\'.repeat(4_250_000);
+  const message = { type: 'message', id: 'msg-1', role: 'assistant', status: 'completed',
+    content: [{ type: 'output_text', text }] };
+  const terminal = sse(rcompleted('resp-1', 'fake-model', { input_tokens: 5, output_tokens: 2 }, [message]));
+  assert.ok(Buffer.byteLength(terminal) > 8 * 1024 * 1024);
+  const { result } = await collect(() => ({ headers: SSE_HEADERS, body: [sse(rcreated()), sse(rtext(text.slice(0, 10))), terminal] }),
+    makeRequest({ tools: [] }), { useDefaultBounds: true });
+  assert.equal(result.kind, 'final_candidate', JSON.stringify(result.failureDiagnostic));
+  assert.equal(result.text, text);
+});
 
 test('responses: final candidate streams text and seals usage', async () => {
   const handler = () => ({ status: 200, headers: SSE_HEADERS, body: [

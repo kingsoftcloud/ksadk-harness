@@ -39,6 +39,11 @@ function modelFailureMessage(value, retriesExhausted = false) {
   if (value.code === 'host_binding') return '模型连接配置未能加载，请检查运行配置。';
   if (value.phase === 'request') return '模型请求在发送前未通过校验，请查看运行诊断。';
   if (value.code === 'stream_timeout' || value.code === 'http_timeout') return '等待模型服务响应超时，本次运行未能完成。';
+  if (value.code === 'body_limit') return '模型响应超过大小上限，本次运行已停止。';
+  if (value.code === 'stream_frame_limit') return '模型响应中的单个流式事件超过大小上限。';
+  if (value.code === 'stream_output_limit') return '模型本次输出的内容超过大小上限。';
+  if (value.code === 'tool_argument_limit') return '模型生成的工具参数超过大小上限，本批工具未执行。';
+  if (value.code === 'stream_incomplete') return '模型响应中途结束，未收到完整结果。';
   if (value.code === 'transport_error') return '与模型服务的连接中断，本次运行未能完成。';
   if (value.code === 'provider_error' || value.code === 'http_server') return '模型服务返回执行错误，本次运行未能完成。';
   if (value.phase === 'stream' || value.phase === 'buffered') return '模型响应未通过协议校验，本次运行已停止，请查看运行诊断。';

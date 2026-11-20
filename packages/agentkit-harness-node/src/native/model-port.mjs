@@ -28,6 +28,7 @@ import {
 import {
   parseResponsesBuffered, createResponsesStreamState,
 } from './model-responses.mjs';
+import { createModelStreamBudget, ModelStreamLimitError } from './model-stream-budget.mjs';
 import { MediaError } from './model-media.mjs';
 import { buildNativeModelRequest } from './model-request.mjs';
 // parseModelJson is the kernel's strict finite JSON parser; used here for the
@@ -38,6 +39,7 @@ import { parseModelJson, MODEL_FAILURE_CODES, MODEL_GATEWAY_ERROR_CODES, MODEL_G
 import { observeModelTransportPort } from './model-transport-observation.mjs';
 
 const DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
+const MAX_TOOL_ARGUMENT_BYTES = 8 * 1024 * 1024;
 const DEFAULT_IDLE_MS = 180000;
 
 /** Only the adapter's plain inference request is admitted for cold replay.
@@ -58,7 +60,7 @@ class OverflowError extends Error {
 export function createNativeModelPort({
   resolveProfile,
   fetchImpl = fetch,
-  maxResponseBytes = DEFAULT_MAX_BYTES,
+  maxResponseBytes,
   idleTimeoutMs = DEFAULT_IDLE_MS,
 } = {}) {
   if (typeof resolveProfile !== 'function') {
@@ -67,9 +69,11 @@ export function createNativeModelPort({
   if (typeof fetchImpl !== 'function') {
     throw new TypeError('createNativeModelPort requires a fetchImpl function');
   }
-  if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes <= 0) throw new RangeError('maxResponseBytes must be a positive safe integer');
+  const maxBytes = maxResponseBytes === undefined ? DEFAULT_MAX_BYTES : maxResponseBytes;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw new RangeError('maxResponseBytes must be a positive safe integer');
   if (!Number.isFinite(idleTimeoutMs) || idleTimeoutMs <= 0) throw new RangeError('idleTimeoutMs must be positive and finite');
-  const maxBytes = maxResponseBytes;
+  // An explicit ceiling retains its original whole-response semantics.
+  const streamBounds = { maxFrameBytes: maxBytes, maxBytes: maxResponseBytes };
   const idleTimeout = idleTimeoutMs;
 
   return observeModelTransportPort(async (request, emitEvent, observation) => {
@@ -151,8 +155,9 @@ export function createNativeModelPort({
           observation.phase('stream');
           const idlePolicy = request.profile.streaming !== false && request.profile.streamTimeoutPolicy === 'idle/v1';
           if (idlePolicy) { clearTimer(overallTimer); overallTimer = null; }
-          return await streamResponse(response, request, binding, emitEvent, internal, maxBytes,
-            idlePolicy && overallMs > 0 ? Math.min(idleTimeout, overallMs) : idleTimeout, observation);
+          return await streamResponse(response, request, binding, emitEvent, internal, {
+            ...streamBounds, idleTimeoutMs: idlePolicy && overallMs > 0 ? Math.min(idleTimeout, overallMs) : idleTimeout,
+          }, observation);
         }
         observation.phase('buffered');
         return await bufferedResponse(response, request, binding, maxBytes, emitEvent, observation);
@@ -173,14 +178,16 @@ export function createNativeModelPort({
   });
 }
 
-async function streamResponse(response, request, binding, emit, internal, maxBytes, idleTimeoutMs, observation) {
+async function streamResponse(response, request, binding, emit, internal, streamBounds, observation) {
   const profile = request.profile;
   const idlePolicy = profile.streaming !== false && profile.streamTimeoutPolicy === 'idle/v1';
+  const { maxFrameBytes } = streamBounds;
+  const budget = createModelStreamBudget(maxFrameBytes, streamBounds.maxBytes ?? MAX_TOOL_ARGUMENT_BYTES);
   const state = binding.protocol === 'anthropic-messages'
-    ? createAnthropicStreamState(profile)
+    ? createAnthropicStreamState(profile, budget)
     : binding.protocol === 'openai-responses'
-      ? createResponsesStreamState(profile)
-      : createOpenAIStreamTurn(profile, binding);
+      ? createResponsesStreamState(profile, budget)
+      : createOpenAIStreamTurn(profile, binding, budget);
   // Idle silence aborts the fetch via the internal controller so the pending
   // body read rejects cleanly instead of leaving an orphaned read to cancel.
   const abort = (reason) => internal.abort(reason);
@@ -210,7 +217,7 @@ async function streamResponse(response, request, binding, emit, internal, maxByt
     { ...(frameIndex < 0 ? {} : { frameIndex }),
       ...(code === 'usage_conflict' && state.usageConflict ? { usageConflict: state.usageConflict } : {}), ...fields });
   try {
-    for await (const frame of readModelSse(response.body, { maxBytes, idleTimeoutMs, abort, observeBytes: observation.bytes })) {
+    for await (const frame of readModelSse(response.body, { ...streamBounds, abort, observeBytes: observation.bytes })) {
       if (idlePolicy && !frame.data.trim()) continue;
       frameIndex++;
       observation.frame();
@@ -230,6 +237,16 @@ async function streamResponse(response, request, binding, emit, internal, maxByt
     }
     if (error instanceof SseFramingError) {
       return failed(state.finalize({ errorKind: 'provider_terminal_error', failureKind: 'invalid_response' }), protocolCode(error));
+    }
+    if (error instanceof ModelStreamLimitError) {
+      // The adapter has not committed or dispatched any tool in this batch.
+      // Only plain inference is eligible for a corrected generation.
+      const task = request.purpose == null || request.purpose === 'task';
+      const retryable = error.code === 'tool_argument_limit' && task
+        && !state.refused && nativeModelRecoveryPolicy(binding) === 'pure-inference/v1';
+      const result = state.finalize({ errorKind: retryable ? 'malformed_tool_call' : 'provider_terminal_error',
+        failureKind: 'invalid_response' });
+      return failed({ ...result, toolCalls: [] }, error.code);
     }
     if (error instanceof ProtocolError) {
       // Typed provider error envelopes carry a closed, credential-free classification.

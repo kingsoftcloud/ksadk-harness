@@ -8,6 +8,7 @@
 //
 // Profiled inline reasoning is projected under the Run's frozen policy.
 
+import { ModelStreamLimitError } from './model-stream-budget.mjs';
 import {
   normalizeResponse, parseOpenAIUsage, sealUsage, ProtocolError, resolveUrl, boundOutputTokens,
 } from './model-normalize.mjs';
@@ -349,7 +350,7 @@ function chatReasoning(message) {
 // assembled tool batch and reported usage across SSE frames. Mirrors
 // ksadk._StreamTurn. Frame errors throw ProtocolError; finalize preserves the
 // accumulated text/usage and classifies the attempt.
-export function createOpenAIStreamTurn(profile, binding) {
+export function createOpenAIStreamTurn(profile, binding, budget) {
   const compatibility = resolveProviderCompatibility(profile.providerCompatibilityPolicy, binding);
   const modern = compatibility?.modern === true;
   const finishOnEof = compatibility?.finishOnEof === true;
@@ -436,6 +437,8 @@ export function createOpenAIStreamTurn(profile, binding) {
       if (typeof content !== 'string') throw new ProtocolError('invalid visible content delta', 'delta_invalid');
       const reasoning = chatReasoning(delta);
       if (this.finish != null && reasoning) throw new ProtocolError('private reasoning continued after finish', 'termination_conflict');
+      budget?.output(content);
+      budget?.output(reasoning);
       if (captureReplay) this.reasoning += reasoning;
       if (this.finish != null && (content || delta.tool_calls)) {
         throw new ProtocolError('content continued after finish', 'termination_conflict');
@@ -456,7 +459,8 @@ export function createOpenAIStreamTurn(profile, binding) {
       try {
         if ('function_call' in delta) throw new ProtocolError('legacy function calls are unsupported');
         this.addToolFragments(delta.tool_calls, emit);
-      } catch {
+      } catch (error) {
+        if (error instanceof ModelStreamLimitError) throw error;
         this.malformedTools = true;
       }
     },
@@ -479,6 +483,7 @@ export function createOpenAIStreamTurn(profile, binding) {
             if (typeof value !== 'string' || !value || (call[field] != null && call[field] !== value)) {
               throw new ProtocolError('conflicting tool identity', 'identity_conflict');
             }
+            if (call[field] == null) budget?.output(value);
             call[field] = value;
           }
         }
@@ -489,11 +494,16 @@ export function createOpenAIStreamTurn(profile, binding) {
             if (field in fn) {
               if (fn[field] == null) continue;
               if (typeof fn[field] !== 'string') throw new ProtocolError('function fragment must be text');
-              call.function[field] += fn[field];
+              if (field === 'arguments') budget?.tool(call, fn[field]);
+            else budget?.output(fn[field]);
+            call.function[field] += fn[field];
             }
           }
         }
-        if (!this.tools.has(fragment.index)) this.tools.set(fragment.index, call);
+        if (!this.tools.has(fragment.index)) {
+          budget?.slot();
+          this.tools.set(fragment.index, call);
+        }
         // Emit a display-only tool_delta for the argument fragment. The sealed
         // batch in ModelResult is authoritative; this never executes a tool.
         if (fn && 'arguments' in fn && typeof fn.arguments === 'string' && fn.arguments) {

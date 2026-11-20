@@ -517,7 +517,10 @@ export function reduceModel(snapshot: RunSnapshot, input: ModelResult, config: R
     case 'provider_retryable_error': {
       const provider = result.kind === 'provider_retryable_error';
       const attempts = (provider ? snapshot.providerErrors : snapshot.modelErrors) + 1;
-      const exhausted = attempts > (provider ? config.profile.maxProviderRetries : config.profile.maxRetries);
+      const oversizedTool = result.kind === 'malformed_tool_call' && result.failureDiagnostic?.code === 'tool_argument_limit';
+      const limit = provider ? config.profile.maxProviderRetries
+        : oversizedTool ? Math.min(config.profile.maxRetries, 1) : config.profile.maxRetries;
+      const exhausted = attempts > limit;
       const delay = retryDelay(result, attempts, config, random);
       // An unavailable provider is not a task failure: pause with a fresh budget so the Host can resume later.
       if (provider && exhausted && config.providerRecoveryPolicy === 'provider-recovery/v2') return { ...base, phase: 'paused',
@@ -528,7 +531,10 @@ export function reduceModel(snapshot: RunSnapshot, input: ModelResult, config: R
         modelErrors: provider ? snapshot.modelErrors : attempts, retryNotBefore: exhausted ? 0 : now + delay,
         messages: provider ? snapshot.messages : [...snapshot.messages, { role: 'user', kind: responseContinuationPending(snapshot, config)
           ? 'response_continuation_feedback' : 'model_feedback',
-          content: result.kind === 'empty_response' ? 'The last response was empty. Continue the task or provide a complete answer.' : 'The last tool call was malformed and was not executed. Return complete valid tool arguments.' }] };
+          content: oversizedTool
+            ? 'The last tool batch exceeded the tool input size limit and was not executed. Continue the task with smaller tool calls, splitting large file changes into separate edits. Keep all earlier tool results.'
+            : result.kind === 'empty_response' ? 'The last response was empty. Continue the task or provide a complete answer.'
+              : 'The last tool call was malformed and was not executed. Return complete valid tool arguments.' }] };
     }
     case 'policy_abort': return { ...base, phase: 'finalizing', outcome: 'blocked', reason: 'model_policy_abort' };
     case 'user_abort': return { ...base, phase: 'finalizing', outcome: 'unverified', reason: 'model_user_abort' };

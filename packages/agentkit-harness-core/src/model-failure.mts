@@ -6,6 +6,7 @@ export const MODEL_FAILURE_CODES = [
   'http_server', 'http_rate_limit', 'http_timeout', 'protocol_invalid', 'json_invalid',
   'envelope_invalid', 'provider_error', 'identity_conflict', 'usage_invalid', 'usage_conflict',
   'choice_invalid', 'delta_invalid', 'termination_conflict', 'framing_invalid', 'body_limit',
+  'stream_frame_limit', 'stream_output_limit', 'tool_argument_limit',
   'body_encoding', 'transport_error', 'stream_timeout', 'stream_incomplete', 'tool_payload_invalid', 'reasoning_repetition',
 ] as const;
 /** Closed provider identifiers only; arbitrary provider strings can contain credentials. */

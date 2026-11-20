@@ -8,7 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { deepEqual as looseEqual } from 'node:assert';
 import http from 'node:http';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createNativeModelPort } from '../src/native/model-port.mjs';
@@ -1035,6 +1035,99 @@ test('openai: response exceeding maxResponseBytes is terminal', async () => {
   const { result } = await collect(0, 'openai-chat', handler, makeRequest(), { maxResponseBytes: 512 });
   assert.equal(result.kind, 'provider_terminal_error');
   assert.equal(result.failureKind, 'invalid_response');
+});
+
+
+function streamedWrite(fragments, extra = {}) {
+  return fragments.map((arguments_, index) => sse(ochunk({ tool_calls: [{
+    index: 0, ...(index === 0 ? { id: 'write-1', type: 'function' } : {}),
+    function: { ...(index === 0 ? { name: 'write' } : {}), arguments: arguments_ },
+  }] }, null, extra))).concat(sse(ochunk({}, 'tool_calls')), sseDone());
+}
+
+test('default SSE reads a response larger than 8 MiB and dispatches the sealed write exactly once', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'native-long-sse-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const output = join(root, 'index.html');
+  const content = '<p>长响应</p>'.repeat(7000);
+  const arguments_ = JSON.stringify({ content });
+  const wire = streamedWrite(arguments_.match(/[\s\S]{1,240}/gu), { system_fingerprint: 'x'.repeat(32000) }).join('');
+  assert.ok(Buffer.byteLength(wire) > 8 * 1024 * 1024);
+  const store = new MemoryRunStore();
+  const tool = coreTool({ name: 'write', readOnly: false, concurrentSafe: false });
+  const { config, snapshot } = coreFixture({ tools: [tool], profile: makeProfile({ compatibilityDigest: 'stream-bounds/v1', requestTimeoutMs: 10_000 }) });
+  store.create(config, snapshot);
+  let writes = 0;
+  await withServer((_req, _body, attempt) => ({ headers: SSE_HEADERS, body: attempt === 0 ? wire
+    : sse(ochunk({ content: 'Delivered.' }, 'stop')) + sseDone() }), async server => {
+    const model = createNativeModelPort({ resolveProfile: async () => ({
+      protocol: 'openai-chat', baseUrl: `http://127.0.0.1:${server.port}/v1`, apiKey: 'fake-key', model: 'fake-model',
+    }) });
+    const ports = { model, tools: { execute: async ({ call }) => {
+      writes++;
+      writeFileSync(output, call.arguments.content);
+      return { status: 'ok', content: 'Written' };
+    } } };
+    const result = await new NativeKernel({ store, digest: coreDigest, owner: 'long-sse', ports }).runUntilIdle(coreScope, 'run');
+    assert.equal(result.phase, 'completed');
+    assert.equal(writes, 1);
+    assert.equal(readFileSync(output, 'utf8'), content);
+    assert.equal(server.requests.length, 2);
+    const wireObservation = store.load(coreScope, 'run').events.find(event => event.kind === 'model.transport_observed');
+    assert.equal(wireObservation.payload.bodyBytes, Buffer.byteLength(wire));
+  });
+});
+
+test('oversized tool batches never dispatch and one smaller generation can recover without replaying prior tools', async () => {
+  const large = ['{"content":"', ...Array(17).fill('x'.repeat(512 * 1024)), '"}'];
+  const previous = streamedWrite(['{"content":"previous"}']);
+  const smaller = streamedWrite(['{"content":"smaller"}']).join('').replace('write-1', 'write-2');
+  for (const recover of [true, false]) {
+    const writes = [];
+    let recoveryFeedback;
+    const store = new MemoryRunStore();
+    const tool = coreTool({ name: 'write', readOnly: false, concurrentSafe: false });
+    const { config, snapshot } = coreFixture({ tools: [tool],
+      profile: makeProfile({ compatibilityDigest: 'stream-bounds/v1', requestTimeoutMs: 10_000 }) });
+    store.create(config, snapshot);
+    await withServer((_req, body, attempt) => {
+      if (attempt === 2) recoveryFeedback = body;
+      const response = attempt === 0 ? previous : attempt === 1 || attempt === 2 && !recover
+        ? streamedWrite(large) : attempt === 2 ? smaller : sse(ochunk({ content: 'Delivered.' }, 'stop')) + sseDone();
+      return { headers: SSE_HEADERS, body: response };
+    }, async server => {
+      const model = createNativeModelPort({ resolveProfile: async () => ({
+        protocol: 'openai-chat', baseUrl: `http://127.0.0.1:${server.port}/v1`, apiKey: 'fake-key', model: 'fake-model',
+      }) });
+      const ports = { model, tools: { execute: async ({ call }) => {
+        writes.push(call.arguments.content);
+        return { status: 'ok', content: 'Previous write receipt' };
+      } } };
+      const result = await new NativeKernel({ store, digest: coreDigest, owner: 'tool-size', ports }).runUntilIdle(coreScope, 'run');
+      assert.equal(result.phase, recover ? 'completed' : 'failed');
+      assert.deepEqual(writes, recover ? ['previous', 'smaller'] : ['previous']);
+      assert.equal(server.requests.length, recover ? 4 : 3);
+      assert.match(recoveryFeedback, /tool batch exceeded the tool input size limit/);
+      assert.match(recoveryFeedback, /smaller tool calls/);
+      assert.match(recoveryFeedback, /Previous write receipt/);
+      if (!recover) {
+        assert.equal(result.reason, 'malformed_tool_call_retry_exhausted');
+        assert.equal(result.diagnostics.lastModelFailure.code, 'tool_argument_limit');
+      }
+    });
+  }
+});
+
+test('SSE framing rejects oversized lines and events split between otherwise valid chunks', async () => {
+  for (const chunks of [
+    ['data: ab', 'cd', 'e'],
+    ['data: abc\n', 'data: def\n', 'data: ghijk\n\n'],
+  ]) {
+    async function* body() { for (const chunk of chunks) yield Buffer.from(chunk); }
+    await assert.rejects(async () => {
+      for await (const frame of readModelSse(body(), { maxFrameBytes: 10 })) void frame;
+    }, { code: 'stream_frame_limit' });
+  }
 });
 
 test('openai: conflicting usage reports fail closed', async () => {

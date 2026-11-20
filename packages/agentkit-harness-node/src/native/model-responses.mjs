@@ -490,7 +490,7 @@ function validateBufferedIdentity(payload) {
 
 // --- streaming: shared item slot namespace (ports ResponsesItems) ---
 
-function createResponsesItems() {
+function createResponsesItems(budget) {
   // One shared slot namespace for message, reasoning and function_call items.
   return {
     indexes: new Map(),    // output_index -> item_id
@@ -501,6 +501,10 @@ function createResponsesItems() {
       const itemId = item != null ? identityOf(item.id) : identityOf(event.item_id);
       if ('item_id' in event && identityOf(event.item_id) !== itemId) throw new ProtocolError('invalid model frame', 'envelope_invalid');
       const index = indexOf(event, 'output_index');
+      if ((index != null || item != null || kind) && !this.itemIndexes.has(itemId) && !this.kinds.has(itemId)) {
+        budget?.slot();
+        budget?.output(itemId);
+      }
       if (index != null) {
         if (this.indexes.get(index) != null && this.indexes.get(index) !== itemId) throw new ProtocolError('invalid model frame', 'envelope_invalid');
         if (this.itemIndexes.get(itemId) != null && this.itemIndexes.get(itemId) !== index) throw new ProtocolError('invalid model frame', 'envelope_invalid');
@@ -533,7 +537,7 @@ function createContentPart(kind) {
 
 // A content item (message or reasoning) holds indexed parts grouped by
 // (group, index). Parts snapshot or accumulate text; closure is validated.
-function createResponsesContent(items) {
+function createResponsesContent(items, budget) {
   const state = {
     items,                                  // shared ResponsesItems
     itemState: new Map(),                   // key -> { kind, parts, closed }
@@ -558,6 +562,7 @@ function createResponsesContent(items) {
         return previous;
       }
       if (item.closed) throw new ProtocolError('invalid model frame', 'envelope_invalid');
+      budget?.slot();
       const part = createContentPart(kind);
       item.parts.set(partKey, part);
       return part;
@@ -572,6 +577,7 @@ function createResponsesContent(items) {
       const part = this.getPart(item, group, index, kind);
       if (delta) {
         if (part.closed) throw new ProtocolError('invalid model frame', 'envelope_invalid');
+        budget?.output(text);
         part.text += text;
       } else {
         this.snapshotPart(part, text, closed);
@@ -583,6 +589,7 @@ function createResponsesContent(items) {
       if ((part.closed && text !== part.text) || !text.startsWith(part.text)) {
         throw new ProtocolError('invalid model frame', 'envelope_invalid');
       }
+      budget?.output(text.slice(part.text.length));
       part.text = text;
       part.closed = part.closed || closed;
     },
@@ -711,11 +718,13 @@ function createResponsesContent(items) {
               throw new ProtocolError('invalid model frame', 'envelope_invalid');
             }
             tail = text.slice(previous.length);
+            budget?.output(tail);
             this[attr] = text;
             this.legacyClosed.add(attr);
           } else {
             if (this.legacyClosed.has(attr)) throw new ProtocolError('invalid model frame', 'envelope_invalid');
             tail = text;
+            budget?.output(tail);
             this[attr] = previous + text;
           }
           const indexed = attr === 'legacyText' ? this.emittedText : this.emittedReasoning;
@@ -812,8 +821,8 @@ function sealTool(tool) {
   tool.closed = true;
 }
 
-function createResponsesToolCalls() {
-  const items = createResponsesItems();
+function createResponsesToolCalls(budget) {
+  const items = createResponsesItems(budget);
   return {
     items,
     calls: new Map(),    // item_id -> WireTool
@@ -836,7 +845,11 @@ function createResponsesToolCalls() {
           if (current != null) throw new ProtocolError('invalid model frame', 'envelope_invalid');
           current = createWireTool();
           pinToolIdentity(current, item, 'call_id');
-          if ('arguments' in item) current.arguments = optionalText(item.arguments);
+          if ('arguments' in item) {
+            const arguments_ = optionalText(item.arguments);
+            budget?.tool(current, arguments_);
+            current.arguments = arguments_;
+          }
           this.calls.set(key, current);
           return null;
         }
@@ -853,6 +866,7 @@ function createResponsesToolCalls() {
             || (current.closed || current.argumentsDone) && arguments_ !== current.arguments) {
             throw new ProtocolError('invalid model frame', 'envelope_invalid');
           }
+          budget?.tool(current, arguments_.slice(current.arguments.length));
           current.arguments = arguments_;
         }
         if (current.closed) return null;
@@ -864,10 +878,13 @@ function createResponsesToolCalls() {
         const current = this.calls.get(key);
         if (current == null || current.closed || current.argumentsDone) throw new ProtocolError('invalid model frame', 'envelope_invalid');
         if (type.endsWith('.delta')) {
-          current.arguments += optionalText(event.delta);
+          const delta = optionalText(event.delta);
+          budget?.tool(current, delta);
+          current.arguments += delta;
         } else {
           const arguments_ = optionalText(event.arguments);
           if (!arguments_.startsWith(current.arguments)) throw new ProtocolError('invalid model frame', 'envelope_invalid');
+          budget?.tool(current, arguments_.slice(current.arguments.length));
           current.arguments = arguments_;
           current.argumentsDone = true;
         }
@@ -941,11 +958,11 @@ function createWireIdentity() {
 // throw ProtocolError; finalize preserves the accumulated text/usage and
 // classifies the attempt. One terminal event (response.completed/incomplete/
 // failed/error/cancelled) seals the attempt.
-export function createResponsesStreamState(profile) {
+export function createResponsesStreamState(profile, budget) {
   const captureReplay = profile.providerReplayMode !== 'none';
   const emitThinking = profile.providerThinkingDisplay ?? profile.providerReplayMode !== 'none';
-  const toolItems = createResponsesToolCalls();
-  const contentItems = createResponsesContent(toolItems.items);
+  const toolItems = createResponsesToolCalls(budget);
+  const contentItems = createResponsesContent(toolItems.items, budget);
   const identity = createWireIdentity();
   return {
     text: '',

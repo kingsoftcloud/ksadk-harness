@@ -131,6 +131,34 @@ test('foreground run_command: waits for completion, returns exit_code', async t 
   assert.ok(r.content.stdout.includes('fg-test'));
 });
 
+test('foreground command retains its exit status and cursor access when logs exceed the attachment budget', async t => {
+  const { tools } = setup(t);
+  const limit = 16 * 1024 * 1024;
+  const command = `${JSON.stringify(process.execPath)} -e 'process.stdout.write("x".repeat(${limit}) + "!"); process.exitCode = 7'`;
+  const result = await tools.execute(makeRequest(tools, 'run_command', { command, timeout: 20 }));
+  assert.equal(result.status, 'ok');
+  assert.equal(result.content.status, 'failed');
+  assert.equal(result.content.exit_code, 7);
+  assert.equal(result.content.evidence_incomplete, false);
+  assert.equal(result.content.output_may_be_truncated, true);
+  assert.equal(result.content.stdout_cursor, 0);
+  assert.equal(result.backgroundCommandRef.taskId, result.content.task_id);
+  assert.equal(result.backgroundCommandFinished, true);
+  const page = await tools.execute(makeRequest(tools, 'read_command_output', { task_id: result.content.task_id }));
+  assert.equal(page.status, 'ok');
+  assert.equal(page.content.output_may_be_truncated, true);
+  assert.ok(page.content.stdout_cursor > 0);
+  assert.equal(page.content.stdout_cursor, Buffer.byteLength(page.content.stdout));
+  const next = await tools.execute(makeRequest(tools, 'read_command_output', {
+    task_id: result.content.task_id, stdout_cursor: page.content.stdout_cursor,
+  }));
+  assert.equal(next.content.stdout_cursor, page.content.stdout_cursor + Buffer.byteLength(next.content.stdout));
+  const tail = await tools.execute(makeRequest(tools, 'read_command_output', { task_id: result.content.task_id, stdout_cursor: limit }));
+  assert.equal(tail.status, 'ok');
+  assert.equal(tail.content.stdout, '!');
+  assert.equal(tail.content.exit_code, 7);
+});
+
 test('foreground run_command non-zero exit: status ok, exit_code non-zero', async t => {
   const { tools } = setup(t);
   const r = await tools.execute(makeRequest(tools, 'run_command',

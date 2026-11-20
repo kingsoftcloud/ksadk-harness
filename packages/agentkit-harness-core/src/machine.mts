@@ -295,6 +295,8 @@ export function validateModelResult(input: ModelResult): ModelResult {
   invariant(!failure || ['provider_terminal_error', 'provider_retryable_error', 'policy_abort', 'malformed_tool_call'].includes(result.kind)
     || result.kind === 'output_limit' && result.outputBoundary === 'no-visible-output/v1'
       && failure.phase === 'stream' && failure.code === 'reasoning_repetition'
+    || result.kind === 'output_limit' && failure.phase === 'stream'
+      && ['stream_frame_limit', 'stream_output_limit'].includes(failure.code)
     || result.kind === 'context_overflow' && failure.httpStatus === 400
       && (failure.gateway?.code === 'context_length_exceeded' || failure.gateway?.type === 'context_length_exceeded'),
     'model_failure_diagnostic_requires_failure');
@@ -471,7 +473,7 @@ export function reduceModel(snapshot: RunSnapshot, input: ModelResult, config: R
               : result.text ? 'The last response hit its output limit. Return only the exact missing suffix of that response. '
                 + (responseBoundaryRecovery(config) ? 'You may replay the final incomplete line verbatim before continuing; the Host joins this exact overlap. Do not replay any complete line. ' : '')
                 + 'Incomplete tool calls were not executed.'
-                : 'The last response hit its output limit without visible content or a committed tool call. Continue the task from the last committed state; take the next useful action or answer only if the task is complete.' }];
+                : 'The last response hit its output limit without visible content or a committed tool call. Continue from the last committed state in smaller steps; answer only if the task is complete.' }];
         return { mode, messages };
       };
       const exhausted = (): Partial<RunSnapshot> => resumable

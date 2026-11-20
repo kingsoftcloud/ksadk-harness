@@ -1134,6 +1134,31 @@ test('SSE framing rejects oversized lines and events split between otherwise val
   }
 });
 
+test('an assembled stream budget stop resumes the run from the last committed tool result', async () => {
+  const tool = coreTool({ name: 'write', readOnly: false, concurrentSafe: false });
+  const { config, snapshot } = coreFixture({ tools: [tool],
+    profile: makeProfile({ compatibilityDigest: 'stream-bounds/v1', requestTimeoutMs: 10_000 }) });
+  const store = new MemoryRunStore();
+  store.create(config, snapshot);
+  const large = sse(ochunk({ reasoning_content: 'x'.repeat(8 * 1024 * 1024 + 1) }));
+  const bodies = [streamedWrite(['{"content":"once"}']), large, sse(ochunk({ content: 'Delivered.' }, 'stop')) + sseDone()];
+  let writes = 0;
+  await withServer((_req, _body, attempt) => ({ headers: SSE_HEADERS, body: bodies[attempt] }), async server => {
+    const model = createNativeModelPort({ resolveProfile: () => ({ protocol: 'openai-chat',
+      baseUrl: `http://127.0.0.1:${server.port}/v1`, apiKey: 'fake-key', model: 'fake-model' }) });
+    const ports = { model, tools: { execute: async () => { writes++; return { status: 'ok', content: 'Committed write receipt' }; } } };
+    const result = await new NativeKernel({ store, digest: coreDigest, owner: 'stream-limit', ports }).runUntilIdle(coreScope, 'run');
+    assert.equal(result.phase, 'completed');
+    assert.equal(writes, 1);
+    assert.equal(server.requests.length, 3);
+    const nextBody = JSON.stringify(server.requests[2].body);
+    assert.match(nextBody, /Committed write receipt/);
+    assert.match(nextBody, /last committed state in smaller steps/);
+    assert.ok(store.load(coreScope, 'run').events.some(event => event.kind === 'model.failure_observed'
+      && event.payload.code === 'stream_output_limit'));
+  });
+});
+
 test('openai: conflicting usage reports fail closed', async () => {
   const tail = { id: 'c1', choices: [], usage: { prompt_tokens: 5, completion_tokens: 2 } };
   const handler = () => ({ status: 200, headers: SSE_HEADERS, body: [sse(ochunk({ content: 'A' }, 'stop')), sse(tail), sse({ id: 'c1', choices: [], usage: { prompt_tokens: 50, completion_tokens: 2 } }), sseDone()] });

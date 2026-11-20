@@ -39,6 +39,10 @@ import { parseModelJson, MODEL_FAILURE_CODES, MODEL_GATEWAY_ERROR_CODES, MODEL_G
 import { observeModelTransportPort } from './model-transport-observation.mjs';
 
 const DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
+// A full terminal snapshot can JSON-escape each retained byte as six ASCII
+// bytes. Allow that expansion plus protocol fields without growing the
+// independent budget for assembled content.
+const DEFAULT_MAX_FRAME_BYTES = 6 * DEFAULT_MAX_BYTES + 64 * 1024;
 const MAX_TOOL_ARGUMENT_BYTES = 8 * 1024 * 1024;
 const DEFAULT_IDLE_MS = 180000;
 
@@ -73,7 +77,8 @@ export function createNativeModelPort({
   if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw new RangeError('maxResponseBytes must be a positive safe integer');
   if (!Number.isFinite(idleTimeoutMs) || idleTimeoutMs <= 0) throw new RangeError('idleTimeoutMs must be positive and finite');
   // An explicit ceiling retains its original whole-response semantics.
-  const streamBounds = { maxFrameBytes: maxBytes, maxBytes: maxResponseBytes };
+  const streamBounds = { maxFrameBytes: maxResponseBytes ?? DEFAULT_MAX_FRAME_BYTES,
+    maxOutputBytes: maxBytes, maxBytes: maxResponseBytes };
   const idleTimeout = idleTimeoutMs;
 
   return observeModelTransportPort(async (request, emitEvent, observation) => {
@@ -181,8 +186,7 @@ export function createNativeModelPort({
 async function streamResponse(response, request, binding, emit, internal, streamBounds, observation) {
   const profile = request.profile;
   const idlePolicy = profile.streaming !== false && profile.streamTimeoutPolicy === 'idle/v1';
-  const { maxFrameBytes } = streamBounds;
-  const budget = createModelStreamBudget(maxFrameBytes, streamBounds.maxBytes ?? MAX_TOOL_ARGUMENT_BYTES);
+  const budget = createModelStreamBudget(streamBounds.maxOutputBytes, streamBounds.maxBytes ?? MAX_TOOL_ARGUMENT_BYTES);
   const state = binding.protocol === 'anthropic-messages'
     ? createAnthropicStreamState(profile, budget)
     : binding.protocol === 'openai-responses'
@@ -234,6 +238,16 @@ async function streamResponse(response, request, binding, emit, internal, stream
     if (request.signal?.aborted) throw error; // caller cancel propagates
     if (error instanceof IdleTimeout) {
       return failed(state.finalize({ errorKind: 'provider_retryable_error', failureKind: 'request_timeout' }), 'stream_timeout');
+    }
+    if ((error instanceof SseFramingError || error instanceof ModelStreamLimitError)
+      && streamBounds.maxBytes === undefined && ['stream_frame_limit', 'stream_output_limit'].includes(error.code)
+      && (request.purpose == null || request.purpose === 'task') && !state.refused
+      && nativeModelRecoveryPolicy(binding) === 'pure-inference/v1') {
+      // Complete tool calls have not been committed. Use the existing output
+      // continuation budget, keeping only text the adapter already admitted.
+      const partial = state.finalize({ errorKind: 'output_limit' });
+      return failed({ ...partial, toolCalls: [], textCommitVersion: 'provider-finished-text/v1',
+        outputBoundary: partial.text.trim() ? 'assistant-text/v1' : 'no-visible-output/v1' }, error.code);
     }
     if (error instanceof SseFramingError) {
       return failed(state.finalize({ errorKind: 'provider_terminal_error', failureKind: 'invalid_response' }), protocolCode(error));
@@ -347,7 +361,7 @@ function protocolCode(error) {
 }
 function withFailure(result, binding, phase, code, fields = {}) {
   if (!['provider_terminal_error', 'provider_retryable_error', 'policy_abort', 'malformed_tool_call'].includes(result.kind)
-    && !(result.kind === 'output_limit' && code === 'reasoning_repetition')
+    && !(result.kind === 'output_limit' && ['reasoning_repetition', 'stream_frame_limit', 'stream_output_limit'].includes(code))
     && !(result.kind === 'context_overflow' && fields.gateway)) return result;
   const protocol = ['openai-chat', 'openai-responses', 'anthropic-messages'].includes(binding?.protocol) ? binding.protocol : 'unknown';
   return { ...result, failureDiagnostic: { contract: fields.gateway ? 'model-failure-diagnostic/v4'

@@ -12,7 +12,7 @@ function decodeJson(text: string, plainObjects: boolean, maxDepth: number): Json
   // The strict structural decoder still owns duplicate keys, exact integers
   // and depth. Scan text spans in the engine rather than visiting each code
   // unit in JS: persisted code/log strings dominate long-session reads.
-  const stringToken = /"[^"\\]*(?:\\[\s\S][^"\\]*)*"/y;
+  const stringSpecial = /["\\]/g;
   const numberToken = /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/y;
   function space(): void {
     while (position < text.length) {
@@ -22,12 +22,20 @@ function decodeJson(text: string, plainObjects: boolean, maxDepth: number): Json
     }
   }
   function string(): string {
-    stringToken.lastIndex = position;
-    const token = stringToken.exec(text);
-    invariant(token, 'invalid_model_json');
-    position = stringToken.lastIndex;
+    const start = position++;
+    for (;;) {
+      stringSpecial.lastIndex = position;
+      const next = stringSpecial.exec(text);
+      invariant(next, 'invalid_model_json');
+      position = next.index + 1;
+      if (next[0] === '"') break;
+      position++;
+      // Skip adjacent escape pairs without the regex engine stacking one
+      // repetition per escape in long serialized code or tool arguments.
+      while (text.charCodeAt(position) === 92) position += 2;
+    }
     // Native decoding validates escapes and rejects raw control characters.
-    return JSON.parse(token[0]) as string;
+    return JSON.parse(text.slice(start, position)) as string;
   }
   function value(depth: number): Json {
     invariant(depth <= maxDepth, 'model_json_nesting_exceeded'); space();

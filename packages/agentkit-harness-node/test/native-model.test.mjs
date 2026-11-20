@@ -1086,18 +1086,22 @@ test('oversized tool batches never dispatch and one smaller generation can recov
     'x'.repeat(512 * 1024 - 64), '"}'];
   const previous = streamedWrite(['{"content":"previous"}']);
   const smaller = streamedWrite(['{"content":"smaller"}']).join('').replace('write-1', 'write-2');
-  for (const [oversized, recover] of [[large, true], [large, false], [sharedOverflow, true]]) {
+  for (const [oversized, scenario] of [[large, 'recover'], [large, 'legacy'], [sharedOverflow, 'recover'], [large, 'resume']]) {
+    const recover = scenario === 'recover';
+    const resume = scenario === 'resume';
     const writes = [];
     let recoveryFeedback;
     const store = new MemoryRunStore();
     const tool = coreTool({ name: 'write', readOnly: false, concurrentSafe: false });
     const { config, snapshot } = coreFixture({ tools: [tool],
+      ...(resume ? { outputRecoveryPolicy: 'response-boundary/v5', outputRestartPolicy: 'per-response/v2' } : {}),
       profile: makeProfile({ compatibilityDigest: 'stream-bounds/v1', requestTimeoutMs: 10_000 }) });
     store.create(config, snapshot);
     await withServer((_req, body, attempt) => {
       if (attempt === 2) recoveryFeedback = body;
-      const response = attempt === 0 ? previous : attempt === 1 || attempt === 2 && !recover
-        ? streamedWrite(oversized) : attempt === 2 ? smaller : sse(ochunk({ content: 'Delivered.' }, 'stop')) + sseDone();
+      const smallerAttempt = recover ? 2 : 3;
+      const response = attempt === 0 ? previous : attempt < smallerAttempt
+        ? streamedWrite(oversized) : attempt === smallerAttempt ? smaller : sse(ochunk({ content: 'Delivered.' }, 'stop')) + sseDone();
       return { headers: SSE_HEADERS, body: response };
     }, async server => {
       const model = createNativeModelPort({ resolveProfile: async () => ({
@@ -1107,16 +1111,23 @@ test('oversized tool batches never dispatch and one smaller generation can recov
         writes.push(call.arguments.content);
         return { status: 'ok', content: 'Previous write receipt' };
       } } };
-      const result = await new NativeKernel({ store, digest: coreDigest, owner: 'tool-size', ports }).runUntilIdle(coreScope, 'run');
-      assert.equal(result.phase, recover ? 'completed' : 'failed');
+      const kernel = new NativeKernel({ store, digest: coreDigest, owner: 'tool-size', ports });
+      const result = await kernel.runUntilIdle(coreScope, 'run');
+      assert.equal(result.phase, recover ? 'completed' : resume ? 'paused' : 'failed');
       assert.deepEqual(writes, recover ? ['previous', 'smaller'] : ['previous']);
       assert.equal(server.requests.length, recover ? 4 : 3);
       assert.match(recoveryFeedback, /tool batch exceeded the tool input size limit/);
       assert.match(recoveryFeedback, /smaller tool calls/);
       assert.match(recoveryFeedback, /Previous write receipt/);
       if (!recover) {
-        assert.equal(result.reason, 'malformed_tool_call_retry_exhausted');
+        assert.equal(result.reason, resume ? 'output_budget_exhausted' : 'malformed_tool_call_retry_exhausted');
         assert.equal(result.diagnostics.lastModelFailure.code, 'tool_argument_limit');
+      }
+      if (resume) {
+        kernel.submit(coreScope, 'run', { commandId: 'resume-tool-size', kind: 'resume', payload: {} });
+        assert.equal((await kernel.runUntilIdle(coreScope, 'run')).phase, 'completed');
+        assert.deepEqual(writes, ['previous', 'smaller']);
+        assert.equal(server.requests.length, 5);
       }
     });
   }

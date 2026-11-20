@@ -527,16 +527,19 @@ export function reduceModel(snapshot: RunSnapshot, input: ModelResult, config: R
       // An unavailable provider is not a task failure: pause with a fresh budget so the Host can resume later.
       if (provider && exhausted && config.providerRecoveryPolicy === 'provider-recovery/v2') return { ...base, phase: 'paused',
         resumePhase: 'preparing_context', outcome: null, reason: 'provider_unavailable', providerErrors: 0, retryNotBefore: 0 };
-      return { ...base, phase: exhausted ? 'finalizing' : 'preparing_context', outcome: exhausted ? 'failed' : null,
-        reason: exhausted ? `${result.kind}_retry_exhausted` : null,
-        providerErrors: provider ? attempts : base.providerErrors ?? snapshot.providerErrors,
-        modelErrors: provider ? snapshot.modelErrors : attempts, retryNotBefore: exhausted ? 0 : now + delay,
-        messages: provider ? snapshot.messages : [...snapshot.messages, { role: 'user', kind: responseContinuationPending(snapshot, config)
+      const messages: Message[] = provider ? snapshot.messages : [...snapshot.messages, { role: 'user', kind: responseContinuationPending(snapshot, config)
           ? 'response_continuation_feedback' : 'model_feedback',
           content: oversizedTool
             ? 'The last tool batch exceeded the tool input size limit and was not executed. Continue the task with smaller tool calls, splitting large file changes into separate edits. Keep all earlier tool results.'
             : result.kind === 'empty_response' ? 'The last response was empty. Continue the task or provide a complete answer.'
-              : 'The last tool call was malformed and was not executed. Return complete valid tool arguments.' }] };
+              : 'The last tool call was malformed and was not executed. Return complete valid tool arguments.' }];
+      if (oversizedTool && exhausted && config.outputRestartPolicy === 'per-response/v2') return { ...base,
+        phase: 'paused', resumePhase: 'preparing_context', outcome: null, reason: 'output_budget_exhausted',
+        modelErrors: 0, retryNotBefore: 0, messages };
+      return { ...base, phase: exhausted ? 'finalizing' : 'preparing_context', outcome: exhausted ? 'failed' : null,
+        reason: exhausted ? `${result.kind}_retry_exhausted` : null,
+        providerErrors: provider ? attempts : base.providerErrors ?? snapshot.providerErrors,
+        modelErrors: provider ? snapshot.modelErrors : attempts, retryNotBefore: exhausted ? 0 : now + delay, messages };
     }
     case 'policy_abort': return { ...base, phase: 'finalizing', outcome: 'blocked', reason: 'model_policy_abort' };
     case 'user_abort': return { ...base, phase: 'finalizing', outcome: 'unverified', reason: 'model_user_abort' };

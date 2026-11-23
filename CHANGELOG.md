@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.0.29 - 2026-11-23
+
+- Start Star Harness on Windows using ACL-validated private state paths while preserving file flushes and SQLite durability.
+- Persist Windows workspace tool results with native filesystem paths, including approval receipts and Run recovery.
+- Keep the POSIX command backend available on supported hosts and omit it from the Windows engine tool catalog.
+
 ## 0.0.28 - 2026-11-20
 
 - Bound individual SSE frames and assembled model output so a valid long response can finish even when transport overhead exceeds 8 MiB.

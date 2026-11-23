@@ -291,6 +291,34 @@ test('stateRoot inside the workspace is rejected; a symlinked stateRoot parent i
   rmSync(root, { recursive: true, force: true });
 });
 
+test('a proven E2B supervisor spawn failure stays failed after a Host restart and never sends the remote command', async t => {
+  const { root, workspace } = setup(t);
+  const module = new URL('../src/native/e2b-background.mjs', import.meta.url).href;
+  const transportModule = new URL('./e2b-fake-transport.mjs', import.meta.url).href;
+  const config = { stateRoot: root, workspaceRoot: workspace, sessionId: 'spawn-failure', transportModule, transportConfig: {} };
+  const marker = join(workspace, 'unexpected-dispatch');
+  const input = { operationKey: 'spawn-failure', command: 'printf duplicate > "' + marker + '"', timeoutSeconds: 10 };
+  const child = spawn(process.execPath, ['--input-type=module', '-e', [
+    'const { E2BCommandStore } = await import(' + JSON.stringify(module) + ');',
+    'Object.defineProperty(process, "execPath", { value: "/nonexistent/harness-node" });',
+    'const store = new E2BCommandStore(' + JSON.stringify(config) + ');',
+    'const handle = await store.start(' + JSON.stringify(input) + ');',
+    'for (let i = 0; i < 100 && handle.readOutput().status === "starting"; i++) await new Promise(resolve => setTimeout(resolve, 10));',
+    'if (handle.readOutput().status !== "failed") process.exitCode = 1;',
+  ].join('\n')], { stdio: ['ignore', 'ignore', 'inherit'] });
+  const code = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', resolve); });
+  assert.equal(code, 0);
+  const healthy = new E2BCommandStore({ ...config, transport: { ...fakeTransport(),
+    start: () => assert.fail('the original operation must not reach the remote transport') } });
+  t.after(() => healthy.close());
+  const handle = await healthy.start(input), output = handle.readOutput();
+  assert.equal(output.status, 'failed');
+  assert.equal(output.outcomeReason, 'supervisor_launch_failed');
+  assert.equal(output.evidenceIncomplete, false);
+  assert.equal(output.exitCode, null);
+  assert.equal(existsSync(marker), false);
+});
+
 test('detached supervisor: real child Host process spawns, starts a command, exits; a new Host process reopens and reads the same output', async t => {
   const root = mkdtempSync(join(tmp, 'e2b-detach-'));
   const ws = mkdtempSync(join(tmp, 'e2b-dws-'));

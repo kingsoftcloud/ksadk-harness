@@ -203,7 +203,7 @@ export function reduceCommand(snapshot: RunSnapshot, command: RunCommand, pendin
           verificationToolCalls: null, checkpointWebMutationToolCall: null,
           failureFingerprint: null, failureEvidenceDigest: null,
           hookState: null, stopHookContinuations: 0,
-          continuations: 0, retryNotBefore: 0, toolErrorStreak: null, workspaceRevision: null,
+          continuations: 0, toolErrorStreak: null, workspaceRevision: null,
           ...(snapshot.toolErrorRecovery === undefined ? {} : { toolErrorRecovery: null }),
           ...(snapshot.deliveryReview === undefined ? {} : { deliveryReview: null }),
           contextState: snapshot.contextState ? { ...snapshot.contextState, compaction: null,

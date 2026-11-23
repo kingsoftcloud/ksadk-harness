@@ -36,12 +36,7 @@ export function commandProbe(snapshot: RunSnapshot, configuration: RunConfigurat
     taskChainId: snapshot.taskChainId, operationKey: `${runKey(snapshot.scope, snapshot.runId)}:background-probe:${snapshot.revision}`, cursor, refs };
 }
 
-/** Notice and deduplication marker commit together. Output remains untrusted data. */
-export function stageCommandObservations(snapshot: RunSnapshot, configuration: RunConfiguration, request: BackgroundCommandRequest,
-  input: unknown, intent: EffectIntent | null = null, elapsedMs = 0): CommitBatch {
-  const expected = commandProbe(snapshot, configuration, intent);
-  invariant(expected && canonical(expected) === canonical(request), 'background_command_notification_request_identity_conflict');
-  invariant(Number.isFinite(elapsedMs) && elapsedMs >= 0, 'invalid_background_probe_elapsed');
+export function commandObservations(request: BackgroundCommandRequest, input: unknown): BackgroundCommandObservation[] {
   invariant(Array.isArray(input) && input.length <= 8, 'background_command_notification_batch_exceeded');
   const observations = input.map(backgroundCommandObservation);
   const owned = new Map(request.refs.map(ref => [ref.taskId, ref])), ids = new Set<string>();
@@ -50,6 +45,17 @@ export function stageCommandObservations(snapshot: RunSnapshot, configuration: R
       'background_command_notification_identity_conflict');
     ids.add(observation.ref.taskId);
   }
+  return observations;
+}
+
+/** Notice and deduplication marker commit together. Output remains untrusted data. */
+export function stageCommandObservations(snapshot: RunSnapshot, configuration: RunConfiguration, request: BackgroundCommandRequest,
+  input: unknown, intent: EffectIntent | null = null, elapsedMs = 0): CommitBatch {
+  const expected = commandProbe(snapshot, configuration, intent);
+  invariant(expected && canonical(expected) === canonical(request), 'background_command_notification_request_identity_conflict');
+  invariant(Number.isFinite(elapsedMs) && elapsedMs >= 0, 'invalid_background_probe_elapsed');
+  const observations = commandObservations(request, input);
+  const ids = new Set(observations.map(item => item.ref.taskId));
   const activeElapsedMs = snapshot.activeElapsedMs + elapsedMs;
   const uncertain = observations.some(item => ['unknown', 'unavailable'].includes(item.status));
   const exhausted = configuration.limits.maxWallMs !== null && activeElapsedMs >= configuration.limits.maxWallMs;

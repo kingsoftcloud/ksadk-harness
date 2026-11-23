@@ -5,7 +5,7 @@ import { directoryProgressQuote } from './directory-progress.mjs';
 import { NativePolicyRegistry } from './policy-registry.mjs';
 import { contextSourceDigest, validateContextMessages } from './context-view.mjs';
 import { assertHookFeedbackRetained } from './hook-runtime.mjs';
-import { retryDelay } from './retry.mjs';
+import { retryDeadline, retryDelay } from './retry.mjs';
 import { artifactProgressIdentity } from './artifact-runtime.mjs';
 import { sourceWorkingSetGroup } from './source-working-set-group.mjs';
 import { sourceReuseProjector } from './context-source-reuse.mjs';
@@ -553,7 +553,9 @@ export function reduceContextModel(snapshot: RunSnapshot, result: ModelResult, c
     if (adaptive || provider && config.providerRecoveryPolicy === 'provider-recovery/v2') {
       compaction.errors = 0; compaction.providerErrors = 0;
       return { ...base, phase: 'paused', resumePhase: 'compacting', outcome: null,
-        reason: provider ? 'provider_unavailable' : 'context_summary_unavailable', retryNotBefore: 0 };
+        reason: provider ? 'provider_unavailable' : 'context_summary_unavailable',
+        retryNotBefore: provider && result.retryAfterMs !== undefined
+          ? retryDeadline(now, retryDelay(result, attempts, config, random)) : 0 };
     }
     return { ...base, phase: 'finalizing', outcome: 'unverified', reason: 'context_summary_retry_exhausted' };
   }
@@ -571,5 +573,5 @@ export function reduceContextModel(snapshot: RunSnapshot, result: ModelResult, c
     if (length <= 2) return { ...base, phase: 'finalizing', outcome: 'blocked', reason: 'context_summary_quote_overflow' };
     compaction.quoteLimit = Math.max(1, Math.floor(length / 2)); compaction.chunk = null;
   }
-  return { ...base, retryNotBefore: now + retryDelay(result, attempts, config, random) };
+  return { ...base, retryNotBefore: retryDeadline(now, retryDelay(result, attempts, config, random)) };
 }

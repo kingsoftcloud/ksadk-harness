@@ -3,7 +3,7 @@ import { advanceDirectoryProgress } from './directory-progress.mjs';
 import type { CommitBatch, EffectIntent, EffectReceipt, Message, ModelResult, ObjectValue, RunConfiguration, RunSnapshot, ToolCall, ToolResult, Usage } from './contracts.mjs';
 import { copy, invariant, canonical } from './values.mjs';
 import { prepareEffect, transition } from './transitions.mjs';
-import { retryDelay } from './retry.mjs';
+import { retryDeadline, retryDelay } from './retry.mjs';
 import { FINAL_SUBMISSION_TOOL, finalSubmissionTool, submittedFinalText, normalizedFinalText, finalDeliveryChanges } from './final-submission.mjs';
 import { currentHookState, pendingHookFeedback, planHook } from './hook-runtime.mjs';
 import { projectToolResultContext, deferredToolContexts } from './tool-context.mjs';
@@ -29,6 +29,7 @@ import { reduceCoordinatorResponses } from './coordinator-response.mjs';
 import { RESULT_DELIVERY_POLICY } from './deliverables.mjs';
 import { validateModelTransport } from './model-transport.mjs';
 import { validateModelFailure } from './model-failure.mjs';
+import { failedDeliveryCommands } from './delivery-command-checks.mjs';
 
 export function objectValue(value: unknown): ObjectValue {
   invariant(value !== null && typeof value === 'object' && !Array.isArray(value), 'expected_json_object');
@@ -273,24 +274,35 @@ export function plan(snapshot: RunSnapshot, config: RunConfiguration, capabiliti
   if (snapshot.phase === 'verifying') {
     invariant(snapshot.candidate, 'verification_candidate_missing');
     if (!capabilities.verification) {
-      const review = policies.forRun(config).review.scheduleDeliveryReview(snapshot, config, 'verification_report_missing', digest);
-      if (review) return transition(snapshot, review, [{ kind: 'completion.delivery_review_started', payload: {} }]);
       const remaining = snapshot.todos?.items.filter(item => item.status !== 'completed') ?? [];
-      if (config.todoPolicy === 'session-todos/v1' && snapshot.candidate.purpose !== 'checkpoint'
-        && snapshot.lastWorkspaceMutationToolCall != null && remaining.length) {
+      const canRepairDelivery = config.todoPolicy === 'session-todos/v1' && snapshot.candidate.purpose !== 'checkpoint'
+        && snapshot.lastWorkspaceMutationToolCall != null;
+      const failedCommands = canRepairDelivery ? failedDeliveryCommands(snapshot.messages) : [];
+      // Use observed failures directly instead of asking for an extra review
+      // model call to rediscover the same checks.
+      if (!failedCommands.length) {
+        const review = policies.forRun(config).review.scheduleDeliveryReview(snapshot, config, 'verification_report_missing', digest);
+        if (review) return transition(snapshot, review, [{ kind: 'completion.delivery_review_started', payload: {} }]);
+      }
+      if (canRepairDelivery && (remaining.length || failedCommands.length)) {
         const progress = digest({ goal: snapshot.goalRevision, workspace: snapshot.workspaceRevision,
-          checks: remaining.map(item => item.content).sort() });
+          checks: remaining.map(item => item.content).sort(),
+          ...(failedCommands.length ? { failedCommands: failedCommands.map(canonical).sort() } : {}) });
         const reason = snapshot.deliveryContinuationDigest === progress ? 'delivery_no_progress'
           : snapshot.repairs >= config.limits.maxRepairs || finalizationOnly(snapshot, config)
             || toolRoom(snapshot, config) <= 0 || wallDeliveryOnly(snapshot, config) ? 'delivery_repair_budget_exhausted' : null;
         if (reason) return transition(snapshot, { phase: 'paused', resumePhase: 'preparing_context', candidate: null, reason, outcome: null },
           [{ kind: 'run.paused', payload: { reason } }]);
+        const issue = failedCommands.length ? 'delivery_checks_failed' : 'delivery_todos_incomplete';
         return transition(snapshot, { phase: 'preparing_context', candidate: null, preparedContext: null,
           repairs: snapshot.repairs + 1, deliveryContinuationDigest: progress, messages: [...snapshot.messages,
-            { role: 'user', kind: 'verification_observation', content: canonical({ reason: 'delivery_todos_incomplete',
+            { role: 'user', kind: 'verification_observation', content: canonical({ reason: issue,
               remaining: remaining.map(item => item.content),
+              ...(failedCommands.length ? { failedCommands: failedCommands.map(check => ({
+                command: check.command.slice(0, 320), cwd: check.cwd.slice(0, 240), exitCode: check.exitCode,
+              })) } : {}),
               instruction: 'The preceding draft was a progress report. Continue from the current workspace. Use committed tool results to identify and repair failures, run the remaining checks, and update the checklist only with observed results. If a concrete blocker requires the user, ask for the required input.' }) }] },
-          [{ kind: 'completion.continued', payload: { reason: 'delivery_todos_incomplete' } }]);
+          [{ kind: 'completion.continued', payload: { reason: issue } }]);
       }
       return finalizing(snapshot, 'unverified', 'verification_report_missing');
     }
@@ -357,7 +369,7 @@ export function reduceModel(snapshot: RunSnapshot, input: ModelResult, config: R
         ...(result.usageReported === false ? { providerUsageIncomplete: true } : {}),
         ...(result.failureDiagnostic || snapshot.diagnostics.lastModelFailure
           ? { lastModelFailure: result.failureDiagnostic ? objectValue(result.failureDiagnostic) : null } : {}) } } : {}) };
-  if (policies.forRun(config).review.reviewPending(snapshot)) {
+  if (policies.forRun(config).review.reviewPending(snapshot) && result.kind !== 'provider_retryable_error') {
     const beforeCall = { ...snapshot, usage: { ...snapshot.usage, modelCalls: snapshot.usage.modelCalls - 1 } };
     const readers = policies.forRun(config).review.deliveryReviewReaders(beforeCall, config);
     if (result.kind === 'tool_calls' && result.toolCalls.length && readers.length
@@ -543,7 +555,8 @@ export function reduceModel(snapshot: RunSnapshot, input: ModelResult, config: R
       const delay = retryDelay(result, attempts, config, random);
       // An unavailable provider is not a task failure: pause with a fresh budget so the Host can resume later.
       if (provider && exhausted && config.providerRecoveryPolicy === 'provider-recovery/v2') return { ...base, phase: 'paused',
-        resumePhase: 'preparing_context', outcome: null, reason: 'provider_unavailable', providerErrors: 0, retryNotBefore: 0 };
+        resumePhase: 'preparing_context', outcome: null, reason: 'provider_unavailable', providerErrors: 0,
+        retryNotBefore: result.retryAfterMs === undefined ? 0 : retryDeadline(now, delay) };
       const messages: Message[] = provider ? snapshot.messages : [...snapshot.messages, { role: 'user', kind: responseContinuationPending(snapshot, config)
           ? 'response_continuation_feedback' : 'model_feedback',
           content: oversizedTool
@@ -556,7 +569,7 @@ export function reduceModel(snapshot: RunSnapshot, input: ModelResult, config: R
       return { ...base, phase: exhausted ? 'finalizing' : 'preparing_context', outcome: exhausted ? 'failed' : null,
         reason: exhausted ? `${result.kind}_retry_exhausted` : null,
         providerErrors: provider ? attempts : base.providerErrors ?? snapshot.providerErrors,
-        modelErrors: provider ? snapshot.modelErrors : attempts, retryNotBefore: exhausted ? 0 : now + delay, messages };
+        modelErrors: provider ? snapshot.modelErrors : attempts, retryNotBefore: exhausted ? 0 : retryDeadline(now, delay), messages };
     }
     case 'policy_abort': return { ...base, phase: 'finalizing', outcome: 'blocked', reason: 'model_policy_abort' };
     case 'user_abort': return { ...base, phase: 'finalizing', outcome: 'unverified', reason: 'model_user_abort' };

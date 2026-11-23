@@ -76,6 +76,55 @@ for (const completes of [true, false]) test(`desktop delivery continues with an 
   if (completes) assert.equal(result.finalText, 'Checks finished.');
 });
 
+test('delivery review keeps a pending draft and honors the provider wait without repeating a tool', async t => {
+  const run = setup(t, { noVerifier: true, script: [call('write'), final(),
+    { kind: 'provider_retryable_error', failureKind: 'rate_limit', retryAfterMs: 600_000, text: '', toolCalls: [], usage: emptyUsage() },
+    review()] });
+  let now = 10_000;
+  const worker = run.worker({ now: () => now });
+  const step = () => worker.runUntilIdle(scope, 'run', { waitForRetry: false });
+  const waiting = await step();
+  assert.equal(waiting.retryNotBefore, 610_000);
+  assert.equal(waiting.deliveryReview.status, 'pending');
+  now = 609_999;
+  await step();
+  assert.equal(run.requests.length, 3);
+  now += 1;
+  const result = await step();
+  assert.equal(result.phase, 'completed');
+  assert.equal(result.outcome, 'unverified');
+  assert.deepEqual(run.requests.slice(2).map(request => request.purpose), ['delivery_review', 'delivery_review']);
+  assert.deepEqual(run.effects.map(effect => effect.callId), ['write']);
+});
+
+test('a test failure in a committed command receipt routes an early draft back to repair without a checklist', async t => {
+  const command = 'node tools/test-headless.js';
+  const captured = command + ' > /tmp/first.log 2>&1; echo "EXIT=$?"; tail -20 /tmp/first.log';
+  const commandTool = tool({ name: 'run_command', readOnly: false, concurrentSafe: false });
+  const run = setup(t, { sqlite: true, noVerifier: true,
+    options: { tools: [write, commandTool, ...todoToolDefinitions()], todoPolicy: 'session-todos/v1', deliveryReviewPolicy: null },
+    script: [call('write'), call('run_command', 'failed-check', { command: captured }), final('Still needs fixing.'),
+      request => {
+        const feedback = JSON.parse(request.messages.findLast(message => message.kind === 'verification_observation').content);
+        assert.equal(feedback.reason, 'delivery_checks_failed');
+        assert.deepEqual(feedback.remaining, []);
+        assert.deepEqual(feedback.failedCommands, [{ command, cwd: '.', exitCode: 1 }]);
+        return call('write', 'fix', { text: 'fixed' });
+      }, call('run_command', 'successful-check', { command }), final('Task checks complete.')] });
+  const execute = run.ports.tools.execute;
+  run.ports.tools.execute = async request => request.call.name === 'run_command'
+    ? { status: 'ok', content: { ok: true, backend: 'sandbox/local_process', status: 'completed',
+      command: request.call.arguments.command, exit_code: 0, evidence_incomplete: false,
+      stdout: request.call.callId === 'failed-check' ? 'EXIT=1\n17 failures\n' : 'Passed\n' } }
+    : execute(request);
+  const result = await run.worker().runUntilIdle(scope, 'run');
+  assert.equal(result.phase, 'completed');
+  assert.equal(result.outcome, 'unverified');
+  assert.equal(result.finalText, 'Task checks complete.');
+  assert.equal(result.repairs, 1);
+  assert.equal(readFileSync(run.file, 'utf8'), 'fixed');
+});
+
 for (const sqlite of [false, true]) {
   const backend = sqlite ? 'sqlite' : 'memory';
   test(`${backend}: private diagnosis repairs actual files but never supplies human acceptance`, async t => {

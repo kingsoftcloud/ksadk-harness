@@ -112,6 +112,28 @@ for (const backend of ['memory', 'sqlite']) {
     assert.equal(result.phase, 'completed'); assert.equal(models, 1); assert.equal(probes, 2);
     assert.equal(messages(result).length, 0); assert.equal(result.backgroundCommands[0].notified, false);
   });
+  test(`${backend}: a temporary read failure re-observes the same original command before inference`, async t => {
+    const host = setup(t); host.reopen();
+    let original, probes = 0, models = 0;
+    const result = await drive(host.store, async ({ signal, ...request }) => {
+      assert.equal(signal.aborted, false);
+      original ??= request;
+      assert.deepEqual(request, original);
+      assert.deepEqual(request.refs, [ref()]);
+      if (++probes === 1) throw Error('temporary command record read error');
+      if (probes === 2) return [notice(ref(), { status: 'unavailable' })];
+      return [notice()];
+    }, async request => {
+      models++;
+      const observations = request.messages.filter(message => message.kind === 'background_command_observation');
+      assert.equal(observations.length, 1);
+      assert.equal(JSON.parse(observations[0].content).commands[0].status, 'completed');
+      return final();
+    }).runUntilIdle(scope, 'run');
+    assert.equal(result.phase, 'completed');
+    assert.equal(probes, 3);
+    assert.equal(models, 1);
+  });
   for (const status of ['unknown', 'unavailable', 'forged-ref', 'duplicate', 'bad-status', 'unbound', 'throws'])
     test(`${backend}: ${status} stops inference without a relaunch or a false completion`, async t => {
       const host = setup(t); let models = 0;

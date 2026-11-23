@@ -324,15 +324,26 @@ export class E2BCommandStore {
         }));
       return;
     }
+    const recordSpawnFailure = () => {
+      // Reconnect never grants proof that the original remote command did not
+      // run. Fence the start verdict under the same lock as remote dispatch.
+      if (mode !== 'start') return;
+      const release = tryLock(join(handle.directory, 'supervisor.sqlite'));
+      if (!release) return;
+      try {
+        const record = handle._record();
+        if (record.status === 'starting' && record.generation === generation
+          && record.supervisorPid === undefined && record.pid === undefined)
+          unknownRecord(handle.directory, record, 'supervisor_launch_failed');
+      } finally { release(); }
+    };
     let child;
     try {
       child = spawn(process.execPath, ['--input-type=module', '-e',
         `import(${JSON.stringify(supervisor)}).then(m => m.runSupervisor()).catch(() => process.exit(1))`],
         { detached: true, stdio: ['pipe', 'ignore', 'ignore'], env: { ...process.env, NODE_NO_WARNINGS: '1' } });
-    } catch { unknownRecord(handle.directory, handle._record(), 'supervisor_launch_failed'); return; }
-    child.once('error', () => { const probe = tryLock(join(handle.directory, 'supervisor.sqlite'));
-      try { if (probe) { probe(); const current = handle._record(); if (current.status === 'starting') unknownRecord(handle.directory, current, 'supervisor_launch_failed'); } }
-      catch {} finally { /* probe already released if acquired */ } });
+    } catch { recordSpawnFailure(); return; }
+    child.once('error', () => { try { recordSpawnFailure(); } catch {} });
     child.stdin.on('error', () => {});
     child.stdin.end(JSON.stringify(config)); child.unref();
   }

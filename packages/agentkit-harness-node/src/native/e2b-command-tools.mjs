@@ -15,6 +15,7 @@ import { publicToolExecution } from './public-tool-result.mjs';
 //   truncated or dropped to fit a budget.
 import { canonical, copy, invariant, scopeKey, toolInputRejection } from '@kingsoftcloud/agentkit-harness-core';
 import { TERMINAL, delay } from './e2b-command-state.mjs';
+import { confirmedCommandStartFailure } from './local-command-state.mjs';
 import { createHash } from 'node:crypto';
 
 export const E2B_COMMAND_TOOLS_CONTRACT = 'agentkit.native-e2b-command-tools/v1';
@@ -431,6 +432,8 @@ function createCommandTools({ sessionId, owner, storeFactory,
 
       if (args.background) {
         const observed = syncValue(handle.readOutput());
+        if (confirmedCommandStartFailure(observed))
+          return boundResult(errorResult('command_not_started', { executed: false, outcome_reason: observed.outcomeReason }));
         const uncertain = observed.status === 'unknown' || observed.evidenceIncomplete;
         known = { status: uncertain ? 'uncertain' : 'ok',
           content: { ok: !uncertain, backend: 'sandbox/e2b', sandbox_id: sandboxId,
@@ -447,6 +450,8 @@ function createCommandTools({ sessionId, owner, storeFactory,
         }
         const guardResult3 = guard(request, before, dispatched, known);
         if (guardResult3) return guardResult3;
+        if (confirmedCommandStartFailure(output))
+          return boundResult(errorResult('command_not_started', { executed: false, outcome_reason: output.outcomeReason }));
         // The model sees a bounded preview, but its artifact must contain all
         // retained foreground output while it fits the attachment budget.
         // Larger output stays available in the existing command spool.

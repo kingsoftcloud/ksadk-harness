@@ -22,7 +22,7 @@ import {
   readFileSync, readlinkSync, readSync, realpathSync, rmdirSync, statSync,
   unlinkSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { checkPythonSyntax, NATIVE_PYTHON_SYNTAX } from './python-syntax.mjs';
 import { acquireWorkspaceMutationLock, workspaceMutationGuard } from './workspace-mutation-lock.mjs';
 import { budgetWorkspaceSourcePage, validateSourcePageBudget } from './source-page.mjs';
@@ -247,7 +247,7 @@ export function createNativeWorkspaceTools({
     const items = []; // {abs, name}
     const targetInfo = lstatSync(target, { bigint: true });
     if (targetInfo.isFile()) {
-      items.push({ abs: target, name: target.split('/').pop() });
+      items.push({ abs: target, name: basename(target) });
     } else if (targetInfo.isDirectory()) {
       const stack = [target];
       while (stack.length) {
@@ -918,7 +918,7 @@ export function createNativeWorkspaceTools({
     if (glob) {
       filtered = candidates.filter((c) => {
         const rel = relativeOf(c);
-        return fnmatch(rel, glob) || fnmatch(c.split('/').pop(), glob);
+        return fnmatch(rel, glob) || fnmatch(basename(c), glob);
       });
     }
     let pattern;

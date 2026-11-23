@@ -47,9 +47,21 @@ test('a host embeds the engine view and relays events; the view renders the time
     const frame = page.frameLocator('#v');
     await frame.getByTestId('harness-timeline').waitFor();
     await frame.getByText('Writing the file now.').waitFor();
+    await page.evaluate(events => window.send({ type: 'events', runId: 'r1', events }), [
+      e(8, 'effect.prepared', { category: 'model', title: 'request', purpose: 'compaction' }),
+    ]);
+    const compaction = frame.getByTestId('model-compaction');
+    await compaction.getByText(/正在压缩上下文|Compacting context/).waitFor();
+    assert.equal(await compaction.locator('.harness-shimmer').evaluate(el => getComputedStyle(el).animationName), 'harness-shimmer');
+    assert.equal(await compaction.locator('.harness-retry-caret').evaluate(el => getComputedStyle(el).animationName), 'harness-retry-blink');
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    assert.equal(await compaction.locator('.harness-shimmer').evaluate(el => getComputedStyle(el).animationName), 'none');
+    assert.equal(await compaction.locator('.harness-retry-caret').evaluate(el => getComputedStyle(el).animationName), 'none');
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
     // After tool work, the normal model request can enter a visible backoff.
     await page.evaluate(events => window.send({ type: 'events', runId: 'r1', events }), [
-      e(8, 'model.retry_scheduled', { retryAt: Date.now() + 5000, attempt: 2, httpStatus: 429 }),
+      e(9, 'effect.settled', { category: 'model', title: 'request' }),
+      e(10, 'model.retry_scheduled', { retryAt: Date.now() + 5000, attempt: 2, httpStatus: 429 }),
     ]);
     const backoff = frame.getByTestId('model-backoff');
     const countdown = frame.getByTestId('model-retry-countdown');
@@ -59,21 +71,21 @@ test('a host embeds the engine view and relays events; the view renders the time
     assert.match(firstLabel, /[1-5] 秒后|in [1-5]s/);
     await countdown.filter({ hasNotText: firstLabel }).waitFor({ timeout: 3000 });
     await page.evaluate(events => window.send({ type: 'events', runId: 'r1', events }), [
-      e(9, 'effect.prepared', { category: 'model', title: 'request', retry: true }),
+      e(11, 'effect.prepared', { category: 'model', title: 'request', retry: true }),
     ]);
     await frame.getByTestId('model-retry').getByText(/第 2 次重试|Attempt 2/).waitFor();
     await countdown.waitFor({ state: 'detached' });
     // A compaction request has its own retry sequence and stage label.
     await page.evaluate(events => window.send({ type: 'events', runId: 'r1', events }), [
-      e(10, 'effect.settled', { category: 'model', title: 'request' }),
-      e(11, 'model.retry_scheduled', { retryAt: Date.now() + 5000, attempt: 1, httpStatus: 429, purpose: 'compaction' }),
+      e(12, 'effect.settled', { category: 'model', title: 'request' }),
+      e(13, 'model.retry_scheduled', { retryAt: Date.now() + 5000, attempt: 1, httpStatus: 429, purpose: 'compaction' }),
     ]);
     await backoff.getByText(/上下文压缩.*第 1 次重试|Context compaction.*Attempt 1/).waitFor();
     await countdown.waitFor();
     // Replaying an overlapping batch must not duplicate anything.
     await page.evaluate(events => window.send({ type: 'events', runId: 'r1', events }), [
       e(5, 'model.completed', { detail: 'Writing the file now.', calls: [{ callId: 'c1', name: 'write_workspace_file', arguments: { path: 'out.txt' } }] }),
-      e(12, 'run.terminal', { title: 'completed', status: 'unverified', detail: 'Created out.txt.' }),
+      e(14, 'run.terminal', { title: 'completed', status: 'unverified', detail: 'Created out.txt.' }),
     ]);
     await frame.getByText('Created out.txt.').waitFor();
     assert.equal(await frame.getByText('Writing the file now.').count(), 0);

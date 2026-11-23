@@ -293,9 +293,10 @@ function modelActivity(opts, state) {
     const number = attempt ? (zh ? ` · 第 ${attempt} 次重试` : ` · Attempt ${attempt}`) : '';
     return h('div', { className: 'harness-thought-summary harness-model-activity', role: 'status',
       'data-testid': 'model-backoff', 'data-retry-at': retryAt },
-      h('span', { className: 'harness-retry-caret', 'aria-hidden': 'true' }),
-      h('span', {}, stage + label + number),
-      h('span', { 'data-testid': 'model-retry-countdown', 'data-retry-at': retryAt, 'data-retry-language': zh ? 'zh' : 'en' }));
+      brainIcon('harness-thought-icon'),
+      h('span', {}, h('span', { className: 'harness-shimmer' }, stage + label), number),
+      h('span', { 'data-testid': 'model-retry-countdown', 'data-retry-at': retryAt, 'data-retry-language': zh ? 'zh' : 'en' }),
+      h('span', { className: 'harness-retry-caret', 'aria-hidden': 'true' }));
   }
   const zh = String(opts.locale ?? '').startsWith('zh');
   const compacting = state.modelRequestPurpose === 'compaction', retry = state.modelRequestRetry;
@@ -306,8 +307,10 @@ function modelActivity(opts, state) {
   const number = retry && attempt ? (zh ? ` · 第 ${attempt} 次重试` : ` · Attempt ${attempt}`) : '';
   return h("div", { className: "harness-thought-summary harness-model-activity", role: "status",
     "data-testid": compacting ? "model-compaction" : retry ? "model-retry" : "model-thinking" },
-    retry ? h('span', { className: 'harness-retry-caret', 'aria-hidden': 'true' }) : brainIcon("harness-thought-icon"),
-    h("span", { className: "harness-thought-label harness-thought-label-streaming" }, label + number));
+    brainIcon("harness-thought-icon"),
+    h("span", { className: "harness-thought-label harness-thought-label-streaming" },
+      h('span', { className: 'harness-shimmer' }, label), number),
+    compacting || retry ? h('span', { className: 'harness-retry-caret', 'aria-hidden': 'true' }) : null);
 }
 
 function thoughtBlock(item, opts) {

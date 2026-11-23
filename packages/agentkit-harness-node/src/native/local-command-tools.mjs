@@ -4,7 +4,7 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { canonical, copy, invariant, toolInputRejection } from '@kingsoftcloud/agentkit-harness-core';
 import { constants as osConstants } from 'node:os';
 import { LocalCommandStore, createLocalBackgroundReader } from './local-background.mjs';
-import { TERMINAL, delay, readRecord } from './local-command-state.mjs';
+import { TERMINAL, confirmedCommandStartFailure, delay, readRecord } from './local-command-state.mjs';
 import { buildScriptEnvironment, localControlSettings, runBoundedProcess, LOCAL_PROCESS_CONTRACT } from './local-process.mjs';
 import { localEnvironmentPolicy, localOutputPolicy, resolveOutputPolicy } from './local-output-policy.mjs';
 import { checkGovernedCommand, LOCAL_COMMAND_POLICY, GOVERNED_COMMAND_POLICY } from './local-command-policy.mjs';
@@ -251,6 +251,8 @@ export function createLocalCommandTransport({ workspaceRoot, stateRoot, sessionI
         // output into the receipt, so re-read with the bounded window instead.
         let observed = previewWindow ? handle.readOutput({ maxBytes: previewWindow })
           : handle.readOutput();
+        if (confirmedCommandStartFailure(observed))
+          return errorResult('command_not_started', { executed: false, outcome_reason: observed.outcomeReason });
         if (!args.background && TERMINAL.has(observed.status) && observed.status !== 'unknown'
           && !previewWindow)
           observed = await handle.wait({ timeoutMs: 100 });

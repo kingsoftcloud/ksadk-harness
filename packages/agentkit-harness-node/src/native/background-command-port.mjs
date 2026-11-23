@@ -4,6 +4,7 @@
 import { BACKGROUND_COMMAND_CONTRACT, backgroundCommandObservation, backgroundCommandRef,
   commandProbe, canonical, copy, NativeError, BACKGROUND_NOTIFICATION_ADMISSION } from '@kingsoftcloud/agentkit-harness-core';
 import { ownedCommandReceipt } from './owned-command.mjs';
+import { confirmedCommandStartFailure } from './local-command-state.mjs';
 
 const backends = new Set(['local_process', 'e2b']);
 const check = (value, code) => { if (!value) throw new NativeError(code); };
@@ -67,10 +68,10 @@ export function createBackgroundCommandPort({ scope, store, readers = {} }) {
       check(new Set(request.refs.map(ref => ref.taskId)).size === request.refs.length, 'background_command_owner_mismatch');
       // Verify the entire request before touching any external handle.
       const owned = request.refs.map(candidate => {
-        return ownedCommandReceipt({ scope: pinnedScope, store, current, ref: backgroundCommandRef(candidate) });
+        return ownedCommandReceipt({ scope: pinnedScope, store, current, ref: backgroundCommandRef(candidate), verifyLocalStartFailure: true });
       });
       const observations = [];
-      for (const { ref, backend } of owned) {
+      for (const { ref, backend, requiresStartFailureProof } of owned) {
         signal.throwIfAborted();
         const unavailable = () => backgroundCommandObservation({ ref, status: 'unavailable' });
         if (!backend || !bindings[backend]) observations.push(unavailable());
@@ -81,6 +82,9 @@ export function createBackgroundCommandPort({ scope, store, readers = {} }) {
             signal.throwIfAborted();
             check(output && typeof output === 'object' && !Array.isArray(output), 'invalid_background_command_output');
             check(output.outputMayBeTruncated === undefined || typeof output.outputMayBeTruncated === 'boolean', 'invalid_background_command_output');
+            // An old uncertain launch receipt grants only this read. The local
+            // owner's terminal pre-launch record is the evidence for proceeding.
+            check(!requiresStartFailureProof || confirmedCommandStartFailure(output), 'local_command_start_failure_unconfirmed');
             if (['starting', 'running'].includes(output.status)) continue;
             observations.push(backgroundCommandObservation({ ...output, ref,
               outputMayBeTruncated: output.outputMayBeTruncated === true || output.stdoutCursor >= 8192 || output.stderrCursor >= 8192,

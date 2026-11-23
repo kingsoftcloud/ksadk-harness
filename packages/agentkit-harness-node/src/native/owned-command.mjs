@@ -65,7 +65,7 @@ export function createOwnedCommandOutputReader({ scope, store, readers = {}, isC
 }
 
 /** The backend is a fact in the canonical launch receipt, never a model hint. */
-export function ownedCommandReceipt({ scope, store, current, ref: input, includeCommand = false }) {
+export function ownedCommandReceipt({ scope, store, current, ref: input, includeCommand = false, verifyLocalStartFailure = false }) {
   const ref = backgroundCommandRef(input), source = store.load(scope, ref.sourceRunId);
   const receipt = source.receipts.find(item => item.operationKey === ref.operationKey);
   const launch = source.intents.find(item => item.operationKey === ref.operationKey);
@@ -73,13 +73,17 @@ export function ownedCommandReceipt({ scope, store, current, ref: input, include
   const result = Array.isArray(results) && results.length === 1 ? results[0] : null;
   const definition = Array.isArray(calls) && calls.length === 1
     ? source.configuration.tools.find(tool => tool.name === calls[0].name) : null;
+  const requiresStartFailureProof = verifyLocalStartFailure && calls?.[0]?.name === 'run_command'
+    && result?.status === 'uncertain' && result.content?.backend === 'sandbox/local_process'
+    && result.content.status === 'unknown' && result.content.task_id === ref.taskId;
   check(same(source.snapshot.scope, scope) && source.snapshot.sessionId === current.snapshot.sessionId
     && receipt?.status === 'committed' && launch?.kind === 'tool'
-    && definition?.backgroundCommandPolicy === 'owned-command-launch/v1' && result?.status === 'ok'
+    && definition?.backgroundCommandPolicy === 'owned-command-launch/v1' && (result?.status === 'ok' || requiresStartFailureProof)
     && same(result.backgroundCommandRef ?? null, ref), 'background_command_launcher_receipt_mismatch');
   const backend = typeof result.content?.backend === 'string' && result.content.backend.startsWith('sandbox/')
     ? result.content.backend.slice('sandbox/'.length) : null;
   return { ref, backend: ['local_process', 'e2b'].includes(backend) ? backend : null,
+    ...(requiresStartFailureProof ? { requiresStartFailureProof } : {}),
     ...(includeCommand ? { command: typeof calls[0].arguments?.command === 'string' ? calls[0].arguments.command.slice(0, 32768) : '' } : {}) };
 }
 

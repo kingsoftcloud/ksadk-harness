@@ -10,14 +10,23 @@ import { localControlSettings, resolveLocalProcessLauncher } from './local-proce
 import { localEnvironmentPolicy, localOutputPolicy } from './local-output-policy.mjs';
 import { ISOLATED_COMMAND_SHELL, shellCommandArgv } from './command-shell.mjs';
 import { LOCAL_BACKGROUND_CONTRACT, START_GRACE_MS, TERMINAL, LocalCommandError,
-  check, createPrivate, delay, digest, fsyncPrivate, lockUntil, openPrivate, privateDirectory, privateFile,
-  readAll, readRecord, readWindow, syncDirectory, tryLock, unknownRecord, validId, writeRecord } from './local-command-state.mjs';
+  check, createPrivate, delay, digest, failCommandStart, fsyncPrivate, lockUntil, openPrivate, privateDirectory, privateFile,
+  readAll, readRecord, readWindow, syncDirectory, tryLock, validId, writeRecord } from './local-command-state.mjs';
 
 export { LOCAL_BACKGROUND_CONTRACT, LocalCommandError };
 const supervisor = fileURLToPath(new URL('./local-background-supervisor.mjs', import.meta.url));
 const inside = (path, root) => path === root || path.startsWith(root + sep);
 const workerEnvironment = Object.freeze({ PATH: '/bin:/usr/bin', LANG: 'C.UTF-8', NODE_NO_WARNINGS: '1' });
 const deadline = () => performance.now() + START_GRACE_MS;
+
+function failUnclaimedStart(handle, reason) {
+  const unlock = tryLock(join(handle.directory, 'supervisor.sqlite'));
+  if (!unlock) return;
+  try {
+    const record = readRecord(handle.directory, handle.owner, handle.commandId);
+    if (record.status === 'starting') failCommandStart(handle.directory, record, reason);
+  } finally { unlock(); }
+}
 
 // commandRequest validates raw policy inputs at this public entrypoint. The
 // policies travel as separate optional fields, NOT inside settings, so the
@@ -168,17 +177,12 @@ export class LocalCommandStore {
           detached: true, cwd: directory, env: workerEnvironment, stdio: ['pipe', 'ignore', 'ignore'],
         });
       } catch {
-        unknownRecord(directory, record, 'supervisor_launch_failed'); return handle;
+        failUnclaimedStart(handle, 'supervisor_launch_failed'); return handle;
       }
       child.once('error', () => {
         // A spawn error proves no child was created; a pipe failure does not.
-        let unlock;
-        try {
-          unlock = tryLock(join(directory, 'supervisor.sqlite'));
-          const current = readRecord(directory, this.owner, commandId);
-          if (unlock && current.status === 'starting') unknownRecord(directory, current, 'supervisor_launch_failed');
-        } catch { /* existing durable intent remains recoverably unknown */ }
-        finally { unlock?.(); }
+        try { failUnclaimedStart(handle, 'supervisor_launch_failed'); }
+        catch { /* existing durable intent remains recoverably unknown */ }
       });
       child.stdin.on('error', () => { /* return the stable locator; never retry */ });
       // Secrets travel only through the private stdin pipe, never argv/record.
@@ -186,6 +190,10 @@ export class LocalCommandStore {
     } finally { release(); }
     const until = performance.now() + START_GRACE_MS;
     while (readRecord(handle.directory, this.owner, commandId).status === 'starting' && performance.now() < until) await delay(20);
+    // Fence a late supervisor before reporting a failure. A claimed command
+    // keeps its original ownership and may still publish a receipt.
+    if (readRecord(handle.directory, this.owner, commandId).status === 'starting')
+      failUnclaimedStart(handle, 'supervisor_start_expired');
     return handle;
   }
 }

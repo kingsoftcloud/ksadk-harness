@@ -156,7 +156,8 @@ export function reduceCommand(snapshot: RunSnapshot, command: RunCommand, pendin
             ...(snapshot.reasoningStallRetry ? { reasoningStallRetry: false } : {}) } : {}),
         ...(bindings.configuration?.approvalOutcomePolicy === APPROVAL_OUTCOME_POLICY
           && ['approval_rejected', 'approval_cancelled', 'approval_unavailable'].includes(snapshot.reason ?? '') ? { reason: null } : {}),
-        ...(['provider_unavailable', 'context_summary_unavailable', 'context_source_unavailable', 'child_paused']
+        ...(['provider_unavailable', 'context_summary_unavailable', 'context_source_unavailable', 'child_paused',
+          'delivery_no_progress', 'delivery_repair_budget_exhausted']
           .includes(snapshot.reason ?? '') ? { reason: null } : {}) };
       break;
     case 'submit_interaction': {

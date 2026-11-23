@@ -35,6 +35,7 @@ export function initialState() {
     verificationRequired: null,
     modelRequestActive: false,
     modelRequestRetry: false,
+    modelRetryAttempt: undefined,
     modelRequestPurpose: null,
     modelWait: null,
     modelThinkingId: null,
@@ -91,11 +92,14 @@ function apply(state, e) {
     case EventType.TaskState: return applyTaskState(state, e);
     case EventType.TaskFinished: return applyTaskFinished(state, e);
     case EventType.ModelWait:
-      if (state.taskState === TaskState.Running) state.modelWait = { retryAt: e.retryAt, httpStatus: e.httpStatus };
+      if (state.taskState === TaskState.Running) state.modelWait = { retryAt: e.retryAt, httpStatus: e.httpStatus,
+        attempt: e.attempt, purpose: e.purpose };
       return;
     case EventType.ModelRequest:
+      state.modelRetryAttempt = e.active && e.retry ? state.modelWait?.attempt : undefined;
       if (e.active) state.modelWait = null;
-      if (e.active && state.taskState === TaskState.Paused && state.taskReason === 'provider_unavailable')
+      if (e.active && state.taskState === TaskState.Paused
+        && ['provider_unavailable', 'delivery_no_progress', 'delivery_repair_budget_exhausted'].includes(state.taskReason))
         applyTaskState(state, { state: TaskState.Running, reason: null, message: null });
       if (!e.active || state.modelThinkingId !== e.itemId) settleModelPresentation(state);
       state.modelRequestActive = e.active;
@@ -183,6 +187,7 @@ function applyTaskState(state, e) {
     state.modelWait = null;
     state.modelRequestActive = false;
     state.modelRequestRetry = false;
+    state.modelRetryAttempt = undefined;
     state.modelRequestPurpose = null;
     state.modelThinkingId = null;
   }
@@ -199,6 +204,7 @@ function applyTaskFinished(state, e) {
   state.modelWait = null;
   state.modelRequestActive = false;
   state.modelRequestRetry = false;
+  state.modelRetryAttempt = undefined;
   state.modelRequestPurpose = null;
   state.modelThinkingId = null;
   state.verificationRequired = e.verificationRequired;

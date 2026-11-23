@@ -169,7 +169,9 @@ function normalizePayload(type, event) {
       return { state: requiredChoice(event.state, TASK_STATES, "task state"), reason: str(event.reason) || null, message: str(event.message) || null };
     case EventType.ModelWait:
       if (!Number.isSafeInteger(event.retryAt) || event.retryAt <= 0) throw new TypeError('model wait requires a committed deadline');
-      return { retryAt: event.retryAt, ...(Number.isSafeInteger(event.httpStatus) ? { httpStatus: event.httpStatus } : {}) };
+      return { retryAt: event.retryAt, ...(Number.isSafeInteger(event.httpStatus) ? { httpStatus: event.httpStatus } : {}),
+        ...(Number.isSafeInteger(event.attempt) && event.attempt > 0 ? { attempt: event.attempt } : {}),
+        ...(event.purpose === 'compaction' ? { purpose: 'compaction' } : {}) };
     case EventType.ModelRequest:
       if (typeof event.active !== "boolean") throw new TypeError("model request requires an active flag");
       return { active: event.active, itemId: str(event.itemId), ...(event.retry === true ? { retry: true } : {}),

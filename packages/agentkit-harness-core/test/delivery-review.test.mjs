@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { NativeKernel, MemoryRunStore, emptyUsage, canonical, configure, reduceDeliveryReview, reviewSubject,
-  projectSessionHistory, scheduleDeliveryReview, reduceCommand } from '../dist/index.mjs';
+  projectSessionHistory, scheduleDeliveryReview, reduceCommand, todoToolDefinitions } from '../dist/index.mjs';
 import { SqliteRunStore } from '@kingsoftcloud/agentkit-harness-node/native/sqlite-store';
 import { fixture, tool, scope, digest, acceptance, verificationReport } from './fixtures.mjs';
 
@@ -55,6 +55,26 @@ function setup(t, { sqlite = false, options = {}, script = [], noVerifier = fals
   return { config, snapshot, file, ports, requests, effects, streams, worker, get store() { return store; }, get verifies() { return verifies; },
     reopen() { store.close(); store = new SqliteRunStore(filename); worker().attach(scope, 'run', config); } };
 }
+
+for (const completes of [true, false]) test(`desktop delivery continues with an open checklist and ${completes ? 'finishes after checks' : 'pauses without progress'}`, async t => {
+  const todo = (status, callId) => call('TodoWrite', callId, { todos: [{ content: 'Run the browser checks', status, priority: 'high' }] });
+  const options = { tools: [write, read, ...todoToolDefinitions()], todoPolicy: 'session-todos/v1', deliveryReviewPolicy: null };
+  const run = setup(t, { sqlite: true, noVerifier: true, options, script: [
+    call('write'), todo('in_progress', 'plan'), final('Some checks failed. More work remains.'),
+    request => {
+      const feedback = request.messages.findLast(message => message.kind === 'verification_observation');
+      assert.deepEqual(JSON.parse(feedback.content).remaining, ['Run the browser checks']);
+      return completes ? call('write', 'fix', { text: 'repaired' }) : final('Still failing.');
+    },
+    ...(completes ? [call('read', 'check'), todo('completed', 'record-check'), final('Checks finished.')] : []),
+  ] });
+  const result = await run.worker().runUntilIdle(scope, 'run');
+  assert.equal(result.phase, completes ? 'completed' : 'paused');
+  assert.equal(result.reason, completes ? 'verification_report_missing' : 'delivery_no_progress');
+  assert.deepEqual(run.effects.map(effect => effect.callId), completes ? ['write', 'fix', 'check'] : ['write']);
+  assert.equal(run.store.events(scope, 'run').filter(event => event.kind === 'completion.continued').length, 1);
+  if (completes) assert.equal(result.finalText, 'Checks finished.');
+});
 
 for (const sqlite of [false, true]) {
   const backend = sqlite ? 'sqlite' : 'memory';

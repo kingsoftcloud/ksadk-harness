@@ -720,6 +720,11 @@ export class NativeKernel {
             facts.push({ kind: 'context.summary_completed', payload: { kind: result.kind, usage: objectValue(result.usage),
               messageCursor: snapshot.messages.length, usageReported: result.usageReported !== false,
               proposalAvailable: !!changes.contextState?.compaction?.proposal } });
+            if (typeof changes.retryNotBefore === 'number' && changes.retryNotBefore > 0)
+              facts.push({ kind: 'model.retry_scheduled', payload: { retryAt: Math.ceil(changes.retryNotBefore), purpose: 'compaction',
+                attempt: result.kind === 'provider_retryable_error' ? changes.contextState?.compaction?.providerErrors ?? 1
+                  : changes.contextState?.compaction?.errors ?? 1,
+                ...(result.failureDiagnostic ? { failure: objectValue(result.failureDiagnostic) } : {}) } });
             break;
           }
           const request = this.taskModelRequest(context, snapshot, configuration, intent);
@@ -767,6 +772,7 @@ export class NativeKernel {
             toolCalls: planning ? [] : result.toolCalls.map(objectValue), usage: objectValue(result.usage) } });
           if (typeof changes.retryNotBefore === 'number' && changes.retryNotBefore > 0)
             facts.push({ kind: 'model.retry_scheduled', payload: { retryAt: Math.ceil(changes.retryNotBefore),
+              attempt: result.kind === 'provider_retryable_error' ? changes.providerErrors ?? 1 : changes.modelErrors ?? 1,
               ...(result.failureDiagnostic ? { failure: objectValue(result.failureDiagnostic) } : {}) } });
           break;
         }

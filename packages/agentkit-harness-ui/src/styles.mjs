@@ -112,6 +112,13 @@ export const styles = `
 .harness-thought-preview { color: var(--harness-fg-muted); font-style: normal; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60ch; }
 .harness-thought-body { margin: 12px 0 0 8px; white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow: auto; padding-left: 14px; border-left: 1px solid var(--harness-border); color: var(--harness-thought); }
 .harness-thought-label-streaming { color: var(--harness-running); }
+.harness-retry-caret {
+  display: inline-block; flex: 0 0 auto; width: 2px; height: .85em;
+  border-radius: 1px; background: var(--harness-running);
+  animation: harness-retry-blink 1s step-end infinite;
+}
+@keyframes harness-retry-blink { 50% { opacity: .2; } }
+@media (prefers-reduced-motion: reduce) { .harness-retry-caret { animation: none; } }
 .harness-thought-preview {
   color: var(--harness-fg-muted); font-style: normal; overflow: hidden; white-space: nowrap;
   text-overflow: ellipsis; min-width: 0; flex: 1 1 auto; max-width: 60ch;

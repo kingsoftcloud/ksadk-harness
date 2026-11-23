@@ -19,6 +19,8 @@ const messages = Object.freeze({
   context_finalization_budget_unavailable: '剩余上下文预算不足以完成任务收尾。',
   repeated_tool_error_no_progress: '工具连续失败且任务没有进展，请检查工具配置或输入。',
   verification_report_missing: '任务验证没有返回结果，无法确认完成。',
+  delivery_no_progress: '验收待办仍未完成，继续执行后没有观察到进展。任务已暂停，可补充信息后继续。',
+  delivery_repair_budget_exhausted: '验收待办仍未完成，本轮可用的修复预算已用完。任务已暂停。',
   child_owner_unavailable: '子任务执行端不可用，请核对原子任务状态。',
   child_receipt_unavailable: '子任务结果尚未确认，请核对原子任务。',
   background_children_unsettled: '后台子任务尚未结算，请核对后继续。',
@@ -51,6 +53,7 @@ function modelFailureMessage(value, retriesExhausted = false) {
 }
 export function nativeModelStopMessage(reason, modelFailure) {
   if (reason === 'provider_unavailable') return '模型服务暂不可用，自动重试次数已用完。任务已暂停，可稍后继续。';
+  if (reason === 'delivery_no_progress' || reason === 'delivery_repair_budget_exhausted') return messages[reason];
   if (!modelReasons.has(reason)) return null;
   if (reason.endsWith('_retry_exhausted')) {
     const detail = modelFailureMessage(modelFailure, true);

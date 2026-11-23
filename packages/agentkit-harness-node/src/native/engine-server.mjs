@@ -113,6 +113,8 @@ export function projectEngineEvent(event, requiredVerification = false, thinking
     case 'model.retry_scheduled':
       return { ...base, category: 'model', title: 'waiting',
         ...(Number.isSafeInteger(payload.retryAt) && payload.retryAt > 0 ? { retryAt: payload.retryAt } : {}),
+        ...(Number.isSafeInteger(payload.attempt) && payload.attempt > 0 ? { attempt: payload.attempt } : {}),
+        ...(payload.purpose === 'compaction' ? { purpose: 'compaction' } : {}),
         ...(Number.isSafeInteger(payload.failure?.httpStatus) ? { httpStatus: payload.failure.httpStatus } : {}) };
     case 'context.summary_completed':
     case 'completion.delivery_review_completed':
@@ -142,6 +144,8 @@ export function projectEngineEvent(event, requiredVerification = false, thinking
     case 'model.retry_exhausted': return { ...base, category: 'model', reason: 'provider_unavailable',
       modelError: nativeModelStopMessage('provider_unavailable') };
     case 'run.started': return { ...base, category: 'run', title: 'started' };
+    case 'run.paused': return { ...base, category: 'run', title: 'paused', reason: payload.reason,
+      ...modelStopFields(payload.reason) };
     case 'run.terminal': return { ...base, category: 'run', title: payload.phase, status: payload.outcome,
       ...(requiredVerification ? { requiredVerification: true } : {}),
       ...(payload.reason ? { reason: payload.reason } : {}),

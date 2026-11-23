@@ -275,6 +275,9 @@ function renderTree(node, renderText, callbacks, React, reducedMotion, toolEleme
   const { createElement } = React;
   const testid = node.props?.["data-testid"];
   const props = node.props || {};
+  if (testid === 'model-retry-countdown') return createElement(ModelRetryCountdown, {
+    key: props['data-retry-at'], retryAt: props['data-retry-at'], zh: props['data-retry-language'] === 'zh', React,
+  });
   if (testid === 'user-image') return createElement(UserImage, { key: props['data-item-id'], image: props.image,
     loadImage: callbacks.loadImage, id: props['data-item-id'] });
   if (testid === 'tool-block' && toolElementCache?.has(node)) return toolElementCache.get(node);
@@ -333,6 +336,23 @@ function renderTree(node, renderText, callbacks, React, reducedMotion, toolEleme
   const element = createElement(node.type, { key: props["data-item-id"] ?? props["data-call-id"], ...props }, ...children);
   if (testid === "tool-block") toolElementCache?.set(node, element);
   return element;
+}
+
+function ModelRetryCountdown({ retryAt, zh, React }) {
+  const remaining = () => Math.max(0, Math.ceil((retryAt - Date.now()) / 1000));
+  const [seconds, setSeconds] = React.useState(remaining);
+  React.useEffect(() => {
+    let timer;
+    const update = () => {
+      const left = remaining();
+      setSeconds(left);
+      if (left > 0) timer = setTimeout(update, Math.max(1, retryAt - Date.now() - (left - 1) * 1000));
+    };
+    update();
+    return () => clearTimeout(timer);
+  }, [retryAt]);
+  return React.createElement('span', { 'data-testid': 'model-retry-countdown', 'aria-hidden': 'true' },
+    seconds ? (zh ? `${seconds} 秒后` : `in ${seconds}s`) : (zh ? '即将重试' : 'Retry due'));
 }
 
 function UserImage({ image, loadImage, id }) {

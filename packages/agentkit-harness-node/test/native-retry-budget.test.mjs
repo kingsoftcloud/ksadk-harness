@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto';
 import { configure, canonical, NativeKernel } from '../../agentkit-harness-core/dist/index.mjs';
 import { SqliteRunStore } from '../src/native/sqlite-store.mjs';
 import { createNativeModelPort } from '../src/native/model-port.mjs';
+import { projectEngineEvent } from '../src/native/engine-server.mjs';
 
 const identity = {
   scope: { tenantId: 't', workspaceId: 'w', userId: 'u', agentId: 'a' },
@@ -71,6 +72,12 @@ test('real HTTP retry kinds share one durable model-call budget across cold reop
   assert.equal(snapshot.usage.modelCalls, 1);
   assert.equal(snapshot.providerErrors, 1);
   assert.ok(snapshot.retryNotBefore > 10_000);
+  const backoff = store.load(identity.scope, identity.runId).events.find(event => event.kind === 'model.retry_scheduled');
+  assert.ok(backoff);
+  const wait = projectEngineEvent(backoff);
+  assert.equal(wait.attempt, 1);
+  assert.equal(wait.httpStatus, 429);
+  assert.equal(wait.retryAt, snapshot.retryNotBefore);
   store.close();
   ({ store, kernel } = fixture.open());
   snapshot = await fixture.step(kernel);

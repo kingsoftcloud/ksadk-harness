@@ -98,10 +98,13 @@ export function engineEventToTimeline(event, { runId = "run", time, startedAt = 
     }
     case "model.retry_scheduled":
       return Number.isSafeInteger(event.retryAt) && event.retryAt > 0
-        ? [{ v, id: id("model-wait"), type: "model.wait", retryAt: event.retryAt, httpStatus: event.httpStatus }] : [];
+        ? [{ v, id: id("model-wait"), type: "model.wait", retryAt: event.retryAt, httpStatus: event.httpStatus,
+          attempt: event.attempt, purpose: event.purpose }] : [];
     case "model.retry_exhausted":
       return [{ v, id: id("paused"), type: "task.state", state: "paused", reason: "provider_unavailable",
         message: event.modelError }];
+    case "run.paused":
+      return [{ v, id: id("paused"), type: "task.state", state: "paused", reason: event.reason, message: event.modelError }];
     case "run.terminal": {
       const out = [];
       const itemId = `${runId}:final`;

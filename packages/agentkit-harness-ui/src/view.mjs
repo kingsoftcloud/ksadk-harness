@@ -285,22 +285,29 @@ function textBlock(item, opts) {
 
 function modelActivity(opts, state) {
   if (state.modelWait) {
-    const zh = String(opts.locale ?? '').startsWith('zh'), status = state.modelWait.httpStatus;
-    const label = status === 429 ? (zh ? '网关限流，等待重试' : 'Gateway rate limited; waiting to retry')
+    const zh = String(opts.locale ?? '').startsWith('zh');
+    const { retryAt, httpStatus, purpose, attempt } = state.modelWait;
+    const label = httpStatus === 429 ? (zh ? '网关限流，等待重试' : 'Gateway rate limited; waiting to retry')
       : zh ? '模型请求暂未成功，等待重试' : 'Model request delayed; waiting to retry';
+    const stage = purpose === 'compaction' ? (zh ? '上下文压缩 · ' : 'Context compaction · ') : '';
+    const number = attempt ? (zh ? ` · 第 ${attempt} 次重试` : ` · Attempt ${attempt}`) : '';
     return h('div', { className: 'harness-thought-summary harness-model-activity', role: 'status',
-      'data-testid': 'model-backoff', 'data-retry-at': state.modelWait.retryAt },
-      brainIcon('harness-thought-icon'), h('span', {}, label));
+      'data-testid': 'model-backoff', 'data-retry-at': retryAt },
+      h('span', { className: 'harness-retry-caret', 'aria-hidden': 'true' }),
+      h('span', {}, stage + label + number),
+      h('span', { 'data-testid': 'model-retry-countdown', 'data-retry-at': retryAt, 'data-retry-language': zh ? 'zh' : 'en' }));
   }
   const zh = String(opts.locale ?? '').startsWith('zh');
   const compacting = state.modelRequestPurpose === 'compaction', retry = state.modelRequestRetry;
   const label = compacting ? (retry ? (zh ? '正在重试上下文压缩…' : 'Retrying context compaction…')
     : (zh ? '正在压缩上下文…' : 'Compacting context…'))
     : retry ? (zh ? '模型正在重试…' : 'Retrying model request…') : opts.labels.thinking;
+  const attempt = state.modelRetryAttempt;
+  const number = retry && attempt ? (zh ? ` · 第 ${attempt} 次重试` : ` · Attempt ${attempt}`) : '';
   return h("div", { className: "harness-thought-summary harness-model-activity", role: "status",
     "data-testid": compacting ? "model-compaction" : retry ? "model-retry" : "model-thinking" },
-    brainIcon("harness-thought-icon"),
-    h("span", { className: "harness-thought-label harness-thought-label-streaming" }, label));
+    retry ? h('span', { className: 'harness-retry-caret', 'aria-hidden': 'true' }) : brainIcon("harness-thought-icon"),
+    h("span", { className: "harness-thought-label harness-thought-label-streaming" }, label + number));
 }
 
 function thoughtBlock(item, opts) {

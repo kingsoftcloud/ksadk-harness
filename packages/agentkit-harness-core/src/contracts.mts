@@ -526,6 +526,8 @@ export interface RunSnapshot extends RunIdentity {
   toolErrorStreak: ToolErrorStreak | null;
   toolErrorRecovery?: ToolErrorRecovery | null;
   deliveryReview?: DeliveryReviewState | null;
+  /** Last unfinished delivery sent back to the model, keyed by work progress. */
+  deliveryContinuationDigest?: string;
   executionBudgetObservation?: { policy: 'prepared-execution-budget/v1'; runId: string; sourceRevision: number;
     goalRevision: number; modelCallsClaimed: number; toolCallsClaimed: number; wallMsRemaining: number | null };
   deliveryArtifacts?: { goalRevision: number; paths: string[] };

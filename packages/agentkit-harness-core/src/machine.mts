@@ -274,8 +274,25 @@ export function plan(snapshot: RunSnapshot, config: RunConfiguration, capabiliti
     invariant(snapshot.candidate, 'verification_candidate_missing');
     if (!capabilities.verification) {
       const review = policies.forRun(config).review.scheduleDeliveryReview(snapshot, config, 'verification_report_missing', digest);
-      return review ? transition(snapshot, review, [{ kind: 'completion.delivery_review_started', payload: {} }])
-        : finalizing(snapshot, 'unverified', 'verification_report_missing');
+      if (review) return transition(snapshot, review, [{ kind: 'completion.delivery_review_started', payload: {} }]);
+      const remaining = snapshot.todos?.items.filter(item => item.status !== 'completed') ?? [];
+      if (config.todoPolicy === 'session-todos/v1' && snapshot.candidate.purpose !== 'checkpoint'
+        && snapshot.lastWorkspaceMutationToolCall != null && remaining.length) {
+        const progress = digest({ goal: snapshot.goalRevision, workspace: snapshot.workspaceRevision,
+          checks: remaining.map(item => item.content).sort() });
+        const reason = snapshot.deliveryContinuationDigest === progress ? 'delivery_no_progress'
+          : snapshot.repairs >= config.limits.maxRepairs || finalizationOnly(snapshot, config)
+            || toolRoom(snapshot, config) <= 0 || wallDeliveryOnly(snapshot, config) ? 'delivery_repair_budget_exhausted' : null;
+        if (reason) return transition(snapshot, { phase: 'paused', resumePhase: 'preparing_context', candidate: null, reason, outcome: null },
+          [{ kind: 'run.paused', payload: { reason } }]);
+        return transition(snapshot, { phase: 'preparing_context', candidate: null, preparedContext: null,
+          repairs: snapshot.repairs + 1, deliveryContinuationDigest: progress, messages: [...snapshot.messages,
+            { role: 'user', kind: 'verification_observation', content: canonical({ reason: 'delivery_todos_incomplete',
+              remaining: remaining.map(item => item.content),
+              instruction: 'The preceding draft was a progress report. Continue from the current workspace. Use committed tool results to identify and repair failures, run the remaining checks, and update the checklist only with observed results. If a concrete blocker requires the user, ask for the required input.' }) }] },
+          [{ kind: 'completion.continued', payload: { reason: 'delivery_todos_incomplete' } }]);
+      }
+      return finalizing(snapshot, 'unverified', 'verification_report_missing');
     }
     return prepareEffect(snapshot, 'verify', 'verifying', { candidate: objectValue(snapshot.candidate) });
   }

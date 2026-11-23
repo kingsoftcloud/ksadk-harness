@@ -218,7 +218,8 @@ for (const sqlite of [false, true]) test(`${sqlite ? 'sqlite' : 'memory'}: provi
   run.ports.model.generate = async request => {
     if (request.purpose === 'compaction') {
       summaries++;
-      if (summaries === 1) return { kind: 'provider_retryable_error', text: '', toolCalls: [], usage: emptyUsage() };
+      if (summaries === 1) return { kind: 'provider_retryable_error', text: '', toolCalls: [], usage: emptyUsage(),
+        failureDiagnostic: { contract: 'model-failure-diagnostic/v1', protocol: 'openai-chat', phase: 'http-error', code: 'http_rate_limit', httpStatus: 429 } };
       if (summaries === 2) return toolResponse();
       return final('Bounded historical notes');
     }
@@ -230,6 +231,11 @@ for (const sqlite of [false, true]) test(`${sqlite ? 'sqlite' : 'memory'}: provi
   assert.ok(summaries >= 3);
   assert.equal(result.usage.modelCalls, tasks + summaries);
   assert.equal(result.contextState.compactions, 1);
+  const wait = run.store.events(scope, 'run').find(event => event.kind === 'model.retry_scheduled');
+  assert.equal(wait?.payload.purpose, 'compaction');
+  assert.equal(wait.payload.attempt, 1);
+  assert.equal(wait.payload.failure.httpStatus, 429);
+  assert.ok(Number.isSafeInteger(wait.payload.retryAt) && wait.payload.retryAt > 0);
 });
 
 test('summary calls consume the same model budget and cannot spend the finalization reserve', async t => {

@@ -68,6 +68,10 @@ test('counter binding is frozen and versioned across protocol/model/parameter ch
   assert.equal(Object.isFrozen(port.tokens), true);
   const controller = new AbortController(); controller.abort(Error('Stopped'));
   await assert.rejects(port.tokens.countRequest({ ...input, signal: controller.signal }), /Stopped/);
+  const pending = new AbortController();
+  const counting = port.tokens.countRequest({ ...input, signal: pending.signal });
+  pending.abort(Error('Stopped during planning'));
+  await assert.rejects(counting, /Stopped during planning/);
 });
 test('image-shaped schemas and tool arguments are priced as text, not interpreted as media', () => {
   const image = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA'.repeat(1000) } };

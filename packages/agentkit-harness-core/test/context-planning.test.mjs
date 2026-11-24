@@ -96,6 +96,39 @@ test('fresh complete tool observations remain intact when the hard request fits 
   assert.equal(result.phase, 'completed'); assert.equal(summaries, 0);
 });
 
+test('long histories price a bounded number of full requests and retain whole recent tool batches', async () => {
+  const { config, snapshot } = fixture({ tools: [tool()], contextPolicy: policy({ budgetTiming: 'before-model/v1',
+    recentToolBatchCount: 4, recentToolBatchMaxTokens: 128, recentToolBatchesTotalMaxTokens: 512 }),
+  profile: { profileId: 'test', profileVersion: '1', providerFamily: 'fixture', compatibilityDigest: 'fixture/v1',
+    contextWindow: 22000, maxOutputTokens: 128 } });
+  const observations = Array.from({ length: 600 }, (_, index) => {
+    const callId = `read-${index}`;
+    return [{ role: 'assistant', content: '', toolCalls: [{ callId, name: 'read', arguments: {} }] },
+      { role: 'tool', callId, name: 'read', content: 'Recorded observation '.repeat(10) }];
+  });
+  snapshot.messages.unshift(...observations.flat());
+  let taskCounts = 0;
+  const counters = {
+    countRequest: async (messages, tools, purpose) => {
+      if (purpose === 'task') taskCounts++;
+      return count(messages, tools);
+    },
+    countMessage: async message => count([message], []),
+    countText: async text => Math.ceil(text.length / 4),
+  };
+  const result = await planNativeContext(snapshot, config, config.tools, counters, digest, false, true);
+  assert.equal(result.action, 'compact');
+  assert.ok(taskCounts < 20, `full task request counts: ${taskCounts}`);
+  const { chunk, retainedRefs, removedRefs } = result.state.compaction;
+  const retained = new Set(retainedRefs.map(ref => Number(ref.split(':')[1])));
+  const firstRetained = Math.min(...retained);
+  assert.ok(firstRetained > 0 && firstRetained < 2 * observations.length - 8);
+  assert.equal(firstRetained % 2, 0);
+  assert.deepEqual([...retained], snapshot.messages.map((_, index) => index).slice(firstRetained));
+  assert.equal(removedRefs.length, firstRetained);
+  assert.ok(chunk.countedInputTokens + chunk.maxOutputTokens <= config.profile.contextWindow);
+});
+
 for (const failure of ['missing', 'changed', 'invalid', 'disabled', 'mandatory']) test(`context ${failure} fails before an unadmitted model request`, async t => {
   const run = setup(t, { contextPolicy: failure === 'disabled' ? { enabled: false } : {} }); let models = 0;
   run.ports.model.generate = async () => { models++; return final(); };

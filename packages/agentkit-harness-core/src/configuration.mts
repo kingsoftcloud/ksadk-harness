@@ -406,6 +406,10 @@ export function configure(input: ConfigurationInput): RunConfiguration {
       && (policy.budgetTiming === undefined || policy.budgetTiming === 'before-model/v1')
       && (policy.continuityPlacement === undefined || policy.continuityPlacement === 'after-history/v1'
         && profile.operatorGuidancePolicy === undefined)
+      && (policy.continuityProjection === undefined || policy.continuityProjection === 'decision-input/v1'
+        && config.modelSurface?.verificationProjection === 'readable-evidence/v1')
+      && (policy.commandOutputProjection === undefined || policy.commandOutputProjection === 'receipt-preview/v1'
+        && config.artifactPolicy === 'runtime-artifacts/v1')
       && (policy.sourceReusePolicy === undefined || policy.sourceReusePolicy === 'captured-source/v1'
         && profile.providerFamily === 'openai-chat' && config.artifactPolicy === 'runtime-artifacts/v1')
       && (policy.maxCompactions === null || Number.isSafeInteger(policy.maxCompactions) && policy.maxCompactions >= 0)

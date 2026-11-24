@@ -11,8 +11,9 @@ import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { E2BCommandStore, E2BBackgroundCommand } from '../src/native/e2b-background.mjs';
-import { TERMINAL } from '../src/native/local-command-state.mjs';
+import { TERMINAL, tryLock } from '../src/native/local-command-state.mjs';
 
 // macOS /tmp is a symlink to /private/tmp; the private-state helpers reject
 // symlinked roots, so resolve tmpdir first (matching the local-background tests).
@@ -317,6 +318,49 @@ test('a proven E2B supervisor spawn failure stays failed after a Host restart an
   assert.equal(output.evidenceIncomplete, false);
   assert.equal(output.exitCode, null);
   assert.equal(existsSync(marker), false);
+});
+
+test('a detached E2B supervisor waits for a concurrent receipt probe', async t => {
+  const root = mkdtempSync(join(tmp, 'e2b-probe-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const workspaceRoot = join(root, 'workspace');
+  mkdirSync(workspaceRoot);
+  const ready = join(root, 'ready'), dispatch = join(root, 'dispatch'), effects = join(root, 'effects');
+  const transport = join(root, 'transport.mjs');
+  writeFileSync(transport, `
+    import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
+    import { setTimeout as delay } from 'node:timers/promises';
+    export async function factory({ ready, dispatch, effects }) {
+      writeFileSync(ready, 'ready');
+      const deadline = performance.now() + 10000;
+      while (!existsSync(dispatch) && performance.now() < deadline) await delay(10);
+      if (!existsSync(dispatch)) throw new Error('missing test release');
+      return { async start(command, { sandboxId }) {
+        appendFileSync(effects, command);
+        return { pid: 41, sandboxId, handle: { result: { exitCode: 0 },
+          async *[Symbol.asyncIterator]() { yield { stdout: command }; } } };
+      } };
+    }
+  `);
+  const store = new E2BCommandStore({ workspaceRoot, stateRoot: join(root, 'state'), sessionId: 'original',
+    sandboxId: 'probe-fixture', authority: () => true, transportModule: pathToFileURL(transport).href,
+    transportConfig: { ready, dispatch, effects } });
+  const input = { operationKey: 'original', command: 'once', timeoutSeconds: 12 };
+  const original = await store.start(input);
+  await poll(() => existsSync(ready));
+  const release = tryLock(join(original.directory, 'supervisor.sqlite'));
+  assert.equal(typeof release, 'function');
+  try {
+    writeFileSync(dispatch, 'open');
+    await delay(350);
+    assert.equal(existsSync(effects), false);
+  } finally { release(); }
+  assert.equal((await original.wait({ timeoutMs: 6500 })).stdout, 'once');
+  assert.notEqual(original.processId, process.pid);
+  const reopened = await store.start(input);
+  assert.equal(reopened.commandId, original.commandId);
+  assert.equal(reopened.readOutput().status, 'completed');
+  assert.equal(readFileSync(effects, 'utf8'), 'once');
 });
 
 test('detached supervisor: real child Host process spawns, starts a command, exits; a new Host process reopens and reads the same output', async t => {

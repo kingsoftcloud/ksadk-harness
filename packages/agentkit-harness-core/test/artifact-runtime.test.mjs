@@ -83,6 +83,37 @@ test('artifact policy is sealed, reserved definitions cannot be changed, and leg
   assert.equal(fixture(policy).config.artifactPolicy, 'runtime-artifacts/v1');
 });
 
+test('new automatic command receipts keep exit evidence and archive only their authorized output', async t => {
+  const { artifacts } = await storage(t);
+  const command = tool({ name: 'run_command', readOnly: false, concurrentSafe: false, workspaceChangePolicy: 'observed-command/v1' });
+  const { config } = fixture({ ...policy, tools: [command, ...artifactToolDefinitions()], limits: { maxToolResultBytes: 16000 },
+    contextPolicy: { ...sourceCapacityFixture().config.contextPolicy, commandOutputProjection: 'receipt-preview/v1' } });
+  const observed = { task_id: 'original-task', status: 'failed', exit_code: 17, stdout_cursor: 4096,
+    stdout: 'head\n' + 'buffered '.repeat(400) + '\nend', stderr: 'warning '.repeat(340) + 'exact error at end' };
+  const input = { status: 'ok', content: { ...observed, privateFact: 'not in the model observation' }, context: { content: canonical(observed) } };
+  const projected = await governArtifactResult(context, command, input, config, artifacts);
+  const view = parseMessage(projected.context);
+  assert.equal(view.exit_code, 17);
+  assert.equal(view.task_id, observed.task_id);
+  assert.equal(view.stdout_cursor, 4096);
+  assert.match(view.stdout, /^head\n[\s\S]+…[\s\S]+end$/);
+  assert.match(view.stderr, /exact error at end$/);
+  assert.equal(view.output_preview.stdout_receipt_bytes, Buffer.byteLength(observed.stdout));
+  assert.ok(projected.context.content.length < input.context.content.length / 2);
+  assert.deepEqual(projected.content, input.content);
+  const ref = projected.artifactRefs[0];
+  assert.equal(ref.uri, view.artifact_uri);
+  const archive = await artifacts.read({ ...context, ref, offset: 0, limit: 15000 });
+  assert.deepEqual(JSON.parse(JSON.parse(archive.content).content.model_content), observed);
+
+  const fallback = await governArtifactResult(context, command, input, config);
+  assert.equal(fallback.context.content, input.context.content);
+  const { commandOutputProjection: _unused, ...previousPolicy } = config.contextPolicy;
+  const prior = await governArtifactResult(context, command, input, { ...config, contextPolicy: previousPolicy }, artifacts);
+  assert.equal(prior.context.content, input.context.content);
+  assert.equal(prior.artifactRefs, undefined);
+});
+
 for (const backend of ['memory', 'sqlite']) test(`${backend}: actual Kernel archives the post-policy view, retains original receipt, and restricts read/search/catalog`, async t => {
   const { root, artifacts } = await storage(t), store = backend === 'sqlite' ? new SqliteRunStore(join(root, 'run.sqlite')) : new MemoryRunStore();
   t.after(() => store.close?.());

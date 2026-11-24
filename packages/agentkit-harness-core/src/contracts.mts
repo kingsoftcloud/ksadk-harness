@@ -200,6 +200,10 @@ export interface ContextPlanningPolicy {
   /** Count and dispatch current Host state after complete history groups.
    * Absence preserves the admitted legacy prefix layout. */
   continuityPlacement?: 'after-history/v1';
+  /** Keep model-facing continuity focused on decisions; the Run retains full accounting. */
+  continuityProjection?: 'decision-input/v1';
+  /** Archive large automatic command receipts and keep a bounded model-facing preview. */
+  commandOutputProjection?: 'receipt-preview/v1';
   /** Replace older identical proven captured-source bodies in request views. */
   sourceReusePolicy?: 'captured-source/v1';
   triggerRatio: number; targetRatio: number; summaryMaxTokens: number;

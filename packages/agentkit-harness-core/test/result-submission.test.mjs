@@ -6,12 +6,39 @@ import { tmpdir } from 'node:os';
 import { NativeKernel, MemoryRunStore, RESULT_DELIVERY_POLICY, DELIVERY_SCOPE_POLICY, deliveryToolDefinitions,
   finalSubmissionTool, emptyUsage, canonical, configure, sealCandidate } from '../dist/index.mjs';
 import { SqliteRunStore } from '@kingsoftcloud/agentkit-harness-node/native/sqlite-store';
+import { Ajv2020 } from 'ajv/dist/2020.js';
 import { fixture, scope, digest, tool, acceptance, verificationReport } from './fixtures.mjs';
 
 const response = (args, text = '') => ({ kind: args ? 'tool_calls' : 'final_candidate', text,
   toolCalls: args ? [{ callId: 'result', name: 'submit_final_output', arguments: args }] : [], usage: emptyUsage() });
 const configuration = overrides => ({ deliveryScopePolicy: RESULT_DELIVERY_POLICY,
   tools: deliveryToolDefinitions(RESULT_DELIVERY_POLICY), ...overrides });
+
+test('final submission advertises distinct file and web fields and explains a misplaced root', async () => {
+  const store = new MemoryRunStore(), { config, snapshot } = fixture(configuration());
+  const validate = new Ajv2020().compile(finalSubmissionTool(config).parameters);
+  const file = { kind: 'file', path: 'src/cli.mjs' };
+  const bad = { answer: 'Changes ready.', artifacts: [{ ...file, root: '.' }] };
+  const fixed = { answer: bad.answer, artifacts: [file] };
+  assert.equal(validate(bad), false);
+  assert.equal(validate(fixed), true);
+  assert.equal(validate({ answer: 'Web', artifacts: [{ kind: 'web', path: 'site/index.html' }] }), false);
+  assert.equal(validate({ answer: 'Web', artifacts: [{ kind: 'web', path: 'site/index.html', root: 'site' }] }), true);
+  let calls = 0;
+  const kernel = new NativeKernel({ store, owner: 'schema', digest, ports: { model: { generate: async request => {
+    if (++calls === 1) return response(bad);
+    const receipt = JSON.parse(request.messages.findLast(message => message.role === 'tool').content);
+    assert.equal(receipt.status, 'not_dispatched');
+    assert.equal(receipt.reason, 'invalid_file_delivery_scope');
+    assert.equal(receipt.field, 'artifacts[0].root');
+    return response(fixed);
+  } } } });
+  kernel.start(snapshot, config);
+  const done = await kernel.runUntilIdle(scope, 'run');
+  assert.equal(calls, 2);
+  assert.deepEqual(done.deliveryManifest.artifacts, [file]);
+  assert.equal(done.finalText, fixed.answer);
+});
 
 for (const backend of ['memory', 'sqlite']) test(`${backend}: final answer and artifact scope commit together without an external effect or second model call`, async t => {
   const dir = mkdtempSync(join(tmpdir(), 'atomic-result-'));t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -112,4 +139,21 @@ test('historical configurations and their tool definitions keep their original i
   const { config } = fixture(configuration());
   assert.equal(config.policyModules.some(p => p.id === 'native.delivery-results'), true);
   assert.equal(config.policyModules.some(p => p.id === 'native.delivery-scope'), false);
+});
+
+test('a Run admitted with the previous delivery definition retains its final tool at reattach', () => {
+  const [declaration] = deliveryToolDefinitions(RESULT_DELIVERY_POLICY);
+  const path = { type: 'string', minLength: 1, maxLength: 2048 };
+  const previous = { type: 'array', maxItems: 32, items: {
+    type: 'object', additionalProperties: false, required: ['path', 'kind'],
+    properties: { path, kind: { enum: ['file', 'web'] }, root: path },
+  } };
+  declaration.parameters.properties.artifacts = previous;
+  const { config } = fixture(configuration({ tools: [declaration] }));
+  const restored = configure(config);
+  assert.equal(canonical(restored), canonical(config));
+  const final = finalSubmissionTool(restored);
+  assert.deepEqual(final.parameters.properties.artifacts, previous);
+  assert.match(final.description, /documents and source files use kind=file/);
+  assert.doesNotMatch(final.description, /src\/index\.js/);
 });

@@ -92,6 +92,28 @@ function offloadedView(result: ToolResult, payloadBytes: number, maximum: number
   return encode(low);
 }
 
+function commandOutputPreview(result: ToolResult, definition: ToolDefinition, config: RunConfiguration): ObjectValue | null {
+  if (config.contextPolicy?.commandOutputProjection !== 'receipt-preview/v1'
+    || definition.name !== 'run_command' || definition.workspaceChangePolicy !== 'observed-command/v1'
+    || result.context?.media?.length || result.additionalContexts?.length
+    || config.contract.allowedToolNames !== null && !config.contract.allowedToolNames.includes('ArtifactRead')) return null;
+  let observed: Json;
+  try { observed = parseNativeJson(projectToolResultContext(result, config).content); }
+  catch { return null; }
+  if (!object(observed)) return null;
+  const sizes: ObjectValue = {}, preview = { ...observed };
+  for (const stream of ['stdout', 'stderr'] as const) {
+    const text = observed[stream];
+    if (typeof text !== 'string' || bytes(text) <= 2048) continue;
+    const chars = Array.from(text);
+    const tail = stream === 'stderr' ? 768 : 512;
+    if (chars.length <= 128 + tail) continue;
+    sizes[`${stream}_receipt_bytes`] = bytes(text);
+    preview[stream] = chars.slice(0, 128).join('') + '\n…\n' + chars.slice(-tail).join('');
+  }
+  return Object.keys(sizes).length ? { ...preview, output_preview: sizes } : null;
+}
+
 /** Runs within the original durable tool intent. Archive failures never relabel a known mutation or cause a retry. */
 export async function governArtifactResult(context: PortContext, definition: ToolDefinition, input: ToolResult,
   config: RunConfiguration, artifacts?: ArtifactPort): Promise<ToolResult> {
@@ -128,7 +150,8 @@ export async function governArtifactResult(context: PortContext, definition: Too
   if (isArtifactTool(definition.name)) return result;
   const tooLarge = modelObservationBytes(result, config) > config.limits.maxToolResultBytes;
   const force = ['archived-model-view/v4', 'archived-model-view/v5'].includes(definition.resultArchivePolicy ?? '') && result.status === 'ok';
-  if (!tooLarge && !force) return result;
+  const commandPreview = commandOutputPreview(result, definition, config);
+  if (!tooLarge && !force && !commandPreview) return result;
   // Preserve the canonical receipt in SQLite. The readable archive follows the actual post-policy model view;
   // hidden/raw Host facts must not become visible merely by asking ArtifactRead for the overflow.
   const observation = result.archiveContext ?? result.context;
@@ -146,6 +169,16 @@ export async function governArtifactResult(context: PortContext, definition: Too
     }
   } catch { /* The original tool outcome remains authoritative even when storage fails. */ }
   if (ref) result.artifactRefs = [ref];
+  if (commandPreview && ref) {
+    const content = canonical({ ...commandPreview, artifact_uri: ref.uri, artifact_state: 'available',
+      output_preview_instruction: 'Read the granted artifact for omitted receipt text. Output cursors still refer to the original command. Do not repeat its effects.' });
+    if (modelSize({ ...result, context: { content } }) <= config.limits.maxToolResultBytes
+      && bytes(content) < bytes(projectToolResultContext(result, config).content)) {
+      result.context = { ...result.context, content };
+      return result;
+    }
+    if (!tooLarge && !force) return result;
+  }
   // Pixel observations use the independent image allowance; a forced text archive cannot erase them.
   if (config.modelSurface && !tooLarge && result.context?.media?.length) return result;
   if (sourceView && !result.context?.media?.length && !result.additionalContexts?.length) {

@@ -10,9 +10,15 @@ export interface DeliveryManifest {
   goalRevision: number; revision: number; artifacts: DeliveryArtifact[];
 }
 const pathSchema = { type: 'string', minLength: 1, maxLength: 2048 };
-export const deliveryArtifactsSchema = { type: 'array', maxItems: 32, items: {
+const historicalArtifactsSchema = { type: 'array', maxItems: 32, items: {
   type: 'object', additionalProperties: false, required: ['path', 'kind'], properties: {
     path: pathSchema, kind: { enum: ['file', 'web'] }, root: pathSchema } } };
+export const deliveryArtifactsSchema = { type: 'array', maxItems: 32, items: { oneOf: [
+  { type: 'object', additionalProperties: false, required: ['kind', 'path'], properties: {
+    kind: { type: 'string', const: 'file' }, path: pathSchema } },
+  { type: 'object', additionalProperties: false, required: ['kind', 'path', 'root'], properties: {
+    kind: { type: 'string', const: 'web' }, path: pathSchema, root: pathSchema } },
+] } };
 export function deliveryScopeEnabled(config: Pick<RunConfiguration, 'deliveryScopePolicy'>): boolean {
   return config.deliveryScopePolicy === DELIVERY_SCOPE_POLICY || config.deliveryScopePolicy === RESULT_DELIVERY_POLICY;
 }
@@ -34,6 +40,17 @@ function relativePath(value: unknown, root = false): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 2048
     && !/[\\\u0000-\u001f\u007f:]/u.test(value) && !value.startsWith('/')
     && (root && value === '.' || value.split('/').every(part => part && part !== '.' && part !== '..'));
+}
+function historicalDeliveryTool(policy: RunConfiguration['deliveryScopePolicy']): ToolDefinition {
+  const current = deliveryToolDefinitions(policy)[0]!;
+  return { ...current, parameters: { ...current.parameters, properties: { artifacts: historicalArtifactsSchema } } };
+}
+export function usesHistoricalDeliveryTools(config: RunConfiguration): boolean {
+  const tool = config.tools.find(definition => definition.name === DECLARE_DELIVERABLES);
+  return Boolean(tool && canonical(tool) === canonical(historicalDeliveryTool(config.deliveryScopePolicy)));
+}
+export function deliverySchemaForRun(config: RunConfiguration) {
+  return usesHistoricalDeliveryTools(config) ? historicalArtifactsSchema : deliveryArtifactsSchema;
 }
 export function deliveryArtifacts(value: unknown): DeliveryArtifact[] {
   invariant(Array.isArray(value) && value.length <= 32, 'invalid_delivery_artifacts');
@@ -57,7 +74,10 @@ export function isDeliveryCall(config: RunConfiguration, call: Pick<ToolCall, 'n
 export function validateDeliveryConfiguration(config: RunConfiguration): void {
   invariant(config.deliveryScopePolicy === undefined || deliveryScopeEnabled(config), 'invalid_delivery_scope_policy');
   if (!config.deliveryScopePolicy) return;
-  invariant(config.tools.some(tool => canonical(tool) === canonical(deliveryToolDefinitions(config.deliveryScopePolicy)[0])), 'delivery_tool_binding_invalid');
+  const current = canonical(deliveryToolDefinitions(config.deliveryScopePolicy)[0]);
+  // Durable Runs retain the tool definition they were admitted with.
+  invariant(config.tools.some(tool => tool.name === DECLARE_DELIVERABLES && canonical(tool) === current)
+    || usesHistoricalDeliveryTools(config), 'delivery_tool_binding_invalid');
 }
 export function executeDelivery(snapshot: RunSnapshot, config: RunConfiguration, call: ToolCall): ToolResult {
   invariant(isDeliveryCall(config, call), 'delivery_policy_unavailable');

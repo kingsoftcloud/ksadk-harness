@@ -15,6 +15,7 @@ import { responseBoundaryRecovery, responseContinuationPairs } from './response-
 import { verificationModelView } from './model-surface.mjs';
 import { currentInstructionContribution, hostInstructionContribution } from './context-contributions.mjs';
 import { projectBackgroundCommands } from './background-contract.mjs';
+import { projectTodoWriteReceipt } from './todos.mjs';
 
 export interface ContextCounters {
   /** Clock observation for this journaled context effect; never recomputed during counting. */
@@ -48,11 +49,15 @@ export function contextContinuity(snapshot: RunSnapshot, config: RunConfiguratio
   const canReadArtifacts = config.artifactPolicy === 'runtime-artifacts/v1' && config.tools.some(tool => tool.name === 'ArtifactRead'
     && (config.contract.allowedToolNames === null || config.contract.allowedToolNames.includes(tool.name)));
   const commands = projectBackgroundCommands(snapshot.backgroundCommands, 32, 8);
-  return copy({ schemaVersion: scopedEvidence ? 'agentkit.native-context-continuity/v2' : 'agentkit.native-context-continuity/v1', authority: 'host_record', goal: snapshot.goal,
+  // Keep the original objective available after a goal revision. In the
+  // ordinary case the live goal already carries the same text in this message.
+  const { objective, ...contractFields } = config.contract;
+  const contract = scopedEvidence && snapshot.goal === objective ? contractFields : config.contract;
+  const full = { schemaVersion: scopedEvidence ? 'agentkit.native-context-continuity/v2' : 'agentkit.native-context-continuity/v1', authority: 'host_record', goal: snapshot.goal,
     ...(snapshot.todos ? { todos: snapshot.todos.items, todoRevision: snapshot.todos.revision } : {}),
     ...(snapshot.planMode ? { planMode: snapshot.planMode, planModeGuidance: policies.forRun(config).planning.planModeGuidance(snapshot, config) } : {}),
     ...(config.profile.operatorGuidancePolicy ? { operatorGuidancePolicy: config.profile.operatorGuidancePolicy } : {}),
-    goalRevision: snapshot.goalRevision, contract: config.contract, usage: snapshot.usage, descendantUsage: snapshot.descendantUsage,
+    goalRevision: snapshot.goalRevision, contract, usage: snapshot.usage, descendantUsage: snapshot.descendantUsage,
     limits: config.limits, workspaceRevision: snapshot.workspaceRevision, workspaceModifiedPaths: snapshot.workspaceModifiedPaths,
     artifactRefs: config.artifactPolicy === 'runtime-artifacts/v1' ? snapshot.artifactRefs.slice(-8)
       .map(({ uri, digest, mediaType, sizeBytes }) => ({ uri, digest, mediaType, sizeBytes })) : snapshot.artifactRefs,
@@ -75,7 +80,24 @@ export function contextContinuity(snapshot: RunSnapshot, config: RunConfiguratio
       toolErrorRecoveryInstruction: 'The repeated-error guard remains active across compaction. '
         + 'Observe new authorized diagnostic evidence before a later model decision may use one corrected trial. '
         + 'Reads and unrelated writes do not reset the recovery allowance; diagnosis is not task acceptance.' } : {}),
-  }) as unknown as ObjectValue;
+  } as unknown as ObjectValue;
+  if (config.contextPolicy?.continuityProjection !== 'decision-input/v1') return copy(full);
+
+  const counts = ({ modelCalls, toolCalls }: Usage) => ({ modelCalls, toolCalls });
+  const budgets = ['maxWallMs', 'maxModelCalls', 'maxToolCalls', 'maxRepairs', 'maxSubagentDepth',
+    'finalizationReserveModelCalls', 'finalizationReserveWallMs', 'verificationReserveModelCalls'] as const;
+  const limits = Object.fromEntries(budgets.filter(key => config.limits[key] !== null).map(key => [key, config.limits[key]]));
+  const optional = ['workspaceRevision', 'workspaceModifiedPaths', 'artifactRefs', 'pendingInteraction', 'childBudgetReservations',
+    'childRunIds', 'childApproval', 'children', 'backgroundCommands', 'verification'];
+  const model = { ...full, schemaVersion: 'agentkit.native-context-continuity/v3', limits,
+    usage: counts(snapshot.usage), descendantUsage: counts(snapshot.descendantUsage) } as ObjectValue;
+  for (const key of optional) {
+    const value = model[key];
+    if (value === null || Array.isArray(value) && value.length === 0) delete model[key];
+  }
+  if (snapshot.descendantUsage.modelCalls === 0 && snapshot.descendantUsage.toolCalls === 0) delete model.descendantUsage;
+  if (snapshot.artifactRefs.length === 0) delete model.artifactCatalog;
+  return copy(model);
 }
 export function contextSummaryMessage(summary: string): Message {
   return { role: 'user', kind: 'compaction_summary', content: canonical({
@@ -292,8 +314,9 @@ export async function planNativeContext(snapshot: RunSnapshot, config: RunConfig
   const policy = config.contextPolicy;
   invariant(policy, 'context_policy_missing');
   const reuseSources = sourceReuseProjector(snapshot, config, digest);
+  const compactTodoReceipts = config.modelSurface?.verificationProjection === 'readable-evidence/v1' && Boolean(snapshot.todos);
   const withSummary = (messages: Message[], summary: string, continuity: ObjectValue, contributions: Message[] = []) =>
-    composeContext(reuseSources(messages), summary, continuity,
+    composeContext(reuseSources(compactTodoReceipts ? messages.map(projectTodoWriteReceipt) : messages), summary, continuity,
       contributions.filter(message => !currentInstructionContribution(message, config)), policy.continuityPlacement,
       contributions.filter(message => currentInstructionContribution(message, config)));
   const state = copy(snapshot.contextState ?? emptyState());

@@ -4,7 +4,7 @@ import type { CommitBatch, EffectIntent, EffectReceipt, Message, ModelResult, Ob
 import { copy, invariant, canonical } from './values.mjs';
 import { prepareEffect, transition } from './transitions.mjs';
 import { providerRetryDeadline, retryDeadline, retryDelay } from './retry.mjs';
-import { FINAL_SUBMISSION_TOOL, finalSubmissionTool, submittedFinalText, normalizedFinalText, finalDeliveryChanges } from './final-submission.mjs';
+import { FINAL_SUBMISSION_TOOL, finalSubmissionTool, finalSubmissionFailure, submittedFinalText, normalizedFinalText, finalDeliveryChanges } from './final-submission.mjs';
 import { currentHookState, pendingHookFeedback, planHook } from './hook-runtime.mjs';
 import { projectToolResultContext, deferredToolContexts } from './tool-context.mjs';
 import { validateWorkspaceChange, workspaceChangeUnobserved } from './workspace-change.mjs';
@@ -415,10 +415,11 @@ export function reduceModel(snapshot: RunSnapshot, input: ModelResult, config: R
           callId: call.callId, name: call.name, content: canonical({ status: 'error', content: { reason: 'delivery_read_path_not_written', executed: false } }) }))] };
       if (finalSubmissionTool(config) && result.toolCalls.some(call => call.name === FINAL_SUBMISSION_TOOL)) {
         const text = result.toolCalls.length === 1 ? submittedFinalText(result.toolCalls[0]!, config) : null;
+        const receipt = text === null ? { status: 'not_dispatched', ...finalSubmissionFailure(result.toolCalls, config) }
+          : { status: 'accepted', reason: 'final_submission_candidate' };
         const messages: Message[] = [...snapshot.messages, { ...message, toolCalls: result.toolCalls },
           ...result.toolCalls.map(call => ({ role: 'tool' as const, callId: call.callId, name: call.name,
-            content: canonical({ status: text === null ? 'not_dispatched' : 'accepted',
-              reason: text === null ? 'final_submission_schema_or_batch_invalid' : 'final_submission_candidate' }) }))];
+            content: canonical(receipt) }))];
         if (text !== null) {
           if (config.deliveryScopePolicy === RESULT_DELIVERY_POLICY) messages[snapshot.messages.length] = {
             ...messages[snapshot.messages.length]!, content: text, kind: 'final_candidate' };

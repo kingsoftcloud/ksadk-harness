@@ -45,6 +45,14 @@ test('steering without a replacement retains acceptance and stays paused until r
   assert.equal(batch.snapshot.taskContract, null); assert.equal(effectiveRunConfiguration(batch.snapshot, config, digest).contract.revision, 'original');
 });
 
+test('steering resets local backoff but keeps the provider Retry-After minimum', () => {
+  const { config, snapshot, contract } = configured();
+  const current = { ...snapshot, retryNotBefore: 900, providerRetryNotBefore: 600 };
+  const batch = reduceCommand(current, steering({ taskContract: contract }), null, { configuration: config, digest });
+  assert.equal(batch.snapshot.retryNotBefore, 600);
+  assert.equal(batch.snapshot.providerRetryNotBefore, 600);
+});
+
 test('replacement compares the current committed contract and validates a detached digest', () => {
   const { config, snapshot, contract } = configured();
   const current = { ...snapshot, goalRevision: 1, taskContract: contract, taskContractDigest: digest(contract) };

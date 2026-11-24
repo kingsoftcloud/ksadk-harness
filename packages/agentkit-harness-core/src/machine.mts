@@ -3,7 +3,7 @@ import { advanceDirectoryProgress } from './directory-progress.mjs';
 import type { CommitBatch, EffectIntent, EffectReceipt, Message, ModelResult, ObjectValue, RunConfiguration, RunSnapshot, ToolCall, ToolResult, Usage } from './contracts.mjs';
 import { copy, invariant, canonical } from './values.mjs';
 import { prepareEffect, transition } from './transitions.mjs';
-import { retryDeadline, retryDelay } from './retry.mjs';
+import { providerRetryDeadline, retryDeadline, retryDelay } from './retry.mjs';
 import { FINAL_SUBMISSION_TOOL, finalSubmissionTool, submittedFinalText, normalizedFinalText, finalDeliveryChanges } from './final-submission.mjs';
 import { currentHookState, pendingHookFeedback, planHook } from './hook-runtime.mjs';
 import { projectToolResultContext, deferredToolContexts } from './tool-context.mjs';
@@ -553,10 +553,12 @@ export function reduceModel(snapshot: RunSnapshot, input: ModelResult, config: R
         : oversizedTool ? Math.min(config.profile.maxRetries, 1) : config.profile.maxRetries;
       const exhausted = attempts > limit;
       const delay = retryDelay(result, attempts, config, random);
+      const providerRetryNotBefore = providerRetryDeadline(result, now);
+      const providerWait = providerRetryNotBefore === undefined ? {} : { providerRetryNotBefore };
       // An unavailable provider is not a task failure: pause with a fresh budget so the Host can resume later.
       if (provider && exhausted && config.providerRecoveryPolicy === 'provider-recovery/v2') return { ...base, phase: 'paused',
         resumePhase: 'preparing_context', outcome: null, reason: 'provider_unavailable', providerErrors: 0,
-        retryNotBefore: result.retryAfterMs === undefined ? 0 : retryDeadline(now, delay) };
+        retryNotBefore: providerRetryNotBefore ?? 0, ...providerWait };
       const messages: Message[] = provider ? snapshot.messages : [...snapshot.messages, { role: 'user', kind: responseContinuationPending(snapshot, config)
           ? 'response_continuation_feedback' : 'model_feedback',
           content: oversizedTool
@@ -569,7 +571,8 @@ export function reduceModel(snapshot: RunSnapshot, input: ModelResult, config: R
       return { ...base, phase: exhausted ? 'finalizing' : 'preparing_context', outcome: exhausted ? 'failed' : null,
         reason: exhausted ? `${result.kind}_retry_exhausted` : null,
         providerErrors: provider ? attempts : base.providerErrors ?? snapshot.providerErrors,
-        modelErrors: provider ? snapshot.modelErrors : attempts, retryNotBefore: exhausted ? 0 : retryDeadline(now, delay), messages };
+        modelErrors: provider ? snapshot.modelErrors : attempts, retryNotBefore: exhausted ? 0 : retryDeadline(now, delay),
+        ...(!exhausted ? providerWait : {}), messages };
     }
     case 'policy_abort': return { ...base, phase: 'finalizing', outcome: 'blocked', reason: 'model_policy_abort' };
     case 'user_abort': return { ...base, phase: 'finalizing', outcome: 'unverified', reason: 'model_user_abort' };

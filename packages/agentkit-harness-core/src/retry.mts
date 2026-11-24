@@ -26,3 +26,8 @@ export function retryDelay(result: ModelResult, attempts: number, config: RunCon
 export function retryDeadline(now: number, delay: number): number {
   return Math.min(Number.MAX_SAFE_INTEGER, now + delay);
 }
+
+export function providerRetryDeadline(result: ModelResult, now: number): number | undefined {
+  return result.kind === 'provider_retryable_error' && result.retryAfterMs !== undefined
+    ? retryDeadline(now, result.retryAfterMs) : undefined;
+}

@@ -5,7 +5,7 @@ import { directoryProgressQuote } from './directory-progress.mjs';
 import { NativePolicyRegistry } from './policy-registry.mjs';
 import { contextSourceDigest, validateContextMessages } from './context-view.mjs';
 import { assertHookFeedbackRetained } from './hook-runtime.mjs';
-import { retryDeadline, retryDelay } from './retry.mjs';
+import { providerRetryDeadline, retryDeadline, retryDelay } from './retry.mjs';
 import { artifactProgressIdentity } from './artifact-runtime.mjs';
 import { sourceWorkingSetGroup } from './source-working-set-group.mjs';
 import { sourceReuseProjector } from './context-source-reuse.mjs';
@@ -549,13 +549,15 @@ export function reduceContextModel(snapshot: RunSnapshot, result: ModelResult, c
   if (provider) compaction.providerErrors = attempts;
   else compaction.errors = attempts;
   const limit = provider ? config.profile.maxProviderRetries : config.contextPolicy!.maxSummaryRetries;
+  const delay = retryDelay(result, attempts, config, random);
+  const providerRetryNotBefore = providerRetryDeadline(result, now);
+  const providerWait = providerRetryNotBefore === undefined ? {} : { providerRetryNotBefore };
   if (attempts > limit) {
     if (adaptive || provider && config.providerRecoveryPolicy === 'provider-recovery/v2') {
       compaction.errors = 0; compaction.providerErrors = 0;
       return { ...base, phase: 'paused', resumePhase: 'compacting', outcome: null,
         reason: provider ? 'provider_unavailable' : 'context_summary_unavailable',
-        retryNotBefore: provider && result.retryAfterMs !== undefined
-          ? retryDeadline(now, retryDelay(result, attempts, config, random)) : 0 };
+        retryNotBefore: providerRetryNotBefore ?? 0, ...providerWait };
     }
     return { ...base, phase: 'finalizing', outcome: 'unverified', reason: 'context_summary_retry_exhausted' };
   }
@@ -573,5 +575,5 @@ export function reduceContextModel(snapshot: RunSnapshot, result: ModelResult, c
     if (length <= 2) return { ...base, phase: 'finalizing', outcome: 'blocked', reason: 'context_summary_quote_overflow' };
     compaction.quoteLimit = Math.max(1, Math.floor(length / 2)); compaction.chunk = null;
   }
-  return { ...base, retryNotBefore: retryDeadline(now, retryDelay(result, attempts, config, random)) };
+  return { ...base, retryNotBefore: retryDeadline(now, delay), ...providerWait };
 }

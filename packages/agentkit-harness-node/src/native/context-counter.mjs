@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { setImmediate } from 'node:timers/promises';
 import { canonical, invariant } from '@kingsoftcloud/agentkit-harness-core';
 import { buildNativeModelRequest } from './model-request.mjs';
 
@@ -124,6 +125,10 @@ export function createNativeContextPort({ protocol, model, parameters = {} } = {
       request.signal.throwIfAborted(); return count;
     },
     async countRequest(request) {
+      request.signal.throwIfAborted();
+      // Planning may count several large projections in one effect. Give the
+      // runtime's lease and cancellation timers a turn between projections.
+      await setImmediate();
       request.signal.throwIfAborted();
       const built = buildNativeModelRequest(binding, { ...request, finalizationOnly: false });
       const count = estimateNativeWireInput(JSON.parse(built.body), binding.protocol);

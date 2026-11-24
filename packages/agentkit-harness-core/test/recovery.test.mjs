@@ -58,6 +58,36 @@ for (const backend of ['memory', 'sqlite']) {
     assert.equal(result.diagnostics.providerUsageIncomplete, true); assert.equal(result.diagnostics.uncertainModelCalls, 1);
     assert.equal(result.activeElapsedMs, 99); assert.equal(store.load(scope, 'run').receipts[0].status, 'uncertain');
   });
+  test(`${backend}: lost local context planning is recomputed before inference`, async t => {
+    const store = setup(t);
+    const policy = { tokenizerId: 'fixture-counter', tokenizerDigest: 'fixture-count/v1', enabled: true,
+      triggerRatio: .72, targetRatio: .45, summaryMaxTokens: 80, maxCompactions: null,
+      maxCompactionsWithoutProgress: 4, minModelTurnsBetween: 2, maxSummaryRetries: 2 };
+    const { oldKey } = claimed(store, { contextPolicy: policy }, 'context');
+    let counts = 0, requests = 0;
+    const result = await worker(store, { context: { tokens: {
+      tokenizerId: policy.tokenizerId, tokenizerDigest: policy.tokenizerDigest,
+      countRequest: async request => { counts++; assert.notEqual(request.operationKey, oldKey); return 100; },
+      countText: async () => 100,
+    } }, model: { generate: async () => { assert.ok(counts > 0); requests++; return final(); } },
+    tools: { execute: async () => { assert.fail('Context recovery must not run a tool'); } } }).runUntilIdle(scope, 'run');
+    const { events, receipts } = store.load(scope, 'run');
+    assert.equal(result.phase, 'completed');
+    assert.equal(requests, 1);
+    assert.equal(result.recoveryRetriesUsed, 1);
+    assert.equal(receipts.find(receipt => receipt.operationKey === oldKey).status, 'uncertain');
+    assert.equal(events.find(event => event.kind === 'effect.recovery_scheduled')?.payload.policy, 'local-context-planning/v1');
+  });
+  test(`${backend}: an unknown legacy context adapter is not replayed`, async t => {
+    const store = setup(t);
+    claimed(store, {}, 'context');
+    const result = await worker(store, {
+      context: { prepare: async () => { assert.fail('No replay authority for a legacy adapter'); } },
+      model: { generate: async () => { assert.fail('No context was admitted'); } },
+      tools: { execute: async () => { assert.fail('No tool was requested'); } },
+    }).runUntilIdle(scope, 'run');
+    assert.equal(result.reason, 'effect_outcome_unknown');
+  });
   test(`${backend}: readOnly alone does not authorize replay`, async t => {
     const store = setup(t); claimed(store, { tools: [tool()] }); let executions = 0;
     const result = await worker(store, { model: { generate: async () => final() }, tools: { execute: async () => { executions++; return { status: 'ok', content: '' }; } } })

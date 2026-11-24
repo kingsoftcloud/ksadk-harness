@@ -12,6 +12,10 @@ export function safeReadRecoveryCalls(calls: ToolCall[], configuration: RunConfi
 }
 function replayPolicy(intent: EffectIntent, configuration: RunConfiguration): string | null {
   if (intent.kind === 'workspace') return 'workspace-observation/v1';
+  // Kernel planning with a local counter has no external effects. A legacy
+  // prepare adapter or a host context source has no such replay contract.
+  if (intent.kind === 'context' && configuration.contextPolicy && configuration.contextSources.length === 0)
+    return 'local-context-planning/v1';
   if (intent.kind === 'verify' && configuration.hostVerification) return 'host-verification-read/v1';
   if (intent.kind === 'model' && configuration.modelRecoveryPolicy === 'pure-inference/v1') return 'pure-inference/v1';
   if (intent.kind === 'tool') {

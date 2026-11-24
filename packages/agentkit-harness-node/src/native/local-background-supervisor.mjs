@@ -6,7 +6,7 @@ import { commandRequest } from './local-background.mjs';
 import { runBoundedProcess } from './local-process.mjs';
 import { commandFailureEvidence, commandExceptionCause } from './local-command-evidence.mjs';
 import { shellCommandArgv } from './command-shell.mjs';
-import { START_GRACE_MS, TERMINAL, atomicPrivate, check, digest, fsyncPrivate, lockUntil, openPrivate,
+import { START_GRACE_MS, TERMINAL, atomicPrivate, check, digest, failCommandStart, fsyncPrivate, lockUntil, openPrivate,
   privateDirectory, privateFile, readRecord, unknownRecord, validId, writeRecord } from './local-command-state.mjs';
 
 async function inputRequest() {
@@ -38,7 +38,7 @@ async function supervise() {
     record = readRecord(directory, owner, commandId);
     if (record.status !== 'starting') return;
     if (Date.now() - record.createdAt >= START_GRACE_MS) {
-      unknownRecord(directory, record, 'supervisor_start_expired'); return;
+      failCommandStart(directory, record, 'supervisor_start_expired'); return;
     }
     const persistedStream = !!request.outputPolicy;
     const persist = (status, exitCode, stdout, stderr, metadata = {}) => {

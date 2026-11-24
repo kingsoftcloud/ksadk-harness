@@ -183,8 +183,7 @@ export function parseRetryAfterMs(headerValue) {
   const trimmed = String(headerValue).trim();
   if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
     const seconds = Number(trimmed);
-    if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000);
-    return null;
+    return Math.min(Number.MAX_SAFE_INTEGER, Math.round(seconds * 1000));
   }
   const parsed = Date.parse(trimmed);
   if (Number.isNaN(parsed)) return null;

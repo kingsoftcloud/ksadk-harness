@@ -98,6 +98,32 @@ test('real HTTP retry kinds share one durable model-call budget across cold reop
   assert.equal(store.load(identity.scope, identity.runId).snapshot.usage.modelCalls, 3);
 });
 
+test('long Retry-After survives a paused run, cold reopen and steering without sending early', async t => {
+  const fixture = await setup(t, attempt => attempt === 1 ? { status: 429, headers: { 'retry-after': '600' } }
+    : { body: { id: 'ok', choices: [{ index: 0, message: { role: 'assistant', content: 'Done' }, finish_reason: 'stop' }] } },
+  { maxWallMs: null }, { maxProviderRetries: 0 });
+  const config = configure({ ...fixture.config, providerRecoveryPolicy: 'provider-recovery/v2' });
+  let { store, kernel } = fixture.open();
+  kernel.start(identity, config);
+  const paused = await fixture.step(kernel);
+  assert.equal(paused.phase, 'paused');
+  assert.equal(paused.retryNotBefore, 610_000);
+  store.close();
+  ({ store, kernel } = fixture.open());
+  kernel.submit(identity.scope, identity.runId, { commandId: 'steer-after-limit', kind: 'steer',
+    payload: { text: 'Continue the same task', expectedGoalRevision: paused.goalRevision } });
+  kernel.submit(identity.scope, identity.runId, { commandId: 'resume-after-limit', kind: 'resume', payload: {} });
+  await fixture.step(kernel);
+  fixture.advance(599_999);
+  await fixture.step(kernel);
+  assert.equal(fixture.requests.length, 1);
+  fixture.advance(1);
+  const complete = await fixture.step(kernel);
+  assert.equal(fixture.requests.length, 2, complete.reason);
+  assert.equal(complete.usage.modelCalls, 2);
+  assert.equal(complete.phase, 'completed', complete.reason);
+});
+
 test('shared wall budget wins over a provider Retry-After without another HTTP attempt', async t => {
   const fixture = await setup(t, () => ({ status: 429, headers: { 'retry-after': '30' } }), { maxWallMs: 500 });
   const { store, kernel } = fixture.open(); kernel.start(identity, fixture.config);

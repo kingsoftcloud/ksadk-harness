@@ -14,9 +14,20 @@ export function retryDelay(result: ModelResult, attempts: number, config: RunCon
   }
   if (result.retryAfterMs !== undefined) {
     invariant(Number.isFinite(result.retryAfterMs) && result.retryAfterMs >= 0, 'invalid_retry_after');
-    return Math.min(result.failureKind === 'rate_limit' ? 300_000 : cap, Math.max(floor, result.retryAfterMs));
+    // The provider's wait is a lower bound. The local cap applies only to
+    // our own backoff. A run deadline may end the wait, but cannot send early.
+    return Math.max(floor, result.retryAfterMs);
   }
   const limit = result.failureKind === 'rate_limit' ? 300_000 : cap;
   if (result.failureKind === 'rate_limit') floor = Math.max(floor, profile.rateLimitCooldownMs);
   return floor <= 0 || floor >= limit ? floor : Math.min(limit, floor + floor * 0.25 * random);
+}
+
+export function retryDeadline(now: number, delay: number): number {
+  return Math.min(Number.MAX_SAFE_INTEGER, now + delay);
+}
+
+export function providerRetryDeadline(result: ModelResult, now: number): number | undefined {
+  return result.kind === 'provider_retryable_error' && result.retryAfterMs !== undefined
+    ? retryDeadline(now, result.retryAfterMs) : undefined;
 }

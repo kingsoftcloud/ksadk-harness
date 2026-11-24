@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createLocalCommandTransport } from '../src/native/local-command-tools.mjs';
@@ -34,6 +34,21 @@ printf done &> result.txt`;
     assert.match(readFileSync(join(workspaceRoot, 'note.txt'), 'utf8'), /literal rm -rf/);
     assert.equal(readFileSync(join(workspaceRoot, 'result.txt'), 'utf8'), 'done');
   }
+});
+
+test('a foreground command with a proven spawn rejection returns a recoverable tool error', async t => {
+  const { workspaceRoot, transport, request } = setup(t);
+  const executable = Object.getOwnPropertyDescriptor(process, 'execPath');
+  let result;
+  try {
+    Object.defineProperty(process, 'execPath', { value: join(workspaceRoot, 'missing-node') });
+    result = await transport.execute(request('printf refused > launch-marker', 'reject-start'));
+  } finally { Object.defineProperty(process, 'execPath', executable); }
+  assert.equal(result.status, 'error');
+  assert.equal(result.content.error_type, 'command_not_started');
+  assert.equal(result.content.executed, false);
+  assert.equal(result.launchedCommand, undefined);
+  assert.equal(existsSync(join(workspaceRoot, 'launch-marker')), false);
 });
 
 test('a repository-sized inventory cannot turn a finished command into an unknown effect or prevent the next command', { timeout: 15000 }, async t => {

@@ -10,6 +10,11 @@ import { validCommandEvidence } from './local-command-evidence.mjs';
 export const LOCAL_BACKGROUND_CONTRACT = 'agentkit.local-background-command/v1';
 export const START_GRACE_MS = 5000;
 export const TERMINAL = new Set(['completed', 'failed', 'canceled', 'timed_out', 'output_limit', 'unknown']);
+const startFailureReason = reason => reason === 'supervisor_start_expired' || reason === 'supervisor_launch_failed';
+const preLaunchFailure = record => startFailureReason(record.outcomeReason) && record.exitCode === null
+  && record.supervisorPid === undefined && record.observedExitCode == null;
+export const confirmedCommandStartFailure = output => output.status === 'failed' && output.exitCode === null
+  && output.evidenceIncomplete === false && startFailureReason(output.outcomeReason);
 export class LocalCommandError extends Error { constructor(code) { super(code); this.name = 'LocalCommandError'; this.code = code; } }
 export const check = (condition, code) => { if (!condition) throw new LocalCommandError(code); };
 export const validId = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
@@ -124,7 +129,10 @@ export function readRecord(directory, owner, commandId) {
     && (record.observedExitCode === undefined || record.observedExitCode === null || Number.isSafeInteger(record.observedExitCode)),
     'invalid_background_record');
   check(record.commandEvidence === undefined || validCommandEvidence(record.commandEvidence), 'invalid_background_record');
-  return record;
+  // Keep the v1 on-disk representation readable after a plugin rollback.
+  // The specific, durable pre-spawn reason is stronger evidence than its status.
+  return record.status === 'unknown' && preLaunchFailure(record)
+    ? { ...record, status: 'failed', evidenceIncomplete: false } : record;
 }
 export function writeRecord(directory, record) {
   atomicPrivate(join(directory, 'record.json'), JSON.stringify(record) + '\n');
@@ -132,6 +140,12 @@ export function writeRecord(directory, record) {
 export function unknownRecord(directory, record, outcomeReason) {
   const next = { ...record, status: 'unknown', exitCode: null, completedAt: Date.now(), evidenceIncomplete: true, outcomeReason };
   writeRecord(directory, next); return next;
+}
+
+/** Requires the supervisor lock and a still-unclaimed launch record. */
+export function failCommandStart(directory, record, outcomeReason) {
+  check(record.status === 'starting' && startFailureReason(outcomeReason), 'invalid_background_start_failure');
+  unknownRecord(directory, record, outcomeReason);
 }
 
 // Each command has a separate SQLite lock database. The supervisor holds its

@@ -506,6 +506,8 @@ export interface RunSnapshot extends RunIdentity {
   /** A sealed reasoning-only cutoff has armed the short retry for this response. */
   reasoningStallRetry?: boolean;
   activeElapsedMs: number; retryNotBefore: number;
+  /** Provider-requested minimum that survives a change of goal or guidance. */
+  providerRetryNotBefore?: number;
   candidate: CompletionCandidate | null; verification: VerificationReport | null;
   finalText: string; outcome: Outcome | null; reason: string | null;
   workspaceRevision: string | null; workspaceModifiedPaths: string[]; artifactRefs: ArtifactRef[];

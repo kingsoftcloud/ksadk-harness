@@ -42,14 +42,14 @@ import { modelStreamCapture } from './model-stream.mjs';
 import { browserRecoveryTransition } from './browser-runtime.mjs';
 import { validateBrowserSessionRef } from './browser-contract.mjs';
 import type { BrowserRecovery } from './browser-contract.mjs';
-import { commandProbe, stageCommandObservations, unavailableCommands } from './background-runtime.mjs';
+import { commandObservations, commandProbe, stageCommandObservations, unavailableCommands } from './background-runtime.mjs';
 import { assertGuidanceRetained } from './guidance.mjs';
 import { BACKGROUND_COMMAND_CONTRACT } from './background-contract.mjs';
 import { admittedToolBudget } from './child-budget.mjs';
 import { admitChildPromotion, childLifecycleRequest, childReadyProbe, childUsageFacts, reduceChildLifecycle, stageChildReady, unsettledChildren } from './child-runtime.mjs';
 import type { ChildLifecycleResult, ChildTaskControlState } from './child-contract.mjs';
 import { childControlDelivery } from './child-control.mjs';
-import type { BackgroundCommandRequest } from './background-contract.mjs';
+import type { BackgroundCommandObservation, BackgroundCommandRequest } from './background-contract.mjs';
 import { toolResourceUsageFacts, unknownToolResourceUsageFacts } from './tool-resource-usage.mjs';
 import { deliverySummaryAllowed, deliveryTaskMessages, wallBudgetStop } from './deadline-delivery.mjs';
 
@@ -75,6 +75,7 @@ export class NativeKernel {
   private readonly onStream: NonNullable<KernelOptions['onStream']>;
   private readonly onCheckpoint: KernelOptions['onCheckpoint'];
   private readonly active = new Map<string, AbortController>();
+  private readonly retryWaiters = new Map<string, () => void>();
   private readonly clockAnchors = new Map<string, number>();
   private readonly childObservers = new Map<string, { controller: AbortController; canPause: boolean }>();
   constructor(options: KernelOptions) {
@@ -153,8 +154,10 @@ export class NativeKernel {
   }
   submit(scope: RunScope, runId: string, command: RunCommand) {
     const result = this.store.enqueue(scope, runId, command);
+    const key = runKey(scope, runId);
+    if (result.status === 'accepted') this.retryWaiters.get(key)?.();
     if (result.status !== 'rejected' && ['cancel', 'policy_revoked'].includes(command.kind)) {
-      this.active.get(runKey(scope, runId))?.abort(new NativeError('command_interrupt'));
+      this.active.get(key)?.abort(new NativeError('command_interrupt'));
     }
     if (result.status === 'accepted' && ['pause', 'promote_child', 'message_child', 'cancel_child', 'resume_child'].includes(command.kind)) {
       const observer = this.childObservers.get(runKey(scope, runId));
@@ -407,7 +410,11 @@ export class NativeKernel {
         }
         if (!wallExpired && snapshot.retryNotBefore > this.now()) {
           if (!waitForRetry) return snapshot;
-          await new Promise(resolve => setTimeout(resolve, Math.min(50, snapshot.retryNotBefore - this.now())));
+          const wallRemaining = config.limits.maxWallMs === null ? Infinity : config.limits.maxWallMs - this.elapsed(snapshot);
+          // Locally submitted controls wake the wait immediately. The bounded
+          // poll also notices control rows enqueued by a different worker.
+          await this.waitAtRetryBoundary(key, Math.max(0, Math.min(500, wallRemaining, snapshot.retryNotBefore - this.now())),
+            controller.signal);
           continue;
         }
         const backgroundIntent = record.pendingIntent;
@@ -481,23 +488,54 @@ export class NativeKernel {
       catch (error) { if (!(isNativeError(error) && error.code === 'stale_fence')) throw error; }
     }
   }
+  private waitAtRetryBoundary(key: string, delay: number, signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return Promise.resolve();
+    return new Promise(resolve => {
+      const wake = () => {
+        clearTimeout(timer); signal.removeEventListener('abort', wake); this.retryWaiters.delete(key); resolve();
+      };
+      const timer = setTimeout(wake, delay);
+      this.retryWaiters.set(key, wake);
+      signal.addEventListener('abort', wake, { once: true });
+    });
+  }
   private async inspectBackgroundCommands(request: BackgroundCommandRequest, snapshot: RunSnapshot, config: RunConfiguration, signal: AbortSignal): Promise<unknown> {
     const remaining = config.limits.maxWallMs === null ? config.limits.effectTimeoutMs
       : Math.min(config.limits.effectTimeoutMs, Math.max(0, config.limits.maxWallMs - this.elapsed(snapshot)));
     if (remaining <= 0) return [];
-    if (this.ports.background?.contract !== BACKGROUND_COMMAND_CONTRACT) return unavailableCommands(request);
-    const timeout = new AbortController(), probeSignal = AbortSignal.any([signal, timeout.signal]);
-    const timer = setTimeout(() => timeout.abort(new NativeError('background_command_probe_timeout')), remaining);
-    let onAbort = () => {};
-    const aborted = new Promise<never>((_, reject) => {
-      onAbort = () => reject(probeSignal.reason);
-      if (probeSignal.aborted) onAbort(); else probeSignal.addEventListener('abort', onAbort, { once: true });
-    });
-    try {
-      const result = await Promise.race([this.ports.background.observe({ ...copy(request), signal: probeSignal }), aborted]);
-      probeSignal.throwIfAborted(); return result;
-    } catch { return unavailableCommands(request); }
-    finally { clearTimeout(timer); probeSignal.removeEventListener('abort', onAbort); }
+    const port = this.ports.background;
+    const unavailable = unavailableCommands(request);
+    if (port?.contract !== BACKGROUND_COMMAND_CONTRACT) return unavailable;
+    const expires = this.monotonicNow() + remaining, attempts = 3;
+    const settled = new Map<string, BackgroundCommandObservation>();
+    let latest = unavailable;
+    for (let attempt = 0; attempt < attempts && !signal.aborted; attempt++) {
+      const left = expires - this.monotonicNow();
+      if (left <= 0) break;
+      const timeout = new AbortController(), probeSignal = AbortSignal.any([signal, timeout.signal]);
+      const timer = setTimeout(() => timeout.abort(new NativeError('background_command_probe_timeout')),
+        Math.min(2_147_483_647, Math.ceil(left / (attempts - attempt))));
+      let onAbort = () => {};
+      const aborted = new Promise<never>((_, reject) => {
+        onAbort = () => reject(probeSignal.reason);
+        if (probeSignal.aborted) onAbort(); else probeSignal.addEventListener('abort', onAbort, { once: true });
+      });
+      try {
+        // Re-observe the sealed request. This port cannot dispatch a command.
+        const result = await Promise.race([port.observe({ ...copy(request), signal: probeSignal }), aborted]);
+        probeSignal.throwIfAborted();
+        latest = commandObservations(request, result);
+      } catch { latest = unavailable; }
+      finally { clearTimeout(timer); probeSignal.removeEventListener('abort', onAbort); }
+      for (const entry of latest) if (entry.status !== 'unavailable') settled.set(entry.ref.taskId, entry);
+      latest = latest.filter(entry => entry.status === 'unavailable' && !settled.has(entry.ref.taskId));
+      if (!latest.length) break;
+      if (attempt + 1 < attempts && !signal.aborted) {
+        await new Promise(resolve => setTimeout(resolve, Math.min(50 * (attempt + 1), Math.max(0, expires - this.monotonicNow()))));
+      }
+    }
+    for (const entry of latest) settled.set(entry.ref.taskId, entry);
+    return request.refs.flatMap(ref => settled.get(ref.taskId) ?? []).slice(0, 8);
   }
   private commit(snapshot: RunSnapshot, lease: Lease, batch: CommitBatch): RunSnapshot {
     const now = this.now(), measuredAt = this.monotonicNow(), key = runKey(snapshot.scope, snapshot.runId);
@@ -720,7 +758,7 @@ export class NativeKernel {
             facts.push({ kind: 'context.summary_completed', payload: { kind: result.kind, usage: objectValue(result.usage),
               messageCursor: snapshot.messages.length, usageReported: result.usageReported !== false,
               proposalAvailable: !!changes.contextState?.compaction?.proposal } });
-            if (typeof changes.retryNotBefore === 'number' && changes.retryNotBefore > 0)
+            if (changes.phase !== 'paused' && typeof changes.retryNotBefore === 'number' && changes.retryNotBefore > 0)
               facts.push({ kind: 'model.retry_scheduled', payload: { retryAt: Math.ceil(changes.retryNotBefore), purpose: 'compaction',
                 attempt: result.kind === 'provider_retryable_error' ? changes.contextState?.compaction?.providerErrors ?? 1
                   : changes.contextState?.compaction?.errors ?? 1,
@@ -770,7 +808,7 @@ export class NativeKernel {
             messageCursor: changes.messages?.length ?? snapshot.messages.length,
             usageReported: result.usageReported !== false,
             toolCalls: planning ? [] : result.toolCalls.map(objectValue), usage: objectValue(result.usage) } });
-          if (typeof changes.retryNotBefore === 'number' && changes.retryNotBefore > 0)
+          if (changes.phase !== 'paused' && typeof changes.retryNotBefore === 'number' && changes.retryNotBefore > 0)
             facts.push({ kind: 'model.retry_scheduled', payload: { retryAt: Math.ceil(changes.retryNotBefore),
               attempt: result.kind === 'provider_retryable_error' ? changes.providerErrors ?? 1 : changes.modelErrors ?? 1,
               ...(result.failureDiagnostic ? { failure: objectValue(result.failureDiagnostic) } : {}) } });

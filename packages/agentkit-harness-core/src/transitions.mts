@@ -43,7 +43,9 @@ export function prepareEffect(snapshot: RunSnapshot, kind: EffectKind, phase: Ph
     || snapshot.retryNotBefore > 0
     && (payload.purpose === 'compaction' ? (snapshot.contextState?.compaction?.providerErrors ?? 0) > 0
       || (snapshot.contextState?.compaction?.errors ?? 0) > 0 : snapshot.providerErrors > 0 || snapshot.modelErrors > 0));
-  return transition(snapshot, { ...changes, phase, pendingIntent: operationKey, ...(kind === 'model' ? { retryNotBefore: 0 } : {}) },
+  return transition(snapshot, { ...changes, phase, pendingIntent: operationKey, ...(kind === 'model' ? {
+    retryNotBefore: 0, ...(snapshot.providerRetryNotBefore === undefined ? {} : { providerRetryNotBefore: 0 }),
+  } : {}) },
     [{ kind: 'effect.prepared', payload: { operationKey, kind, ...(retry ? { retry: true } : {}),
       ...(kind === 'model' && payload.purpose === 'compaction' ? { purpose: 'compaction' } : {}) } }],
     { intents: [{ operationKey, kind, payload: copy(payload), status: 'prepared' }] });
@@ -75,7 +77,7 @@ export function reduceCommand(snapshot: RunSnapshot, command: RunCommand, pendin
       context: { ...snapshot.context, preparedCursor: null },
       contextState: snapshot.contextState ? { ...snapshot.contextState, compaction: null } : null,
       candidate: null, verification: null, verificationToolCalls: null,
-      hookState, stopHookContinuations: 0, continuations: 0, retryNotBefore: 0,
+      hookState, stopHookContinuations: 0, continuations: 0, retryNotBefore: snapshot.providerRetryNotBefore ?? 0,
       outcome: null, finalText: '', reason: null,
     } : {}, [
       ...(reason === 'applied' ? [{ kind: 'input.guidance_applied', payload: {
@@ -203,7 +205,7 @@ export function reduceCommand(snapshot: RunSnapshot, command: RunCommand, pendin
           verificationToolCalls: null, checkpointWebMutationToolCall: null,
           failureFingerprint: null, failureEvidenceDigest: null,
           hookState: null, stopHookContinuations: 0,
-          continuations: 0, retryNotBefore: 0, toolErrorStreak: null, workspaceRevision: null,
+          continuations: 0, retryNotBefore: snapshot.providerRetryNotBefore ?? 0, toolErrorStreak: null, workspaceRevision: null,
           ...(snapshot.toolErrorRecovery === undefined ? {} : { toolErrorRecovery: null }),
           ...(snapshot.deliveryReview === undefined ? {} : { deliveryReview: null }),
           contextState: snapshot.contextState ? { ...snapshot.contextState, compaction: null,

@@ -36,5 +36,13 @@ export function readE2BRecord(directory, owner, commandId) {
     && (record.evidenceIncomplete === undefined || typeof record.evidenceIncomplete === 'boolean')
     && (record.observedExitCode === undefined || record.observedExitCode === null || Number.isSafeInteger(record.observedExitCode)),
     'invalid_background_record');
+  // Keep the v1 on-disk verdict for older readers. Only a failed local
+  // supervisor spawn with no remote dispatch identity proves non-execution.
+  if (record.status === 'unknown' && record.outcomeReason === 'supervisor_launch_failed'
+    && record.supervisorPid === undefined && record.pid === undefined
+    && record.exitCode === null && record.observedExitCode == null
+    && record.generation === 0 && record.recoveryClaimGeneration === undefined) {
+    return { ...record, status: 'failed', evidenceIncomplete: false };
+  }
   return record;
 }

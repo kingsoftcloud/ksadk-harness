@@ -20,4 +20,6 @@ test('retry timing matches the captured Python floor, explicit server wait and r
   assert.equal(retryDelay(regular, 2, config, 0.5), 2250);
   assert.equal(retryDelay(regular, Number.MAX_SAFE_INTEGER, config, 1), 8000);
   assert.equal(retryDelay({ ...regular, retryAfterMs: 3000 }, 1, config, 0.9), 3000);
+  assert.equal(retryDelay({ ...response, retryAfterMs: 600_000 }, 1, config, 0.9), 600_000);
+  assert.equal(retryDelay({ ...regular, retryAfterMs: 120_000 }, 1, config, 0.9), 120_000);
 });

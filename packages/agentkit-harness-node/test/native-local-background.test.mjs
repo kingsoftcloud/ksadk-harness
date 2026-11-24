@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
   statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { constants as osConstants, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { LocalCommandStore, createLocalBackgroundReader } from '../src/native/local-background.mjs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { LocalCommandStore, commandRequest, createLocalBackgroundReader } from '../src/native/local-background.mjs';
+import { LOCAL_BACKGROUND_CONTRACT, START_GRACE_MS, createPrivate, digest, privateDirectory, writeRecord } from '../src/native/local-command-state.mjs';
 import { buildScriptEnvironment } from '../src/native/local-process.mjs';
 import { NativeKernel, emptyUsage, transition } from '../../agentkit-harness-core/dist/index.mjs';
 import { fixture as coreFixture, scope, digest as coreDigest, tool } from '../../agentkit-harness-core/test/fixtures.mjs';
@@ -47,6 +48,34 @@ function nodeChild(code, { imports = [] } = {}) {
   const exit = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => resolve({ code, signal, stdout, stderr })); });
   return { child, exit, line: () => stdout.split('\n').find(line => line.trim()) };
 }
+
+function preparedCommand(f, operationKey, recordFields = {}) {
+  const input = f.input('printf x >> command-started', { operationKey });
+  const request = commandRequest(input);
+  const commandId = f.store.commandId(operationKey), directory = join(f.store.directory, commandId);
+  privateDirectory(directory, true);
+  for (const name of ['stdout', 'stderr', 'supervisor.sqlite']) createPrivate(join(directory, name));
+  writeRecord(directory, { schemaVersion: LOCAL_BACKGROUND_CONTRACT, owner: f.store.owner, commandId,
+    requestDigest: digest(request), createdAt: Date.now() - START_GRACE_MS - 1000,
+    timeoutMs: request.timeoutMs, status: 'starting', exitCode: null, ...recordFields });
+  return { input, request, commandId, directory };
+}
+
+test('an expired supervisor rejects the launch before spawning and the same operation never runs', async t => {
+  const f = fixture(t), staged = preparedCommand(f, 'expired-command');
+  const supervisor = fileURLToPath(new URL('../src/native/local-background-supervisor.mjs', import.meta.url));
+  const result = spawnSync(process.execPath, [supervisor, staged.directory, f.store.owner, staged.commandId],
+    { input: JSON.stringify(staged.request), encoding: 'utf8', timeout: 10000 });
+  assert.equal(result.status, 0, result.stderr);
+  const receipt = JSON.parse(readFileSync(join(staged.directory, 'record.json'), 'utf8'));
+  assert.equal(receipt.outcomeReason, 'supervisor_start_expired');
+  assert.equal(receipt.exitCode, null);
+  assert.equal(receipt.supervisorPid, undefined);
+  const duplicate = await f.store.start(staged.input);
+  assert.equal(duplicate.readOutput().status, 'failed');
+  assert.equal(duplicate.readOutput().evidenceIncomplete, false);
+  assert.equal(existsSync(join(f.workspace, 'command-started')), false);
+});
 
 test('shell selection is persisted, reconnects without replay and cannot change an existing operation', async t => {
   const f = fixture(t), command = 'test -n "$BASH_VERSION" && printf x >> once.txt';
@@ -182,6 +211,43 @@ test('canonical observation reader is nonblocking, owned and does not rewrite a 
   assert.equal(unknown.status, 'unknown'); assert.equal(unknown.evidenceIncomplete, true);
   assert.deepEqual(readFileSync(join(lost.directory, 'record.json')), record);
 });
+for (const proven of [true, false]) test(`an older uncertain command ${proven ? 'allows continuation with pre-launch proof' : 'stays blocked without pre-launch proof'}`, async t => {
+  const f = fixture(t), ledger = new SqliteRunStore(join(f.root, 'native.sqlite'));
+  t.after(() => ledger.close());
+  const launcher = tool({ name: 'run_command', readOnly: false, concurrentSafe: false, backgroundCommandPolicy: 'owned-command-launch/v1' });
+  const { config, snapshot } = coreFixture({ tools: [launcher], backgroundNotificationPolicy: 'completed-before-model/v1' });
+  let staged;
+  const first = new NativeKernel({ store: ledger, digest: coreDigest, owner: 'legacy', ports: {
+    model: { generate: async () => ({ kind: 'tool_calls', text: '', usage: emptyUsage(),
+      toolCalls: [{ callId: 'launch', name: 'run_command', arguments: {} }] }) },
+    tools: { execute: async request => {
+      staged = preparedCommand(f, request.operationKey, { status: 'unknown', evidenceIncomplete: true,
+        outcomeReason: proven ? 'supervisor_start_expired' : 'process_supervision_failed' });
+      return { status: 'uncertain', content: { backend: 'sandbox/local_process', status: 'unknown', task_id: staged.commandId },
+        backgroundCommandRef: { taskId: staged.commandId, sourceRunId: request.runId, operationKey: request.operationKey } };
+    } },
+  } });
+  first.start(snapshot, config);
+  assert.equal((await first.runUntilIdle(scope, 'run')).reason, 'effect_outcome_unknown');
+  const bytes = readFileSync(join(staged.directory, 'record.json'));
+  let models = 0;
+  const resumed = new NativeKernel({ store: ledger, digest: coreDigest, owner: 'resume', ports: {
+    background: createBackgroundCommandPort({ scope, store: ledger, readers: { local_process: createLocalBackgroundReader(f.store) } }),
+    tools: { execute: async () => assert.fail('prior effect must never be replayed') },
+    model: { generate: async request => {
+      models++;
+      const notice = request.messages.find(message => message.kind === 'background_command_observation');
+      assert.equal(JSON.parse(notice.content).commands[0].status, 'failed');
+      return { kind: 'final_candidate', text: 'Resumed', usage: emptyUsage(), toolCalls: [] };
+    } },
+  } });
+  resumed.start({ ...snapshot, runId: 'continuation', turnId: 'turn-2', parentRunId: 'run' }, config);
+  const continued = await resumed.runUntilIdle(scope, 'continuation');
+  assert.equal(continued.phase, proven ? 'completed' : 'interrupted');
+  assert.equal(models, proven ? 1 : 0);
+  assert.deepEqual(readFileSync(join(staged.directory, 'record.json')), bytes);
+  assert.equal(existsSync(join(f.workspace, 'command-started')), false);
+});
 for (const lost of [false, true]) test(`Native SQLite loop observes a real ${lost ? 'lost' : 'completed'} command after ledger reopen without relaunch`, async t => {
   const f = fixture(t), filename = join(f.root, 'native.sqlite'); let ledger = new SqliteRunStore(filename);
   t.after(() => ledger.close()); let launched = 0, paused = false, handle;
@@ -277,13 +343,16 @@ test('process exit immediately after durable intent, before supervisor spawn, ne
   await until(() => h.readOutput().status === 'unknown', 6500);
   assert.equal((await f.store.start(request)).readOutput().status, 'unknown'); assert.equal(existsSync(join(f.workspace, 'forbidden')), false);
 });
-test('failed supervisor spawn returns an owned unknown locator that a repaired Host cannot relaunch', async t => {
+test('failed supervisor spawn returns a confirmed launch failure that a repaired Host cannot relaunch', async t => {
   const f = fixture(t), request = f.input('printf forbidden > forbidden', { operationKey: 'spawn-failure' });
   const child = nodeChild(`const{LocalCommandStore}=await import(${JSON.stringify(moduleUrl)});
     Object.defineProperty(process,'execPath',{value:'/nonexistent/native-node'});
     const h=await new LocalCommandStore(${JSON.stringify(f.config)}).start(${JSON.stringify(request)});console.log(JSON.stringify(h.readOutput()));`);
-  const result = await child.exit; assert.equal(result.code, 0, result.stderr); assert.equal(JSON.parse(result.stdout).status, 'unknown');
-  const h = await f.store.start(request); f.handles.push(h); assert.equal(h.readOutput().status, 'unknown');
+  const result = await child.exit; assert.equal(result.code, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.status, 'failed'); assert.equal(output.outcomeReason, 'supervisor_launch_failed');
+  assert.equal(output.exitCode, null); assert.equal(output.evidenceIncomplete, false);
+  const h = await f.store.start(request); f.handles.push(h); assert.deepEqual(h.readOutput(), output);
   assert.equal(existsSync(join(f.workspace, 'forbidden')), false);
 });
 if (process.platform === 'linux') test('Linux process-group admission records a verified failure without unknown evidence', async t => {

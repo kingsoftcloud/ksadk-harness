@@ -329,7 +329,9 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
     ...(chatUsage ? { chatUsagePolicy: chatUsage } : {}), maxRetries: 2, maxProviderRetries: 10, ...context.profile,
     maxOutputTokens: description.maxOutputTokens, contextWindow: description.contextWindow,
     requestTimeoutMs: description.requestTimeoutMs, providerReplayMode: 'reasoning_content',
-    providerCompatibilityPolicy: admitProviderCompatibilityPolicy(providerRule) };
+    providerCompatibilityPolicy: admitProviderCompatibilityPolicy(providerRule, {
+      protocol: description.protocol, model: description.modelName, baseUrl: description.baseUrl,
+    }) };
   const modelSurface = bindNativeModelSurface({ environment: execution.executionEnvironment(executionOptions), description });
   const modelPort = createNativeModelPort({ fetchImpl, resolveProfile: async () => ({ protocol: description.protocol, baseUrl: description.baseUrl,
     apiKey: await model.apiKey(), model: description.modelName, parameters: description.parameters }) });

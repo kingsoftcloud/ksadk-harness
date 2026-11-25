@@ -48,9 +48,10 @@ test('provider compatibility admission: final submission is forced and Kimi proj
 });
 
 test('StarFlow Chat keeps mandatory GLM thinking on for new tasks, finalization and summaries', () => {
-  const compatibility = admitProviderCompatibilityPolicy();
   for (const model of ['glm-5.3', 'glm-5.3-flash', 'glm-5.3-flashx']) {
     const binding = { protocol: 'openai-chat', model, baseUrl: 'https://kspmas.ksyun.com/v1', apiKey: 'fake' };
+    const compatibility = admitProviderCompatibilityPolicy(undefined, binding);
+    assert.equal(compatibility.contract, 'provider-compat/v6');
     const build = ({ profile, ...request } = {}) => JSON.parse(buildNativeModelRequest(binding, {
       purpose: 'task', beforeFirstTool: true, messages: [{ role: 'user', content: 'task' }],
       tools: [{ name: 'read' }, { name: 'submit_final_output' }],
@@ -84,8 +85,9 @@ test('StarFlow Chat keeps mandatory GLM thinking on for new tasks, finalization 
 });
 
 test('StarFlow GLM thinking fix preserves saved policies and other model routes', () => {
-  const current = admitProviderCompatibilityPolicy('kspmas-gateway');
-  const previous = { ...current, contract: 'provider-compat/v5' };
+  const admit = (model, rule = 'kspmas-gateway', protocol = 'openai-chat') =>
+    admitProviderCompatibilityPolicy(rule, { model, protocol, baseUrl: 'https://kspmas.ksyun.com/v1' });
+  const previous = { rule: 'kspmas-gateway', contract: 'provider-compat/v5' };
   const payload = { messages: [], max_tokens: 8192, tools: [{ type: 'function', function: { name: 'read' } }] };
   const apply = (model, policy, purpose) => applyProviderChatCompatibility(
     purpose === 'compaction' ? { ...payload, tools: [] } : payload,
@@ -96,13 +98,17 @@ test('StarFlow GLM thinking fix preserves saved policies and other model routes'
     for (const model of ['glm-5.3', 'glm-5.3-flashx']) {
       assert.deepEqual(apply(model, previous, purpose).thinking, { type: 'disabled' });
     }
-    for (const model of ['glm-5.2', 'deepseek-v4-flash', 'kimi-k2.7-code', 'glm-5.3-flash']) {
-      assert.deepEqual(apply(model, current, purpose), apply(model, previous, purpose));
-    }
-    for (const rule of ['strict-openai', 'zai']) {
-      assert.deepEqual(apply('glm-5.3', { ...current, rule }, purpose),
-        apply('glm-5.3', { ...previous, rule }, purpose));
-    }
+    assert.deepEqual(apply('glm-5.3-flash', admit('glm-5.3-flash'), purpose),
+      apply('glm-5.3-flash', previous, purpose));
+  }
+  for (const model of ['glm-5.2', 'deepseek-v4-flash', 'kimi-k2.7-code']) {
+    assert.deepEqual(admit(model), previous);
+  }
+  for (const rule of ['strict-openai', 'zai']) {
+    assert.deepEqual(admit('glm-5.3', rule), { ...previous, rule });
+  }
+  for (const protocol of ['openai-responses', 'anthropic-messages']) {
+    assert.deepEqual(admit('glm-5.3', 'kspmas-gateway', protocol), previous);
   }
 });
 

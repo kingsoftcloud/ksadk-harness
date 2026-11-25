@@ -45,8 +45,12 @@ export function applyAnthropicThinking(payload, profile, binding) {
   return { ...payload, thinking };
 }
 
-export function admitProviderCompatibilityPolicy(override) {
-  return { contract: 'provider-compat/v6', rule: admitInlineReasoningPolicy(override).rule };
+export function admitProviderCompatibilityPolicy(override, binding) {
+  const { rule } = admitInlineReasoningPolicy(override);
+  const needsThinkingGuard = binding?.protocol === 'openai-chat'
+    && gatewayMandatoryGlm.has(String(binding.model ?? '').trim().toLowerCase())
+    && resolveCompatibilityRule(rule, binding) === 'kspmas-gateway';
+  return { contract: needsThinkingGuard ? 'provider-compat/v6' : 'provider-compat/v5', rule };
 }
 
 export function resolveProviderCompatibility(policy, binding) {

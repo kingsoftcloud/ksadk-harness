@@ -59,7 +59,7 @@ test('known MiniMax clean EOF requires finish and usage; errors and unknown prov
 test('v3 leaves mandatory GLM reasoning on for both task and summary, old requests stay frozen', () => {
   const binding = { model: 'glm-5.3-flash', baseUrl: 'https://kspmas.ksyun.com/v1' };
   const payload = { model: binding.model, max_tokens: 8192, tools: [{ type: 'function', function: { name: 'read' } }], messages: [] };
-  assert.equal(admitProviderCompatibilityPolicy().contract, 'provider-compat/v6');
+  assert.equal(admitProviderCompatibilityPolicy().contract, 'provider-compat/v5');
   for (const purpose of ['task', 'compaction']) {
     const modern = applyProviderChatCompatibility(payload, { purpose, profile: profile('provider-compat/v3') }, binding);
     assert.equal(modern.thinking, undefined);

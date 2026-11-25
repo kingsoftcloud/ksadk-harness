@@ -8,6 +8,7 @@
 //
 // Profiled inline reasoning is projected under the Run's frozen policy.
 
+import { modelToolView } from './model-tool-view.mjs';
 import { ModelStreamLimitError } from './model-stream-budget.mjs';
 import {
   normalizeResponse, parseOpenAIUsage, sealUsage, ProtocolError, resolveUrl, boundOutputTokens,
@@ -173,7 +174,7 @@ export function projectMessagesOpenAI(request, maxInlineImageBytes) {
       Object.assign(msg, openAIReplayFields(message, profile));
       projected.push(msg);
     } else if (role === 'tool') {
-      projected.push({ role: 'tool', tool_call_id: message.callId, content: message.content || '' });
+      projected.push({ role: 'tool', tool_call_id: message.callId, content: modelToolView(message.content || '') });
     } else {
       projected.push({ role, content: message.content || '' });
     }

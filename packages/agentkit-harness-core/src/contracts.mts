@@ -198,8 +198,10 @@ export interface ContextPlanningPolicy {
   /** Enforce the soft budget before task inference, retaining the fresh tool batch in full. */
   budgetTiming?: 'before-model/v1';
   /** Count and dispatch current Host state after complete history groups.
-   * Absence preserves the admitted legacy prefix layout. */
-  continuityPlacement?: 'after-history/v1';
+   * Absence preserves the admitted legacy prefix layout. split-after-history/v1
+   * sends the fixed run facts once before history (a cacheable prefix) and only
+   * the current, non-empty state after history. */
+  continuityPlacement?: 'after-history/v1' | 'split-after-history/v1';
   /** Replace older identical proven captured-source bodies in request views. */
   sourceReusePolicy?: 'captured-source/v1';
   triggerRatio: number; targetRatio: number; summaryMaxTokens: number;

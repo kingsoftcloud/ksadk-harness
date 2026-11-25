@@ -229,7 +229,7 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
   };
   const artifacts = await createNativeArtifactStore({ directory: join(stateDir, 'artifacts'), scope });
   const execution = nativeLocalExecutionMethods({ enabled: true, settings: {}, sourceEnv, workspaceRoot: root, commandBackend: 'local_process' });
-  const executionOptions = { modern: true, resourceProfile: 'local-development/v2' };
+  const executionOptions = { modern: true, resourceProfile: 'local-development/v3' };
   const local = execution.localExecution(executionOptions);
   const workspace = createNativeWorkspaceTools({ workspaceRoot: root, stateDir: join(stateDir, 'workspace'), sessionId, authorize: decide });
   const deliveries = createEngineDeliveryJournal(join(stateDir, 'delivery'), () => workspace.captureDelivery());

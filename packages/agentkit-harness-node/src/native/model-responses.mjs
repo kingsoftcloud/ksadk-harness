@@ -23,6 +23,7 @@
 // no reasoning items in its input array. See delivery evidence for the
 // audited gap.
 
+import { modelToolView } from './model-tool-view.mjs';
 import {
   normalizeResponse, sealUsage, ProtocolError, resolveUrl, boundOutputTokens,
   emptyUsage,
@@ -228,7 +229,7 @@ export function projectMessagesResponses(request, maxInlineImageBytes) {
       const media = message.media ? message.media.map((b) => validateMediaBlock(b, maxInlineImageBytes)) : null;
       const output = media && media.length
         ? [{ type: 'input_text', text: message.content || '' }, ...projectMediaResponses(media)]
-        : (message.content || '');
+        : modelToolView(message.content || '');
       items.push({ type: 'function_call_output', call_id: message.callId, output });
       continue;
     }

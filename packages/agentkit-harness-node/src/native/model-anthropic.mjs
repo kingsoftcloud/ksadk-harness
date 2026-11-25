@@ -12,6 +12,7 @@
 // the sealed providerReplay but never emitted in a public stream event's
 // metadata, and never concatenated to visible text.
 
+import { modelToolView } from './model-tool-view.mjs';
 import {
   normalizeResponse, parseAnthropicUsageFragment, parseRetryAfterMs,
   ProtocolError, resolveUrl, boundOutputTokens,
@@ -200,7 +201,7 @@ function projectAnthropicMessages(request, maxInlineImageBytes) {
       let content;
       if (references) content = [...references, ...(media?.length ? projectMediaAnthropic(media) : [])];
       else if (media && media.length) content = [{ type: 'text', text: message.content || '' }, ...projectMediaAnthropic(media)];
-      else content = (message.content || '');
+      else content = modelToolView(message.content || '');
       item = {
         role: 'user',
         content: [{

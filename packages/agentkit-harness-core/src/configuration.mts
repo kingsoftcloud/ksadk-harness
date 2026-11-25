@@ -404,7 +404,7 @@ export function configure(input: ConfigurationInput): RunConfiguration {
       && Number.isSafeInteger(policy.summaryMaxTokens) && policy.summaryMaxTokens > 0
       && ['strict', 'context_bounded_estimate'].includes(policy.summaryBudgetMode ?? 'strict')
       && (policy.budgetTiming === undefined || policy.budgetTiming === 'before-model/v1')
-      && (policy.continuityPlacement === undefined || policy.continuityPlacement === 'after-history/v1'
+      && (policy.continuityPlacement === undefined || ['after-history/v1', 'split-after-history/v1'].includes(policy.continuityPlacement)
         && profile.operatorGuidancePolicy === undefined)
       && (policy.sourceReusePolicy === undefined || policy.sourceReusePolicy === 'captured-source/v1'
         && profile.providerFamily === 'openai-chat' && config.artifactPolicy === 'runtime-artifacts/v1')

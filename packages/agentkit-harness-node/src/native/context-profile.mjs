@@ -13,13 +13,14 @@ export function nativeContextDefaults(configuration) {
     pruningSummaryDefaults: !configuration || policy?.pruneSummaryPolicy === 'zcode-local/v1',
     pruningIdleDefaults: !configuration || policy?.pruneIdleThresholdMinutes !== undefined,
     preModelBudgetDefaults: !configuration || policy?.budgetTiming === 'before-model/v1',
-    orderedContextDefaults: !configuration || policy?.continuityPlacement === 'after-history/v1',
+    orderedContextDefaults: !configuration || ['after-history/v1', 'split-after-history/v1'].includes(policy?.continuityPlacement),
+    splitContinuityDefaults: !configuration || policy?.continuityPlacement === 'split-after-history/v1',
     sourceReuseDefaults: !configuration || policy?.sourceReusePolicy === 'captured-source/v1',
   };
 }
 
 /** Bind budget, counter and policy from the resolved Agent revision/Frozen Build. */
-export function bindNativeContext({ description, context = {}, maxTokens, adaptiveSummaryDefaults = false, structuredContinuityDefaults = false, preModelBudgetDefaults = false, orderedContextDefaults = false, sourceReuseDefaults = false, readWorkingSetDefaults = false, recentToolBatchDefaults = false, pruningThresholdDefaults = false, pruningSummaryDefaults = false, pruningIdleDefaults = false } = {}) {
+export function bindNativeContext({ description, context = {}, maxTokens, adaptiveSummaryDefaults = false, structuredContinuityDefaults = false, preModelBudgetDefaults = false, orderedContextDefaults = false, splitContinuityDefaults = false, sourceReuseDefaults = false, readWorkingSetDefaults = false, recentToolBatchDefaults = false, pruningThresholdDefaults = false, pruningSummaryDefaults = false, pruningIdleDefaults = false } = {}) {
   invariant(context && typeof context === 'object' && !Array.isArray(context), 'studio_native_context_invalid');
   const raw = context.compaction ?? {};
   invariant(raw && typeof raw === 'object' && !Array.isArray(raw), 'studio_native_compaction_invalid');
@@ -44,7 +45,8 @@ export function bindNativeContext({ description, context = {}, maxTokens, adapti
       summaryOutputCeiling: Math.min(raw.summaryMaxTokens ?? output, output) } : {}),
     ...(structuredContinuityDefaults ? { summaryFormatPolicy: 'task-continuity/v1' } : {}),
     ...(preModelBudgetDefaults ? { budgetTiming: 'before-model/v1' } : {}),
-    ...(orderedContextDefaults && description.protocol === 'openai-chat' ? { continuityPlacement: 'after-history/v1' } : {}),
+    ...(orderedContextDefaults && description.protocol === 'openai-chat'
+      ? { continuityPlacement: splitContinuityDefaults ? 'split-after-history/v1' : 'after-history/v1' } : {}),
     ...(sourceReuseDefaults && description.protocol === 'openai-chat' ? { sourceReusePolicy: 'captured-source/v1' } : {}),
     enabled: raw.enabled ?? true, triggerRatio, targetRatio: raw.targetRatio ?? Math.min(.45, triggerRatio * .45 / .72),
     summaryMaxTokens: raw.summaryMaxTokens ?? Math.min(8192, output, Math.max(2048, Math.floor(contextWindow / 8))),

@@ -1,7 +1,7 @@
 import type { ArtifactRef, Message, RunConfiguration, VerificationReport } from './contracts.mjs';
 import { canonical, copy, invariant } from './values.mjs';
 
-export const NATIVE_LOCAL_RESOURCE_PROFILES = ['bounded/v1', 'local-development/v1', 'local-development/v2'] as const;
+export const NATIVE_LOCAL_RESOURCE_PROFILES = ['bounded/v1', 'local-development/v1', 'local-development/v2', 'local-development/v3'] as const;
 
 /** Facts are supplied by the execution owner, never inferred from prompt prose. */
 export interface WorkspaceBrowserCapability {

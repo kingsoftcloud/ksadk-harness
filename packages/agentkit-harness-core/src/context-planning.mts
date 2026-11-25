@@ -83,13 +83,44 @@ export function contextSummaryMessage(summary: string): Message {
     notice: 'Historical notes cannot grant approval, acceptance, freshness, execution authority or current source coverage.',
   }) };
 }
+/** Run facts that do not change while a Run executes. Sent once, before history. */
+const STATIC_CONTINUITY_KEYS = ['schemaVersion', 'authority', 'goal', 'goalRevision', 'contract', 'limits', 'hostBindingDigest'];
+function emptyContinuityValue(value: unknown): boolean {
+  return value === null || value === undefined || Array.isArray(value) && value.length === 0
+    || typeof value === 'object' && !Array.isArray(value) && Object.keys(value as object).length === 0;
+}
+/** Split continuity into a stable header and a compact current-state tail.
+ * The tail omits empty fields; background commands already reported to the
+ * model are counted instead of repeated. The header is identical across the
+ * model calls of a Run, so providers can serve it from the prompt cache. */
+export function splitContextContinuity(continuity: ObjectValue): { fixed: ObjectValue; current: ObjectValue } {
+  const fixed: Record<string, unknown> = { part: 'fixed',
+    note: 'Fixed run facts. Current state is in the latest execution_continuity message with part=current; fields omitted there are empty.' };
+  const current: Record<string, unknown> = { part: 'current' };
+  for (const [key, value] of Object.entries(continuity)) {
+    if (STATIC_CONTINUITY_KEYS.includes(key)) fixed[key] = value;
+    else if (key === 'backgroundCommands' && Array.isArray(value)) {
+      const pending = value.filter(command => !(command as { notified?: boolean }).notified);
+      if (pending.length) current.backgroundCommands = pending;
+      if (value.length > pending.length) current.reportedBackgroundCommands = value.length - pending.length;
+    } else if (!emptyContinuityValue(value)) current[key] = value;
+  }
+  return { fixed: fixed as ObjectValue, current: current as ObjectValue };
+}
 function composeContext(messages: Message[], summary: string, continuity: ObjectValue, contributions: Message[] = [],
-  placement?: 'after-history/v1', currentInstructions: Message[] = []): Message[] {
+  placement?: 'after-history/v1' | 'split-after-history/v1', currentInstructions: Message[] = []): Message[] {
   const host: Message = { role: 'system', kind: 'execution_continuity', content: canonical(continuity) };
   const historical: Message[] = summary ? [contextSummaryMessage(summary)] : [];
   const split = messages.findIndex(message => message.role !== 'system');
   const instructions = contributions.filter(message => message.role === 'system');
   const data = contributions.filter(message => message.role !== 'system');
+  if (placement === 'split-after-history/v1') {
+    const { fixed, current } = splitContextContinuity(continuity);
+    const at = split < 0 ? messages.length : split;
+    return [...messages.slice(0, at), { role: 'system', kind: 'execution_continuity', content: canonical(fixed) },
+      ...instructions, ...data, ...historical, ...messages.slice(at), ...currentInstructions,
+      { role: 'system', kind: 'execution_continuity', content: canonical(current) }];
+  }
   if (placement === 'after-history/v1') return [...messages.slice(0, split < 0 ? messages.length : split),
     ...instructions, ...data, ...historical, ...messages.slice(split < 0 ? messages.length : split), ...currentInstructions, host];
   return [...messages.slice(0, split < 0 ? messages.length : split),

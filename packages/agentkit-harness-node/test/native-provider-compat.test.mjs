@@ -8,8 +8,7 @@ const oracle = JSON.parse(await readFile(new URL('./fixtures/native-provider-com
 for (const item of oracle.cases) test(`provider compatibility oracle: ${item.id}`, () => {
   const payload = structuredClone(item.payload);
   const result = applyProviderChatCompatibility(payload,
-    // This oracle records the v2 wire contract. New admissions now use v4;
-    // changing that default must not silently upgrade the restored v2 cases.
+    // This oracle records the v2 wire contract used by restored runs.
     { purpose: item.purpose, profile: { ...item.profile, providerCompatibilityPolicy: {
       ...admitProviderCompatibilityPolicy(item.rule), contract: 'provider-compat/v2' } } },
     { model: item.model });
@@ -45,6 +44,65 @@ test('provider compatibility admission: final submission is forced and Kimi proj
     assert.deepEqual(payload.tools[0].function.parameters.required, ['answer']);
     assert.deepEqual(payload.tool_choice, model.startsWith('kimi') ? 'auto'
       : { type: 'function', function: { name: 'submit_final_output' } });
+  }
+});
+
+test('StarFlow Chat keeps mandatory GLM thinking on for new tasks, finalization and summaries', () => {
+  const compatibility = admitProviderCompatibilityPolicy();
+  for (const model of ['glm-5.3', 'glm-5.3-flash', 'glm-5.3-flashx']) {
+    const binding = { protocol: 'openai-chat', model, baseUrl: 'https://kspmas.ksyun.com/v1', apiKey: 'fake' };
+    const build = ({ profile, ...request } = {}) => JSON.parse(buildNativeModelRequest(binding, {
+      purpose: 'task', beforeFirstTool: true, messages: [{ role: 'user', content: 'task' }],
+      tools: [{ name: 'read' }, { name: 'submit_final_output' }],
+      ...request,
+      profile: { maxOutputTokens: 8192, providerReplayMode: 'none', providerCompatibilityPolicy: compatibility, ...profile },
+    }).body);
+
+    const task = build();
+    assert.equal(task.thinking, undefined);
+    assert.equal(task.reasoning_effort, model === 'glm-5.3-flash' ? 'low' : undefined);
+    assert.equal(task.tool_stream, true);
+
+    const final = build({ finalizationOnly: true });
+    assert.equal(final.thinking, undefined);
+    assert.deepEqual(final.tool_choice, { type: 'function', function: { name: 'submit_final_output' } });
+
+    const summary = build({ purpose: 'compaction', tools: [] });
+    assert.equal(summary.thinking, undefined);
+    assert.equal(summary.reasoning_effort, 'low');
+
+    for (const effort of ['none', 'minimal']) {
+      const request = build({ profile: { reasoningEffort: effort } });
+      assert.equal(request.reasoning_effort, 'low');
+      assert.equal(request.thinking, undefined);
+    }
+    const enabled = build({ profile: { thinkingMode: 'enabled', reasoningEffort: 'high' } });
+    assert.deepEqual(enabled.thinking, { type: 'enabled' });
+    assert.equal(enabled.reasoning_effort, 'high');
+    assert.throws(() => build({ profile: { thinkingMode: 'disabled' } }), /model_thinking_disable_unsupported/);
+  }
+});
+
+test('StarFlow GLM thinking fix preserves saved policies and other model routes', () => {
+  const current = admitProviderCompatibilityPolicy('kspmas-gateway');
+  const previous = { ...current, contract: 'provider-compat/v5' };
+  const payload = { messages: [], max_tokens: 8192, tools: [{ type: 'function', function: { name: 'read' } }] };
+  const apply = (model, policy, purpose) => applyProviderChatCompatibility(
+    purpose === 'compaction' ? { ...payload, tools: [] } : payload,
+    { purpose, beforeFirstTool: true, profile: { providerCompatibilityPolicy: policy } },
+    { model },
+  );
+  for (const purpose of ['task', 'compaction']) {
+    for (const model of ['glm-5.3', 'glm-5.3-flashx']) {
+      assert.deepEqual(apply(model, previous, purpose).thinking, { type: 'disabled' });
+    }
+    for (const model of ['glm-5.2', 'deepseek-v4-flash', 'kimi-k2.7-code', 'glm-5.3-flash']) {
+      assert.deepEqual(apply(model, current, purpose), apply(model, previous, purpose));
+    }
+    for (const rule of ['strict-openai', 'zai']) {
+      assert.deepEqual(apply('glm-5.3', { ...current, rule }, purpose),
+        apply('glm-5.3', { ...previous, rule }, purpose));
+    }
   }
 });
 

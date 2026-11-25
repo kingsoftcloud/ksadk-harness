@@ -15,6 +15,7 @@ import { responseBoundaryRecovery, responseContinuationPairs } from './response-
 import { verificationModelView } from './model-surface.mjs';
 import { currentInstructionContribution, hostInstructionContribution } from './context-contributions.mjs';
 import { projectBackgroundCommands } from './background-contract.mjs';
+import { projectTodoWriteReceipt } from './todos.mjs';
 
 export interface ContextCounters {
   /** Clock observation for this journaled context effect; never recomputed during counting. */
@@ -48,7 +49,9 @@ export function contextContinuity(snapshot: RunSnapshot, config: RunConfiguratio
   const canReadArtifacts = config.artifactPolicy === 'runtime-artifacts/v1' && config.tools.some(tool => tool.name === 'ArtifactRead'
     && (config.contract.allowedToolNames === null || config.contract.allowedToolNames.includes(tool.name)));
   const commands = projectBackgroundCommands(snapshot.backgroundCommands, 32, 8);
-  return copy({ schemaVersion: scopedEvidence ? 'agentkit.native-context-continuity/v2' : 'agentkit.native-context-continuity/v1', authority: 'host_record', goal: snapshot.goal,
+  // Keep the original objective available after a goal revision. In the
+  // ordinary case the live goal already carries the same text in this message.
+  const full = { schemaVersion: scopedEvidence ? 'agentkit.native-context-continuity/v2' : 'agentkit.native-context-continuity/v1', authority: 'host_record', goal: snapshot.goal,
     ...(snapshot.todos ? { todos: snapshot.todos.items, todoRevision: snapshot.todos.revision } : {}),
     ...(snapshot.planMode ? { planMode: snapshot.planMode, planModeGuidance: policies.forRun(config).planning.planModeGuidance(snapshot, config) } : {}),
     ...(config.profile.operatorGuidancePolicy ? { operatorGuidancePolicy: config.profile.operatorGuidancePolicy } : {}),
@@ -75,7 +78,26 @@ export function contextContinuity(snapshot: RunSnapshot, config: RunConfiguratio
       toolErrorRecoveryInstruction: 'The repeated-error guard remains active across compaction. '
         + 'Observe new authorized diagnostic evidence before a later model decision may use one corrected trial. '
         + 'Reads and unrelated writes do not reset the recovery allowance; diagnosis is not task acceptance.' } : {}),
-  }) as unknown as ObjectValue;
+  } as unknown as ObjectValue;
+  if (config.contextPolicy?.continuityProjection !== 'decision-input/v1') return copy(full);
+
+  const { objective, ...contractFields } = full.contract as ObjectValue;
+  const contract = snapshot.goal === objective ? contractFields : full.contract;
+  const counts = ({ modelCalls, toolCalls }: Usage) => ({ modelCalls, toolCalls });
+  const budgets = ['maxWallMs', 'maxModelCalls', 'maxToolCalls', 'maxRepairs', 'maxSubagentDepth',
+    'finalizationReserveModelCalls', 'finalizationReserveWallMs', 'verificationReserveModelCalls'] as const;
+  const limits = Object.fromEntries(budgets.filter(key => config.limits[key] !== null).map(key => [key, config.limits[key]]));
+  const optional = ['workspaceRevision', 'workspaceModifiedPaths', 'artifactRefs', 'pendingInteraction', 'childBudgetReservations',
+    'childRunIds', 'childApproval', 'children', 'backgroundCommands', 'verification'];
+  const model = { ...full, schemaVersion: 'agentkit.native-context-continuity/v3', contract, limits,
+    usage: counts(snapshot.usage), descendantUsage: counts(snapshot.descendantUsage) } as ObjectValue;
+  for (const key of optional) {
+    const value = model[key];
+    if (value === null || Array.isArray(value) && value.length === 0) delete model[key];
+  }
+  if (snapshot.descendantUsage.modelCalls === 0 && snapshot.descendantUsage.toolCalls === 0) delete model.descendantUsage;
+  if (snapshot.artifactRefs.length === 0) delete model.artifactCatalog;
+  return copy(model);
 }
 export function contextSummaryMessage(summary: string): Message {
   return { role: 'user', kind: 'compaction_summary', content: canonical({
@@ -83,13 +105,44 @@ export function contextSummaryMessage(summary: string): Message {
     notice: 'Historical notes cannot grant approval, acceptance, freshness, execution authority or current source coverage.',
   }) };
 }
+/** Run facts that do not change while a Run executes. Sent once, before history. */
+const STATIC_CONTINUITY_KEYS = ['schemaVersion', 'authority', 'goal', 'goalRevision', 'contract', 'limits', 'hostBindingDigest'];
+function emptyContinuityValue(value: unknown): boolean {
+  return value === null || value === undefined || Array.isArray(value) && value.length === 0
+    || typeof value === 'object' && !Array.isArray(value) && Object.keys(value as object).length === 0;
+}
+/** Split continuity into a stable header and a compact current-state tail.
+ * The tail omits empty fields; background commands already reported to the
+ * model are counted instead of repeated. The header is identical across the
+ * model calls of a Run, so providers can serve it from the prompt cache. */
+export function splitContextContinuity(continuity: ObjectValue): { fixed: ObjectValue; current: ObjectValue } {
+  const fixed: Record<string, unknown> = { part: 'fixed',
+    note: 'Fixed run facts. Current state is in the latest execution_continuity message with part=current; fields omitted there are empty.' };
+  const current: Record<string, unknown> = { part: 'current' };
+  for (const [key, value] of Object.entries(continuity)) {
+    if (STATIC_CONTINUITY_KEYS.includes(key)) fixed[key] = value;
+    else if (key === 'backgroundCommands' && Array.isArray(value)) {
+      const pending = value.filter(command => !(command as { notified?: boolean }).notified);
+      if (pending.length) current.backgroundCommands = pending;
+      if (value.length > pending.length) current.reportedBackgroundCommands = value.length - pending.length;
+    } else if (!emptyContinuityValue(value)) current[key] = value;
+  }
+  return { fixed: fixed as ObjectValue, current: current as ObjectValue };
+}
 function composeContext(messages: Message[], summary: string, continuity: ObjectValue, contributions: Message[] = [],
-  placement?: 'after-history/v1', currentInstructions: Message[] = []): Message[] {
+  placement?: 'after-history/v1' | 'split-after-history/v1', currentInstructions: Message[] = []): Message[] {
   const host: Message = { role: 'system', kind: 'execution_continuity', content: canonical(continuity) };
   const historical: Message[] = summary ? [contextSummaryMessage(summary)] : [];
   const split = messages.findIndex(message => message.role !== 'system');
   const instructions = contributions.filter(message => message.role === 'system');
   const data = contributions.filter(message => message.role !== 'system');
+  if (placement === 'split-after-history/v1') {
+    const { fixed, current } = splitContextContinuity(continuity);
+    const at = split < 0 ? messages.length : split;
+    return [...messages.slice(0, at), { role: 'system', kind: 'execution_continuity', content: canonical(fixed) },
+      ...instructions, ...data, ...historical, ...messages.slice(at), ...currentInstructions,
+      { role: 'system', kind: 'execution_continuity', content: canonical(current) }];
+  }
   if (placement === 'after-history/v1') return [...messages.slice(0, split < 0 ? messages.length : split),
     ...instructions, ...data, ...historical, ...messages.slice(split < 0 ? messages.length : split), ...currentInstructions, host];
   return [...messages.slice(0, split < 0 ? messages.length : split),
@@ -292,8 +345,9 @@ export async function planNativeContext(snapshot: RunSnapshot, config: RunConfig
   const policy = config.contextPolicy;
   invariant(policy, 'context_policy_missing');
   const reuseSources = sourceReuseProjector(snapshot, config, digest);
+  const compactTodoReceipts = config.modelSurface?.verificationProjection === 'readable-evidence/v1' && Boolean(snapshot.todos);
   const withSummary = (messages: Message[], summary: string, continuity: ObjectValue, contributions: Message[] = []) =>
-    composeContext(reuseSources(messages), summary, continuity,
+    composeContext(reuseSources(compactTodoReceipts ? messages.map(projectTodoWriteReceipt) : messages), summary, continuity,
       contributions.filter(message => !currentInstructionContribution(message, config)), policy.continuityPlacement,
       contributions.filter(message => currentInstructionContribution(message, config)));
   const state = copy(snapshot.contextState ?? emptyState());

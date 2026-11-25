@@ -32,11 +32,13 @@ for (const name of ['agentkit-harness-core', 'agentkit-harness-node', 'agentkit-
 const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
 const dependencies = await collectDependencyEvidence({ root, packages: packages.map(item => item.name.split('/')[1]), directory });
 const ui = packages.find(item => item.name === '@kingsoftcloud/agentkit-harness-ui');
+const node = packages.find(item => item.name === '@kingsoftcloud/agentkit-harness-node');
 const studioClientPath = 'dist/studio-client.mjs';
 const studio = { engineProtocol: 'agentkit.engine/v1', uiContract: 'agentkit.studio-harness-ui/v1',
   uiSha256: ui.fileHashes[studioClientPath] };
 if (!studio.uiSha256 || packages.some(item => item.version !== ui.version))
   throw new Error('Studio upgrade requires matching engine, Core and UI versions');
+if (!node.fileHashes['dist/studio-tool-catalog.json']) throw new Error('Studio tool catalog is missing from the engine archive');
 writeFileSync(join(directory, 'manifest.json'), JSON.stringify({ schemaVersion: 'agentkit.native-packages/v1', sourceCommit,
   studio, packages, ...dependencies }, null, 2) + '\n');
 console.log(JSON.stringify({ directory, packages: packages.map(({ fileHashes, ...item }) => ({ ...item, files: Object.keys(fileHashes).length })),

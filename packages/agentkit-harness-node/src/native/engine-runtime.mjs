@@ -229,7 +229,7 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
   };
   const artifacts = await createNativeArtifactStore({ directory: join(stateDir, 'artifacts'), scope });
   const execution = nativeLocalExecutionMethods({ enabled: true, settings: {}, sourceEnv, workspaceRoot: root, commandBackend: 'local_process' });
-  const executionOptions = { modern: true, resourceProfile: 'local-development/v2' };
+  const executionOptions = { modern: true, resourceProfile: 'local-development/v3' };
   const local = execution.localExecution(executionOptions);
   const workspace = createNativeWorkspaceTools({ workspaceRoot: root, stateDir: join(stateDir, 'workspace'), sessionId, authorize: decide });
   const deliveries = createEngineDeliveryJournal(join(stateDir, 'delivery'), () => workspace.captureDelivery());
@@ -326,10 +326,12 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
   const providerRule = engineProviderCompatibilityRule(description);
   const profile = { profileId: 'engine', profileVersion: digest(description), providerFamily: description.protocol,
     compatibilityDigest: digest(description), supportsImages, discoveredToolExposure: 'direct-after-search/v1', streamTimeoutPolicy: 'idle/v1',
-    ...(chatUsage ? { chatUsagePolicy: chatUsage } : {}), maxRetries: 2, maxProviderRetries: 10, ...context.profile,
+    ...(chatUsage ? { chatUsagePolicy: chatUsage } : {}), maxRetries: 2, maxProviderRetries: 3, ...context.profile,
     maxOutputTokens: description.maxOutputTokens, contextWindow: description.contextWindow,
     requestTimeoutMs: description.requestTimeoutMs, providerReplayMode: 'reasoning_content',
-    providerCompatibilityPolicy: admitProviderCompatibilityPolicy(providerRule) };
+    providerCompatibilityPolicy: admitProviderCompatibilityPolicy(providerRule, {
+      protocol: description.protocol, model: description.modelName, baseUrl: description.baseUrl,
+    }) };
   const modelSurface = bindNativeModelSurface({ environment: execution.executionEnvironment(executionOptions), description });
   const modelPort = createNativeModelPort({ fetchImpl, resolveProfile: async () => ({ protocol: description.protocol, baseUrl: description.baseUrl,
     apiKey: await model.apiKey(), model: description.modelName, parameters: description.parameters }) });
@@ -465,7 +467,8 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
       limits: { ...preset.limits, ...limits,
         effectTimeoutMs: Math.max(120000, description.requestTimeoutMs + 10000, hooks.timeoutMs + 1000,
           ...runtimeTools.map(tool => (tool.timeoutMs ?? 0) + 10000)) },
-      modelRecoveryPolicy: nativeModelRecoveryPolicy(description), contextPolicy: context.policy, modelSurface,
+      modelRecoveryPolicy: nativeModelRecoveryPolicy(description), modelSurface,
+      contextPolicy: { ...context.policy, continuityProjection: 'decision-input/v1', commandOutputProjection: 'receipt-preview/v1' },
       backgroundNotificationPolicy: 'completed-before-model/v1', todoPolicy: 'session-todos/v1',
       ...(durableApprovals && children ? { childLifecyclePolicy: 'owned-background/v2', childApprovalPolicy: 'owned-child-approval/v1' } : {}),
       ...(searchable ? { toolDiscoveryPolicy: 'local-tool-search/v1' } : {}), instructions });

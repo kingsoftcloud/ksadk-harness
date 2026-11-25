@@ -12,6 +12,7 @@
 // the sealed providerReplay but never emitted in a public stream event's
 // metadata, and never concatenated to visible text.
 
+import { modelToolView } from './model-tool-view.mjs';
 import {
   normalizeResponse, parseAnthropicUsageFragment, parseRetryAfterMs,
   ProtocolError, resolveUrl, boundOutputTokens,
@@ -159,10 +160,9 @@ function projectAnthropicMessages(request, maxInlineImageBytes) {
   const native = isNativeToolSearch(profile) && !['compaction', 'delivery_review'].includes(request.purpose);
   const systemParts = [];
   const items = [];
-  const pending = new Set();
-  // Pending call name per receipt callId, so native tool_reference metadata
+  // Track the canonical call by ID so native tool_reference metadata
   // pairs only with a ToolSearch call. The wire id still keys the receipt.
-  const pendingNames = new Map();
+  const pending = new Map();
   const wireIds = new Map();
   const midSystem = profile.anthropicPolicy?.midSystem === true;
   for (const message of request.messages || []) {
@@ -172,16 +172,12 @@ function projectAnthropicMessages(request, maxInlineImageBytes) {
     if (role !== 'tool' && pending.size) throw new ProtocolError('incomplete assistant tool batch before next message');
     if (role === 'assistant' && message.toolCalls?.length) {
       validateAssistantToolIds(message.toolCalls);
-      for (const call of message.toolCalls) {
-        pending.add(call.callId);
-        pendingNames.set(call.callId, modelWireToolCall(call).name);
-      }
+      for (const call of message.toolCalls) pending.set(call.callId, call);
     }
-    let pairedName;
+    let pairedCall;
     if (role === 'tool') {
+      pairedCall = pending.get(message.callId);
       if (!pending.delete(message.callId)) throw new ProtocolError('tool receipt does not match the pending assistant batch');
-      pairedName = pendingNames.get(message.callId);
-      pendingNames.delete(message.callId);
     }
     if (role === 'system' || role === 'developer') {
       if (midSystem && items.length) items.push({ role: 'system', content: message.content || '' });
@@ -195,12 +191,12 @@ function projectAnthropicMessages(request, maxInlineImageBytes) {
       // (no metadata) or empty names keep the ordinary text/media projection;
       // malformed or unpaired metadata fails preflight rather than widening
       // authority. Non-native policy ignores the metadata entirely.
-      const references = native ? nativeToolReferenceContent(message, pairedName, request.tools) : undefined;
+      const references = native ? nativeToolReferenceContent(message, modelWireToolCall(pairedCall).name, request.tools) : undefined;
       const media = message.media ? message.media.map((b) => validateMediaBlock(b, maxInlineImageBytes)) : null;
       let content;
       if (references) content = [...references, ...(media?.length ? projectMediaAnthropic(media) : [])];
       else if (media && media.length) content = [{ type: 'text', text: message.content || '' }, ...projectMediaAnthropic(media)];
-      else content = (message.content || '');
+      else content = modelToolView(message.content || '', pairedCall.name, request.tools);
       item = {
         role: 'user',
         content: [{

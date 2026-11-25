@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createLocalCommandTransport } from '../src/native/local-command-tools.mjs';
@@ -51,11 +51,16 @@ test('a foreground command with a proven spawn rejection returns a recoverable t
   assert.equal(existsSync(join(workspaceRoot, 'launch-marker')), false);
 });
 
-test('a repository-sized inventory cannot turn a finished command into an unknown effect or prevent the next command', { timeout: 15000 }, async t => {
+test('a repository-sized inventory cannot turn a finished command into an unknown effect or prevent the next command', { timeout: 60000 }, async t => {
   const { workspaceRoot, files, transport, request } = setup(t);
-  const create = 'mkdir many; i=0; while [ "$i" -lt 2050 ]; do : > "many/$i"; i=$((i+1)); done';
+  // Prepare most of the inventory outside the tool's command deadline. The
+  // shell still crosses the real limit during the captured command.
+  const many = join(workspaceRoot, 'many');
+  mkdirSync(many);
+  for (let index = 0; index < 2045; index++) writeFileSync(join(many, String(index)), '');
+  const create = ': > many/2045; : > many/2046; : > many/2047; : > many/2048; : > many/2049';
   const first = await transport.execute(request(create, 'create-many-files'));
-  assert.equal(first.status, 'ok'); assert.equal(first.content.exit_code, 0);
+  assert.equal(first.status, 'ok', JSON.stringify(first)); assert.equal(first.content.exit_code, 0);
   assert.equal(first.content.status, 'completed');
   assert.equal(first.workspaceChangeObservation.status, 'unavailable');
   assert.equal(first.workspaceChangeObservation.reason, 'inventory_limit');

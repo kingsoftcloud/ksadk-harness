@@ -9,7 +9,10 @@ test('immediately resolved ports cannot starve lease renewal across a long chain
   const renew = store.renew.bind(store);
   store.renew = (...args) => { renewals++; return renew(...args); };
   const work = () => { const until = performance.now() + 10; while (performance.now() < until) {} };
-  const kernel = new NativeKernel({ store, digest, owner: 'worker', ports: {
+  // Keep the lease clock fixed while the heartbeat uses real timers. The test
+  // measures whether the loop services timers, even when the runner itself is
+  // paused long enough for a real lease to expire.
+  const kernel = new NativeKernel({ store, digest, owner: 'worker', now: () => 1000, ports: {
     model: { generate: async () => { work(); return ++models <= 40 ? {
       kind: 'tool_calls', text: '', toolCalls: [{ callId: `read-${models}`, name: 'read', arguments: {} }], usage: emptyUsage(),
     } : { kind: 'final_candidate', text: 'All observations collected.', toolCalls: [], usage: emptyUsage() }; } },

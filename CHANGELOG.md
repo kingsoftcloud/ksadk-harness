@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Compact committed TodoWrite receipts across engine protocols and preserve bounded command exit evidence when output is archived.
+- Keep the full objective in v2 continuity records and identify missing web roots in delivery validation feedback.
+- Add local-development/v3 without per-command rlimits and use it for the engine. The 1 GiB
+  address-space cap killed ordinary runtimes such as Node/npm before tests started. The
+  wall-clock timeout, output cap, process-group cleanup and governed command pre-check stay;
+  earlier profiles and explicit Host limits keep their values.
+- New openai-chat Runs use split-after-history/v1: fixed run facts are sent once before history
+  and only non-empty current state after it, so the fixed part stays in the provider prompt cache.
+  Admitted Runs keep their placement.
+- Omit repeated command text and private process-control details from local command results
+  sent to the model. Preserve paging handles after completion, including the task ID and
+  output cursors. Workspace results, external tool payloads, and stored receipts are preserved.
+
 ## 0.0.29 - 2026-11-23
 
 - Start Star Harness on Windows using ACL-validated private state paths while preserving file flushes and SQLite durability.

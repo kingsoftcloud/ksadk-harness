@@ -72,24 +72,68 @@ function modelSize(result: ToolResult): number {
     additionalContexts: result.additionalContexts ?? [] }));
 }
 function offloadedView(result: ToolResult, payloadBytes: number, maximum: number, ref: ArtifactRef | null,
-  preview: string, unavailable: boolean): string {
+  preview: string, unavailable: boolean, commandPreview: ObjectValue | null): string {
   const base = { code: ref ? 'tool_result_offloaded' : 'tool_result_truncated', execution_status: result.status,
     original_bytes: payloadBytes, artifact_state: ref ? 'available' : 'unavailable',
     instruction: ref ? 'Read the granted artifact for omitted text. The original tool has already returned; do not repeat its effects.'
       : 'Omitted text is unavailable. The original execution status is unchanged; do not repeat effects to recover its output.',
     ...(ref ? { artifact_uri: ref.uri } : {}), ...(unavailable ? { archive_error: 'archive_unavailable' } : {}),
     ...(result.context?.media?.length ? { media_observation: 'Inline media omitted; it has not been observed in this response.' } : {}) };
+  const evidence: ObjectValue = {};
+  if (commandPreview) {
+    const { exit_code, task_id, stdout_cursor, stderr_cursor } = commandPreview;
+    if (exit_code === null || typeof exit_code === 'number' && Number.isSafeInteger(exit_code)) evidence.exit_code = exit_code;
+    if (typeof task_id === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(task_id)) evidence.task_id = task_id;
+    if (typeof stdout_cursor === 'number' && Number.isSafeInteger(stdout_cursor) && stdout_cursor >= 0)
+      evidence.stdout_cursor = stdout_cursor;
+    if (typeof stderr_cursor === 'number' && Number.isSafeInteger(stderr_cursor) && stderr_cursor >= 0)
+      evidence.stderr_cursor = stderr_cursor;
+    preview = ['stdout', 'stderr'].filter(key => typeof commandPreview[key] === 'string')
+      .map(key => key + ': ' + commandPreview[key]).join('\n');
+  }
   // Account for JSON escaping and the complete ToolContext framing, not just preview characters.
   const chars = Array.from(preview);
   let low = 0, high = chars.length;
-  const encode = (count: number) => canonical({ ...base, preview: chars.slice(0, count).join('') });
-  invariant(bytes(canonical({ content: encode(0), media: [], additionalContexts: [] })) <= maximum, 'artifact_result_budget_too_small');
+  const encode = (count: number) => {
+    const head = commandPreview && count > 1 && count < chars.length ? Math.ceil(count / 2) : count;
+    const excerpt = chars.slice(0, head).join('') + (count > head ? '\n…\n' + chars.slice(-(count - head)).join('') : '');
+    return canonical({ ...base, ...evidence, preview: excerpt });
+  };
+  const fits = (count: number) => bytes(canonical({ content: encode(count), media: [], additionalContexts: [] })) <= maximum;
+  for (const key of ['task_id', 'stderr_cursor', 'stdout_cursor', 'exit_code']) {
+    if (fits(0)) break;
+    delete evidence[key];
+  }
+  invariant(fits(0), 'artifact_result_budget_too_small');
+  if (fits(high)) return encode(high);
   while (low < high) {
     const mid = Math.ceil((low + high) / 2);
-    if (bytes(canonical({ content: encode(mid), media: [], additionalContexts: [] })) <= maximum) low = mid;
+    if (fits(mid)) low = mid;
     else high = mid - 1;
   }
   return encode(low);
+}
+
+function commandOutputPreview(result: ToolResult, definition: ToolDefinition, config: RunConfiguration): ObjectValue | null {
+  if (config.contextPolicy?.commandOutputProjection !== 'receipt-preview/v1'
+    || definition.name !== 'run_command' || definition.workspaceChangePolicy !== 'observed-command/v1'
+    || result.context?.media?.length || result.additionalContexts?.length
+    || config.contract.allowedToolNames !== null && !config.contract.allowedToolNames.includes('ArtifactRead')) return null;
+  let observed: Json;
+  try { observed = parseNativeJson(projectToolResultContext(result, config).content); }
+  catch { return null; }
+  if (!object(observed)) return null;
+  const sizes: ObjectValue = {}, preview = { ...observed };
+  for (const stream of ['stdout', 'stderr'] as const) {
+    const text = observed[stream];
+    if (typeof text !== 'string' || bytes(text) <= 2048) continue;
+    const chars = Array.from(text);
+    const tail = stream === 'stderr' ? 768 : 512;
+    if (chars.length <= 128 + tail) continue;
+    sizes[`${stream}_receipt_bytes`] = bytes(text);
+    preview[stream] = chars.slice(0, 128).join('') + '\n…\n' + chars.slice(-tail).join('');
+  }
+  return Object.keys(sizes).length ? { ...preview, output_preview: sizes } : null;
 }
 
 /** Runs within the original durable tool intent. Archive failures never relabel a known mutation or cause a retry. */
@@ -128,7 +172,8 @@ export async function governArtifactResult(context: PortContext, definition: Too
   if (isArtifactTool(definition.name)) return result;
   const tooLarge = modelObservationBytes(result, config) > config.limits.maxToolResultBytes;
   const force = ['archived-model-view/v4', 'archived-model-view/v5'].includes(definition.resultArchivePolicy ?? '') && result.status === 'ok';
-  if (!tooLarge && !force) return result;
+  const commandPreview = commandOutputPreview(result, definition, config);
+  if (!tooLarge && !force && !commandPreview) return result;
   // Preserve the canonical receipt in SQLite. The readable archive follows the actual post-policy model view;
   // hidden/raw Host facts must not become visible merely by asking ArtifactRead for the overflow.
   const observation = result.archiveContext ?? result.context;
@@ -146,6 +191,16 @@ export async function governArtifactResult(context: PortContext, definition: Too
     }
   } catch { /* The original tool outcome remains authoritative even when storage fails. */ }
   if (ref) result.artifactRefs = [ref];
+  if (commandPreview && ref) {
+    const content = canonical({ ...commandPreview, artifact_uri: ref.uri, artifact_state: 'available',
+      output_preview_instruction: 'Read the granted artifact for omitted receipt text. Output cursors still refer to the original command. Do not repeat its effects.' });
+    if (modelSize({ ...result, context: { content } }) <= config.limits.maxToolResultBytes
+      && bytes(content) < bytes(projectToolResultContext(result, config).content)) {
+      result.context = { ...result.context, content };
+      return result;
+    }
+    if (!tooLarge && !force) return result;
+  }
   // Pixel observations use the independent image allowance; a forced text archive cannot erase them.
   if (config.modelSurface && !tooLarge && result.context?.media?.length) return result;
   if (sourceView && !result.context?.media?.length && !result.additionalContexts?.length) {
@@ -164,7 +219,7 @@ export async function governArtifactResult(context: PortContext, definition: Too
   }
   if (!tooLarge && !ref) return result;
   result.context = { content: offloadedView(result, bytes(content), config.limits.maxToolResultBytes, ref,
-    result.context?.content ?? canonical(result.content), !ref) };
+    result.context?.content ?? canonical(result.content), !ref, commandPreview) };
   delete result.additionalContexts;
   return result;
 }

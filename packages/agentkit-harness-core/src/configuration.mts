@@ -253,7 +253,7 @@ export function configure(input: ConfigurationInput): RunConfiguration {
     const policy = profile.providerCompatibilityPolicy;
     invariant(policy !== null && typeof policy === 'object' && !Array.isArray(policy)
       && Object.keys(policy).every(key => ['contract', 'rule'].includes(key))
-      && ['provider-compat/v1', 'provider-compat/v2', 'provider-compat/v3', 'provider-compat/v4', 'provider-compat/v5'].includes(policy.contract)
+      && ['provider-compat/v1', 'provider-compat/v2', 'provider-compat/v3', 'provider-compat/v4', 'provider-compat/v5', 'provider-compat/v6'].includes(policy.contract)
       && ['auto', 'permissive', 'openai', 'strict-openai', 'cerebras', 'groq', 'deepseek',
         'zai', 'kspmas-gateway', 'moonshot', 'mimo'].includes(policy.rule), 'invalid_provider_compatibility_policy');
   }
@@ -404,8 +404,12 @@ export function configure(input: ConfigurationInput): RunConfiguration {
       && Number.isSafeInteger(policy.summaryMaxTokens) && policy.summaryMaxTokens > 0
       && ['strict', 'context_bounded_estimate'].includes(policy.summaryBudgetMode ?? 'strict')
       && (policy.budgetTiming === undefined || policy.budgetTiming === 'before-model/v1')
-      && (policy.continuityPlacement === undefined || policy.continuityPlacement === 'after-history/v1'
+      && (policy.continuityPlacement === undefined || ['after-history/v1', 'split-after-history/v1'].includes(policy.continuityPlacement)
         && profile.operatorGuidancePolicy === undefined)
+      && (policy.continuityProjection === undefined || policy.continuityProjection === 'decision-input/v1'
+        && config.modelSurface?.verificationProjection === 'readable-evidence/v1')
+      && (policy.commandOutputProjection === undefined || policy.commandOutputProjection === 'receipt-preview/v1'
+        && config.artifactPolicy === 'runtime-artifacts/v1')
       && (policy.sourceReusePolicy === undefined || policy.sourceReusePolicy === 'captured-source/v1'
         && profile.providerFamily === 'openai-chat' && config.artifactPolicy === 'runtime-artifacts/v1')
       && (policy.maxCompactions === null || Number.isSafeInteger(policy.maxCompactions) && policy.maxCompactions >= 0)

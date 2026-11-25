@@ -129,7 +129,7 @@ export function buildOpenAIRequest(binding, request) {
 export function projectMessagesOpenAI(request, maxInlineImageBytes) {
   const profile = request.profile;
   const projected = [];
-  const pending = new Set();
+  const pending = new Map();
   let images = [];
   for (const message of request.messages || []) {
     const role = message.role;
@@ -138,12 +138,14 @@ export function projectMessagesOpenAI(request, maxInlineImageBytes) {
     }
     if (role === 'assistant' && message.toolCalls && message.toolCalls.length) {
       validateAssistantToolIds(message.toolCalls);
-      for (const call of message.toolCalls) pending.add(call.callId);
+      for (const call of message.toolCalls) pending.set(call.callId, call.name);
     }
+    let toolName;
     if (role === 'tool') {
       if (!pending.has(message.callId)) {
         throw new ProtocolError('tool receipt does not match the pending assistant batch');
       }
+      toolName = pending.get(message.callId);
       pending.delete(message.callId);
     }
     const media = message.media ? message.media.map((b) => validateMediaBlock(b, maxInlineImageBytes)) : null;
@@ -174,7 +176,7 @@ export function projectMessagesOpenAI(request, maxInlineImageBytes) {
       Object.assign(msg, openAIReplayFields(message, profile));
       projected.push(msg);
     } else if (role === 'tool') {
-      projected.push({ role: 'tool', tool_call_id: message.callId, content: modelToolView(message.content || '') });
+      projected.push({ role: 'tool', tool_call_id: message.callId, content: modelToolView(message.content || '', toolName, request.tools) });
     } else {
       projected.push({ role, content: message.content || '' });
     }

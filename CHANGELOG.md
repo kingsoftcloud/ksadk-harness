@@ -9,10 +9,9 @@
 - New openai-chat Runs use split-after-history/v1: fixed run facts are sent once before history
   and only non-empty current state after it, so the fixed part stays in the provider prompt cache.
   Admitted Runs keep their placement.
-- Send a compact model view of tool results on every model wire. Host-only receipt fields
-  (resource reports, timestamps, digests, backend identity, echoed command text) are left out
-  and successful reads are shown as text. Stored receipts are unchanged; receipts with integers
-  that would not round-trip exactly pass through verbatim.
+- Omit repeated command text and private process-control details from local command results
+  sent to the model. Preserve paging handles after completion, including the task ID and
+  output cursors. Workspace results, external tool payloads, and stored receipts are preserved.
 
 ## 0.0.29 - 2026-11-23
 

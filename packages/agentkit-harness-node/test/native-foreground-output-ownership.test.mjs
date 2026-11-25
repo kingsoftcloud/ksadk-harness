@@ -8,6 +8,7 @@ import { NativeKernel, emptyUsage } from '@kingsoftcloud/agentkit-harness-core';
 import { fixture, scope, digest } from './fixtures/native-core.mjs';
 import { SqliteRunStore } from '../src/native/sqlite-store.mjs';
 import { createNativeLocalCommandTools } from '../src/native/local-command-tools.mjs';
+import { projectMessagesOpenAI } from '../src/native/model-openai-chat.mjs';
 import { createOwnedCommandResolver, createOwnedCommandOutputReader,
   OWNED_COMMAND_OUTPUT_CONTRACT } from '../src/native/owned-command.mjs';
 
@@ -63,10 +64,16 @@ test('persisted foreground output remains owned and cursor-readable after a cold
   store.close(); store = new SqliteRunStore(database); tools = makeTools();
   let generated = 0, paged;
   const second = new NativeKernel({ store, digest, owner: 'cold-owner', ports: {
-    model: { generate: async () => ++generated === 1
-      ? { kind: 'tool_calls', text: '', usage: emptyUsage(), toolCalls: [{ callId: 'page', name: 'read_command_output',
-        arguments: { task_id: launch.content.task_id, stdout_cursor: launch.content.stdout_cursor, max_bytes: 65536 } }] }
-      : { kind: 'final_candidate', text: 'retained', usage: emptyUsage(), toolCalls: [] } },
+    model: { generate: async request => {
+      if (++generated !== 1) return { kind: 'final_candidate', text: 'retained', usage: emptyUsage(), toolCalls: [] };
+      const message = projectMessagesOpenAI(request).find(row => row.role === 'tool' && row.tool_call_id === 'launch');
+      const wire = JSON.parse(message.content);
+      assert.equal(wire.task_id, launch.content.task_id);
+      assert.equal(wire.stdout_cursor, launch.content.stdout_cursor);
+      assert.equal(wire.output_may_be_truncated, true);
+      return { kind: 'tool_calls', text: '', usage: emptyUsage(), toolCalls: [{ callId: 'page', name: 'read_command_output',
+        arguments: { task_id: wire.task_id, stdout_cursor: wire.stdout_cursor, max_bytes: 65536 } }] };
+    } },
     tools: { execute: async request => { paged = await tools.execute(request); return paged; } },
   } });
   second.submit(scope, 'run', { commandId: 'resume-cold', kind: 'resume', payload: {} });

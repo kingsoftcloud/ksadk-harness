@@ -4,7 +4,7 @@ import { NativeKernel, emptyUsage, artifactToolDefinitions, canonical } from '..
 import { SqliteRunStore } from '@kingsoftcloud/agentkit-harness-node/native/sqlite-store';
 import { createNativeContextPort } from '@kingsoftcloud/agentkit-harness-node/native/context-counter';
 import { fixture, tool, scope, digest } from '../fixtures.mjs';
-const [mode, root, checkpoint] = process.argv.slice(2), store = new SqliteRunStore(join(root, 'runs.sqlite'));
+const [mode, root, checkpoint, leaseClock] = process.argv.slice(2), store = new SqliteRunStore(join(root, 'runs.sqlite'));
 const context = createNativeContextPort({ protocol: 'openai-chat', model: 'pinned' });
 const definition = tool({ name: 'read_source', contextRole: 'workspace_read', sourceObservationPolicy: 'workspace-source-model/v1',
   resultArchivePolicy: 'archived-model-view/v5', parameters: { type: 'object', properties: { path: { type: 'string' } } } });
@@ -17,7 +17,7 @@ const data = fixture({ artifactPolicy: 'runtime-artifacts/v1', sourceReadPolicy:
 const calls = Array.from({ length: 6 }, (_, index) => ({ name: definition.name, callId: `read-${index}`, arguments: { path: `${index}.txt` } }));
 const response = toolCalls => ({ kind: toolCalls ? 'tool_calls' : 'final_candidate', text: toolCalls ? '' : 'Done',
   toolCalls: toolCalls ?? [], usage: emptyUsage() });
-const kernel = new NativeKernel({ store, owner: `source-capacity-${process.pid}`, digest,
+const kernel = new NativeKernel({ store, owner: `source-capacity-${process.pid}`, digest, now: () => Number(leaseClock),
   onCheckpoint: async snapshot => {
     const expected = checkpoint === 'quote-committed' ? 0 : 2;
     if (mode === 'run' && snapshot.phase === 'executing_tools' && snapshot.usage.toolCalls === expected

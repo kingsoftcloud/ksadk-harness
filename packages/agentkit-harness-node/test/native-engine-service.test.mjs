@@ -4,14 +4,16 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, statSyn
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import { setTimeout as sleep } from 'node:timers/promises';
 import test from 'node:test';
 import { createEngineService, parseEngineSessionFrame } from '../src/native/engine-service.mjs';
-import { projectEngineEvent } from '../src/native/engine-server.mjs';
+import { projectEngineEvent, serveEngine } from '../src/native/engine-server.mjs';
+import { connectEngine } from '../src/native/engine-client.mjs';
 import { createEngineViewStore } from '../src/native/engine-view-store.mjs';
 import { ENGINE_CONTEXT } from '../src/native/engine-context.mjs';
 import { ENGINE_HOST_EFFECT, waitForHostReceipt } from '../src/native/engine-host-effects.mjs';
-import { engineProviderCompatibilityRule, ENGINE_EXECUTION_POLICY } from '../src/native/engine-runtime.mjs';
+import { createEngineRuntime, engineProviderCompatibilityRule, ENGINE_EXECUTION_POLICY } from '../src/native/engine-runtime.mjs';
 import { admitProviderCompatibilityPolicy, applyProviderChatCompatibility } from '../src/native/model-provider-compat.mjs';
 import { ENGINE_VERIFICATION } from '../src/native/engine-verification.mjs';
 import { deliveryNetChanges, engineDeliveryEvidence } from '../src/native/engine-delivery-evidence.mjs';
@@ -23,6 +25,34 @@ test('the session frame boundary accepts RPC replies and host callbacks', () => 
   assert.deepEqual(parseEngineSessionFrame(JSON.stringify(callback)), callback);
   for (const line of ['', '{', 'null', '{"jsonrpc":"2.0","id":"reply"}'])
     assert.equal(parseEngineSessionFrame(line), null);
+});
+
+test('stdio can cancel a cold Run without reissuing its original Host callbacks', async t => {
+  const root = mkdtempSync(join(realpathSync(tmpdir()), 'studio-stdio-cancel-'));
+  const workspace = join(root, 'workspace'), stateDir = join(root, 'state');
+  mkdirSync(workspace);
+  mkdirSync(stateDir, { mode: 0o700 });
+  const scope = { tenantId: 't', workspaceId: 'w', userId: 'u', agentId: 'a' };
+  const sessionId = 'cold-cancel', runId = 'scoped-run';
+  const model = { name: 'fixture', baseUrl: 'https://example.test/v1', apiKeyEnv: 'KEY' };
+  const runtime = await createEngineRuntime({ workspaceRoot: workspace, stateDir, sessionId, scope,
+    model: { ...model, apiKey: async () => 'fixture' }, authorize: async () => 'deny' });
+  runtime.start({ runId, objective: 'Complete the fixture.', hostContext: { contract: ENGINE_CONTEXT,
+    sources: [{ sourceId: 'fixture', bindingDigest: 'sha256:' + 'a'.repeat(64), maxTokens: 64, maxBytes: 256,
+      timeoutMs: 1000, failureMode: 'fail', allowInstructions: false }] } });
+  await runtime.close();
+  const input = new PassThrough(), output = new PassThrough();
+  let modelCalls = 0;
+  const serving = serveEngine({ input, output, startup: { workspace, stateDir, sessionId, scope, model, approval: 'deny' },
+    env: { KEY: 'fixture' }, fetchImpl() { modelCalls++; throw Error('unexpected model request'); } });
+  t.after(async () => { input.end(); await serving; output.end(); await rm(root, { recursive: true, force: true }); });
+  const engine = connectEngine({ input: output, output: input });
+  await engine.initialize();
+  await assert.rejects(engine.resume(runId), /requires its original host services/);
+  await engine.cancel(runId);
+  const terminal = await engine.follow(runId, undefined, { waitMs: 100 });
+  assert.equal(terminal.phase, 'canceled');
+  assert.equal(modelCalls, 0);
 });
 
 test('unavailable host receipts yield a bounded idle wait without fabricating a result', async () => {

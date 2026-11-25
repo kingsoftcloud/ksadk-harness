@@ -40,14 +40,15 @@ function fixture(script) {
     close: () => new Promise(closed => { server.closeAllConnections(); server.close(closed); }) })));
 }
 
-async function launch(t, script, { approval = 'deny', onApproveTool, onCallTool, searchEnv = {} } = {}) {
+async function launch(t, script, { approval = 'deny', onApproveTool, onCallTool, onReadContext, onInvokeHook, searchEnv = {} } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'engine-proc-')), workspace = join(dir, 'workspace');
   mkdirSync(workspace);
   const model = await fixture(script);
   let log = '';
   const engine = spawnEngine({ command: process.execPath, args: [entry, '--workspace', workspace, '--state-dir', join(dir, 'state'), '--approval', approval],
     env: { PATH: process.env.PATH, HOME: dir, AGENTKIT_ENGINE_MODEL_NAME: 'fixture-model', AGENTKIT_ENGINE_MODEL_BASE_URL: model.url,
-      AGENTKIT_ENGINE_MODEL_API_KEY: 'fixture-secret-key', ...searchEnv }, onApproveTool, onCallTool, hostName: 'engine-test', onLog: chunk => { log += chunk; } });
+      AGENTKIT_ENGINE_MODEL_API_KEY: 'fixture-secret-key', ...searchEnv }, onApproveTool, onCallTool, onReadContext, onInvokeHook,
+    hostName: 'engine-test', onLog: chunk => { log += chunk; } });
   t.after(async () => { await engine.close().catch(() => {}); await model.close(); rmSync(dir, { recursive: true, force: true }); });
   return { engine, model, workspace, log: () => log };
 }
@@ -58,6 +59,49 @@ test('an unconfigured engine does not advertise web search, but can fetch public
   assert.ok(hello.engine.tools.includes('web_fetch'));
   assert.ok(!hello.engine.tools.includes('web_search'));
   assert.deepEqual(hello.engine.webSearch, { available: false, reason: 'provider_not_configured' });
+});
+
+test('stdio negotiates run-bound context and Hooks without routing the work through Studio', async t => {
+  const context = 'agentkit.engine-context/v1', hooks = 'agentkit.engine-hooks/v1';
+  const source = { sourceId: 'fixture.context', bindingDigest: 'sha256:' + 'a'.repeat(64),
+    maxTokens: 1024, maxBytes: 8000, timeoutMs: 3000, failureMode: 'fail', allowInstructions: false };
+  const hook = { hookId: 'fixture.write', sourceRef: 'plugin://fixture@1', bindingDigest: 'sha256:' + 'b'.repeat(64),
+    executionPolicyDigest: 'sha256:' + 'c'.repeat(64), readOnly: true, events: ['PreToolUse'], timeoutMs: 3000,
+    maxInputBytes: 32768, maxOutputBytes: 4096, failureMode: 'block', toolNames: ['write_workspace_file'] };
+  const input = { runId: 'scoped-fixture', objective: 'Write out.txt.',
+    hostContext: { contract: context, sources: [source] }, hostHooks: { contract: hooks, hooks: [hook] } };
+  const script = [toolCall('write', 'write_workspace_file', { path: 'out.txt', content: 'through stdio' }), final('Done.')];
+  const unbound = await launch(t, script);
+  await unbound.engine.initialize();
+  await assert.rejects(unbound.engine.startRun(input), /context.*(?:available|register|negotiat)/i);
+  assert.equal(unbound.model.requests.length, 0);
+  const reads = [], invocations = [];
+  const f = await launch(t, script, {
+    approval: 'allow',
+    onReadContext(request, signal) {
+      signal.throwIfAborted();
+      reads.push(request);
+      return { contract: context, sourceId: source.sourceId, bindingDigest: source.bindingDigest,
+        items: [{ projection: 'data', fragment: { text: 'scoped fixture context' } }] };
+    },
+    onInvokeHook(request, signal) {
+      signal.throwIfAborted();
+      invocations.push(request);
+      return { contract: hooks, operationKey: request.operationKey, inputDigest: request.inputDigest,
+        status: 'ok', reason: null, output: { action: 'continue', additionalContext: [], updatedArguments: null } };
+    },
+  });
+  const hello = await f.engine.initialize();
+  assert.equal(hello.capabilities.hostContext, context);
+  assert.equal(hello.capabilities.hostHooks, hooks);
+  await f.engine.startRun(input);
+  const terminal = await f.engine.follow(input.runId);
+  assert.equal(terminal.phase, 'completed', f.log());
+  assert.ok(reads.length > 0);
+  assert.deepEqual(invocations.map(request => request.event), ['PreToolUse']);
+  assert.deepEqual(new Set([...reads, ...invocations].map(request => request.runId)), new Set([input.runId]));
+  assert.match(JSON.stringify(f.model.requests[0].body.messages), /scoped fixture context/);
+  assert.equal(readFileSync(join(f.workspace, 'out.txt'), 'utf8'), 'through stdio');
 });
 
 test('the standalone engine searches through its configured HTTP backend without exposing its credential', async t => {

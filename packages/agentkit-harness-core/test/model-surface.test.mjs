@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { MemoryRunStore, NativeKernel, emptyUsage, artifactToolDefinitions, boundedCapabilityCatalog, canonical, configure, discoveryModelTools, discoveredCallExposed,
+import { MemoryRunStore, NativeKernel, emptyUsage, artifactToolDefinitions, boundedCapabilityCatalog, canonical, configure, discoveryModelTools, discoveredCallExposed, todoToolDefinitions,
   executeToolDiscovery, modelSurfaceMessages, planNativeContext, toolDiscoveryDefinitions, validSummaryContinuity, contextContinuity } from '../dist/index.mjs';
 import { governArtifactResult } from '../dist/artifact-runtime.mjs';
 import { modelObservationBytes } from '../dist/tool-context.mjs';
@@ -44,6 +44,79 @@ test('the admitted model surface is frozen transcript data, not a transport-only
   assert.equal(JSON.parse(env.content).cwd, '/isolated/work'); surface.environment.cwd = '/isolated/work';
   assert.throws(() => fixture({ modelSurface: { ...surface, environment: { ...surface.environment, apiKey: 'must-not-serialize' } } }), /invalid_model_environment/);
   assert.equal(modelSurfaceMessages(fixture().config).length, 0);
+});
+
+test('v3 model continuity omits a duplicate objective while retaining the contract and a revised live goal', () => {
+  const objective = 'Keep the entire inventory requirement available after compaction.';
+  const { config, snapshot } = fixture({
+    contract: { objective },
+    modelSurface: { ...surface, verificationProjection: 'readable-evidence/v1' },
+    contextPolicy: { ...policy, continuityProjection: 'decision-input/v1' },
+  });
+  const current = contextContinuity(snapshot, config);
+  assert.equal(current.goal, objective);
+  assert.equal(current.contract.objective, undefined);
+  assert.deepEqual(current.contract.acceptance, config.contract.acceptance);
+  const later = contextContinuity({ ...snapshot, goal: 'Use the revised fixture.' }, config);
+  assert.equal(later.contract.objective, objective);
+  assert.equal(later.goal, 'Use the revised fixture.');
+  assert.equal(config.contract.objective, objective);
+});
+
+test('decision continuity retains active budget and verification facts with less accounting in the request', () => {
+  const { config, snapshot } = fixture({
+    modelSurface: { ...surface, verificationProjection: 'readable-evidence/v1' },
+    contextPolicy: policy, limits: { maxWallMs: 120000, maxModelCalls: 15 },
+  });
+  const current = { ...snapshot, usage: { ...emptyUsage(), modelCalls: 5, toolCalls: 7, inputTokens: 35000, cachedInputTokens: 12000 },
+    descendantUsage: { ...emptyUsage(), modelCalls: 2, toolCalls: 4 }, workspaceRevision: 'workspace-1',
+    verification: { status: 'failed', reason: 'acceptance_command_failed', workspaceRevision: 'workspace-1', checks: [] } };
+  const before = canonical(current), baseline = contextContinuity(current, config);
+  const candidate = configure({ ...config, contextPolicy: { ...policy, continuityProjection: 'decision-input/v1' } });
+  const compact = contextContinuity(current, candidate);
+  assert.equal(compact.schemaVersion, 'agentkit.native-context-continuity/v3');
+  assert.deepEqual(compact.usage, { modelCalls: 5, toolCalls: 7 });
+  assert.deepEqual(compact.descendantUsage, { modelCalls: 2, toolCalls: 4 });
+  assert.equal(compact.limits.maxWallMs, 120000);
+  assert.equal(compact.limits.maxModelCalls, 15);
+  assert.equal(compact.workspaceRevision, 'workspace-1');
+  assert.deepEqual(compact.verification, baseline.verification);
+  assert.equal(baseline.contract.objective, config.contract.objective);
+  const { objective: _objective, ...contractFields } = baseline.contract;
+  assert.deepEqual(compact.contract, contractFields);
+  assert.ok(Buffer.byteLength(canonical(compact)) < Buffer.byteLength(canonical(baseline)));
+  assert.equal(canonical(current), before);
+  assert.deepEqual(contextContinuity(current, config), baseline);
+});
+
+test('the model sees a short TodoWrite receipt while the canonical transcript retains the full lists', async () => {
+  const { config, snapshot } = fixture({
+    modelSurface: { ...surface, verificationProjection: 'readable-evidence/v1' }, contextPolicy: policy,
+    todoPolicy: 'session-todos/v1', tools: todoToolDefinitions(),
+  });
+  const todo = { content: 'Current check', priority: 'high', status: 'in_progress' };
+  const store = new MemoryRunStore(), requests = [];
+  const kernel = new NativeKernel({ store, digest, owner: 'todo-projection', ports: {
+    tools: { execute: async () => assert.fail('TodoWrite is handled by the kernel') },
+    context: { tokens: { tokenizerId: policy.tokenizerId, tokenizerDigest: policy.tokenizerDigest,
+      countRequest: async ({ messages }) => canonical(messages).length, countText: async ({ text }) => text.length } },
+    model: { generate: async request => {
+      requests.push(request);
+      return requests.length === 1
+        ? { kind: 'tool_calls', text: '', toolCalls: [{ callId: 'done', name: 'TodoWrite', arguments: { todos: [todo] } }], usage: emptyUsage() }
+        : { kind: 'final_candidate', text: 'Done.', toolCalls: [], usage: emptyUsage() };
+    } },
+  } });
+  kernel.start(snapshot, config);
+  assert.equal((await kernel.runUntilIdle(scope, 'run')).phase, 'completed');
+  const view = requests[1].messages;
+  const persisted = store.load(scope, 'run').snapshot.messages.find(message => message.callId === 'done');
+  const receipt = JSON.parse(persisted.content);
+  assert.deepEqual(receipt.todos, [todo]);
+  assert.deepEqual(receipt.oldTodos, []);
+  assert.deepEqual(JSON.parse(view.find(message => message.callId === 'done').content),
+    { status: 'updated', summary: receipt.summary });
+  assert.deepEqual(JSON.parse(view.find(message => message.kind === 'execution_continuity').content).todos, [todo]);
 });
 
 test('directory budgeting retains all names when descriptions do not fit, and reports any actual omission', () => {

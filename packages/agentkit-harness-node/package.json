@@ -91,6 +91,7 @@
     "./native/model-request": "./src/native/model-request.mjs",
     "./native/model-responses": "./src/native/model-responses.mjs",
     "./native/model-sse": "./src/native/model-sse.mjs",
+    "./native/model-tool-view": "./src/native/model-tool-view.mjs",
     "./native/model-tool-search-policy": "./src/native/model-tool-search-policy.mjs",
     "./native/owned-child": "./src/native/owned-child.mjs",
     "./native/owned-command": "./src/native/owned-command.mjs",

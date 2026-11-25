@@ -224,10 +224,14 @@ export async function runBoundedProcess({ argv, cwd, env, settings: input = {}, 
   if (spawnError) throw new LocalProcessError(`local_process_spawn_failed:${spawnError.code ?? 'error'}`);
   const controls = controlReport(Buffer.concat(report).toString('utf8'), settings);
   const code = exitCode ?? (exitSignal && osConstants.signals[exitSignal] ? -osConstants.signals[exitSignal] : null);
+  // The verified launcher writes its complete control report before exec. A
+  // canceled, reliably drained launcher with an empty report never dispatched.
+  const preDispatch = canceled && (exitSignal === 'SIGTERM' || exitSignal === 'SIGKILL')
+    && closed && cleanupErrors.size === 0 && reportBytes === 0 ? { canceledBeforeDispatch: true } : {};
   if (!persistedStream)
     return { stdout: Buffer.concat(output.stdout).toString('utf8'), stderr: Buffer.concat(output.stderr).toString('utf8'),
       exitCode: outputLimitExceeded ? 122 : code, timedOut, canceled, outputLimitExceeded,
-      stdoutTruncated: truncated.stdout, stderrTruncated: truncated.stderr, cleanupError: [...cleanupErrors].join(',') || null, controls };
+      stdoutTruncated: truncated.stdout, stderrTruncated: truncated.stderr, cleanupError: [...cleanupErrors].join(',') || null, controls, ...preDispatch };
   // persisted-stream/v1: stdout/stderr hold ONLY the bounded preview. The full
   // capped output lives in the supervisor-owned files (streamed via onOutput and
   // located by task_id/cursors). Honest truncation flags distinguish preview vs
@@ -242,5 +246,5 @@ export async function runBoundedProcess({ argv, cwd, env, settings: input = {}, 
     stdoutTruncated: preview.truncated.stdout, stderrTruncated: preview.truncated.stderr,
     stdoutPersistedTruncated: stream.truncated.stdout, stderrPersistedTruncated: stream.truncated.stderr,
     previewBytes: outPolicy.previewBytes, persistedBytes: outPolicy.persistedBytes,
-    cleanupError: [...cleanupErrors].join(',') || null, controls };
+    cleanupError: [...cleanupErrors].join(',') || null, controls, ...preDispatch };
 }

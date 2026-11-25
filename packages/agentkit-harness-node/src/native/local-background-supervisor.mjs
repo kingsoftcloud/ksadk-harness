@@ -84,7 +84,8 @@ async function supervise() {
     else if (result.outputLimitExceeded) { status = 'output_limit'; exitCode = 122; diagnostic = 'command output limit exceeded'; }
     commandEvidence = commandFailureEvidence(stage, { result, failures: [
       ...(outputError ? ['output_recording_failed'] : []), ...(stateError ? ['state_observation_failed'] : [])] });
-    if (result.controls.status === 'failed' || result.cleanupError || outputError || stateError) {
+    const controlsFailed = result.controls.status === 'failed' && !result.canceledBeforeDispatch;
+    if (controlsFailed || result.cleanupError || outputError || stateError) {
       status = 'unknown'; exitCode = null; diagnostic = 'command supervision or cleanup failed';
     }
     // Under persisted-stream, result.stdout/stderr are bounded PREVIEWS; the full
@@ -95,7 +96,7 @@ async function supervise() {
     persist(status, exitCode, result.stdout, stderr, { controls: result.controls, outputLimitExceeded: result.outputLimitExceeded,
       ...(status === 'unknown' ? { commandEvidence } : {}),
       evidenceIncomplete: status === 'unknown', observedExitCode: status === 'unknown' ? result.exitCode : null,
-      outcomeReason: status === 'unknown' ? 'process_supervision_failed' : '' });
+      outcomeReason: status === 'unknown' ? 'process_supervision_failed' : result.canceledBeforeDispatch ? 'canceled_before_start' : '' });
   } catch (error) {
     // Secrets/input exception strings never enter records or diagnostics.
     if (record && !TERMINAL.has(record.status)) unknownRecord(directory, { ...record,

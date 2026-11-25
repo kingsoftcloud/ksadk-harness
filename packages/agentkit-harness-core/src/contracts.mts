@@ -109,7 +109,7 @@ export interface ModelProfile {
   /** Absent on older Runs; projection policy is frozen at admission. */
   inlineReasoningPolicy?: { contract: 'profiled-content/v1' | 'profiled-content/v2'; rule: 'auto' | 'permissive' | 'openai'
     | 'strict-openai' | 'cerebras' | 'groq' | 'deepseek' | 'zai' | 'kspmas-gateway' | 'moonshot' | 'mimo' };
-  providerCompatibilityPolicy?: { contract: 'provider-compat/v1' | 'provider-compat/v2' | 'provider-compat/v3' | 'provider-compat/v4' | 'provider-compat/v5'; rule: NonNullable<ModelProfile['inlineReasoningPolicy']>['rule'] };
+  providerCompatibilityPolicy?: { contract: 'provider-compat/v1' | 'provider-compat/v2' | 'provider-compat/v3' | 'provider-compat/v4' | 'provider-compat/v5' | 'provider-compat/v6'; rule: NonNullable<ModelProfile['inlineReasoningPolicy']>['rule'] };
   streaming?: boolean; outputTokenParameter?: 'max_tokens' | 'max_completion_tokens';
   streamTimeoutPolicy?: 'idle/v1'; providerThinkingDisplay?: boolean;
   /** Absent on historical Runs, whose OpenAI usage reports required equality. */
@@ -198,8 +198,14 @@ export interface ContextPlanningPolicy {
   /** Enforce the soft budget before task inference, retaining the fresh tool batch in full. */
   budgetTiming?: 'before-model/v1';
   /** Count and dispatch current Host state after complete history groups.
-   * Absence preserves the admitted legacy prefix layout. */
-  continuityPlacement?: 'after-history/v1';
+   * Absence preserves the admitted legacy prefix layout. split-after-history/v1
+   * sends the fixed run facts once before history (a cacheable prefix) and only
+   * the current, non-empty state after history. */
+  continuityPlacement?: 'after-history/v1' | 'split-after-history/v1';
+  /** Keep model-facing continuity focused on decisions; the Run retains full accounting. */
+  continuityProjection?: 'decision-input/v1';
+  /** Archive large automatic command receipts and keep a bounded model-facing preview. */
+  commandOutputProjection?: 'receipt-preview/v1';
   /** Replace older identical proven captured-source bodies in request views. */
   sourceReusePolicy?: 'captured-source/v1';
   triggerRatio: number; targetRatio: number; summaryMaxTokens: number;

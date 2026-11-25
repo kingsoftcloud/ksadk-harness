@@ -23,6 +23,7 @@
 // no reasoning items in its input array. See delivery evidence for the
 // audited gap.
 
+import { modelToolView } from './model-tool-view.mjs';
 import {
   normalizeResponse, sealUsage, ProtocolError, resolveUrl, boundOutputTokens,
   emptyUsage,
@@ -199,7 +200,7 @@ export function projectMessagesResponses(request, maxInlineImageBytes) {
   const profile = request.profile;
   const instructions = [];
   const items = [];
-  const pending = new Set();
+  const pending = new Map();
   for (const message of request.messages || []) {
     const role = message.role;
     if (role !== 'tool' && pending.size) {
@@ -207,12 +208,14 @@ export function projectMessagesResponses(request, maxInlineImageBytes) {
     }
     if (role === 'assistant' && message.toolCalls && message.toolCalls.length) {
       validateAssistantToolIds(message.toolCalls);
-      for (const call of message.toolCalls) pending.add(call.callId);
+      for (const call of message.toolCalls) pending.set(call.callId, call.name);
     }
+    let toolName;
     if (role === 'tool') {
       if (!pending.has(message.callId)) {
         throw new ProtocolError('tool receipt does not match the pending assistant batch');
       }
+      toolName = pending.get(message.callId);
       pending.delete(message.callId);
     }
     // The Responses wire carries no Anthropic content; a cross-wire replay is
@@ -228,7 +231,7 @@ export function projectMessagesResponses(request, maxInlineImageBytes) {
       const media = message.media ? message.media.map((b) => validateMediaBlock(b, maxInlineImageBytes)) : null;
       const output = media && media.length
         ? [{ type: 'input_text', text: message.content || '' }, ...projectMediaResponses(media)]
-        : (message.content || '');
+        : modelToolView(message.content || '', toolName, request.tools);
       items.push({ type: 'function_call_output', call_id: message.callId, output });
       continue;
     }

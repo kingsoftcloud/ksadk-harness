@@ -33,7 +33,7 @@
 // URL the detached child imports (transportModule).
 import { closeSync, constants, existsSync, fsyncSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
-import { TERMINAL, check, openPrivate, atomicPrivate, readE2BRecord, tryLock, unknownRecord, writeRecord } from './e2b-command-state.mjs';
+import { TERMINAL, check, openPrivate, atomicPrivate, readE2BRecord, lockUntil, unknownRecord, writeRecord } from './e2b-command-state.mjs';
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const validSandboxId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
@@ -119,8 +119,13 @@ function fencedWrite(directory, owner, commandId, generation, patch) {
 
 export async function supervise(config, transport) {
   const directory = config.directory, generation = config.generation ?? 0;
-  const release = tryLock(join(directory, 'supervisor.sqlite'));
-  if (!release) return; // a live supervisor holds the lock
+  // Receipt readers briefly acquire this lock to check liveness. Give that
+  // probe time to release it before deciding another supervisor owns the task.
+  const release = await lockUntil(join(directory, 'supervisor.sqlite'), performance.now() + 5000).catch(error => {
+    if (error.code === 'background_command_lock_timeout') return null;
+    throw error;
+  });
+  if (!release) return;
   let settled = false, stream = null;
   // safeDisconnect is declared BEFORE the try block so the finally block can access it.
   // It references `stream` (set inside the try) via closure — the let is in scope.

@@ -1,4 +1,4 @@
-import type { ObjectValue, RunConfiguration, RunSnapshot, TodoItem, ToolCall, ToolDefinition, ToolResult } from './contracts.mjs';
+import type { Message, ObjectValue, RunConfiguration, RunSnapshot, TodoItem, ToolCall, ToolDefinition, ToolResult } from './contracts.mjs';
 import { canonical, copy, invariant } from './values.mjs';
 import { toolInputRejection } from './tool-input.mjs';
 
@@ -64,6 +64,16 @@ export function reduceTodo(snapshot: RunSnapshot, config: RunConfiguration, call
     && canonical(result.content.oldTodos) === canonical(snapshot.todos.items), 'invalid_todo_receipt');
   return { ...copy(snapshot.todos), items, revision: snapshot.todos.revision + 1,
     lastWriteAssistantTurn: snapshot.todos.assistantTurns };
+}
+
+/** The complete list is already present in execution continuity. Keep the
+ * committed receipt and the request arguments intact for replay and history. */
+export function projectTodoWriteReceipt(message: Message): Message {
+  if (message.role !== 'tool' || message.name !== TODO_WRITE || message.toolOutcome !== 'ok') return message;
+  let receipt;
+  try { receipt = JSON.parse(message.content); } catch { return message; }
+  if (!Array.isArray(receipt?.todos) || !Array.isArray(receipt.oldTodos) || !receipt.summary) return message;
+  return { ...message, content: canonical({ status: 'updated', summary: receipt.summary }) };
 }
 
 /** Reference cadence: ten assistant requests since both write and previous reminder. */

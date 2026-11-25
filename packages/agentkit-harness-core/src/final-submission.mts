@@ -4,11 +4,13 @@ import type { Json, ObjectValue, RunConfiguration, ToolCall, ToolDefinition } fr
 import { canonical, copy, invariant } from './values.mjs';
 import { parseModelJson } from './model-json.mjs';
 import { compileWithExactIntegers, removeExactIntegerSchema } from './exact-integer-schema.mjs';
-import { RESULT_DELIVERY_POLICY, deliveryArtifactsSchema, deliveryArtifacts, deliveryManifestChanges,
+import { RESULT_DELIVERY_POLICY, deliverySchemaForRun, usesHistoricalDeliveryTools, deliveryArtifacts, deliveryManifestChanges,
   currentDeliveryManifest } from './deliverables.mjs';
 import type { RunSnapshot } from './contracts.mjs';
 
 export const FINAL_SUBMISSION_TOOL = 'submit_final_output';
+const historicalDescription = 'Submit your final answer and optional workspace artifacts together. Use answer for the complete user-facing answer (or the required structured output object). Include only delivery artifacts, excluding references and temporary files. For a runnable web page use kind=web with its relative entry path and project root; documents and source files use kind=file. Omitted artifacts retain an earlier selection, otherwise the delivery is the text answer. This does not execute tools or establish acceptance. No separate declaration is needed.';
+const currentDescription = 'Submit your final answer and optional workspace artifacts together. Use answer for the complete user-facing answer (or the required structured output object). Include only delivery artifacts, excluding references and temporary files. For example, {"kind":"file","path":"src/index.js"} uses no root. A runnable web page uses a workspace-relative root, for example {"kind":"web","path":"site/index.html","root":"site"}. Omitted artifacts retain an earlier selection, otherwise the delivery is the text answer. This does not execute tools or establish acceptance. No separate declaration is needed.';
 const validator = new Ajv2020({ strict: false, validateFormats: false, ownProperties: true, addUsedSchema: false, passContext: true });
 const compiled = new Map<string, { schema: ObjectValue; validate: ValidateFunction }>();
 
@@ -66,14 +68,30 @@ export function validateSubmissionContract(config: RunConfiguration): void {
 export function finalSubmissionTool(config: RunConfiguration): ToolDefinition | null {
   const atomic = config.deliveryScopePolicy === RESULT_DELIVERY_POLICY;
   const schema = atomic ? { type: 'object', additionalProperties: false, required: ['answer'], properties: {
-    answer: config.contract.finalSubmissionSchema ?? { type: 'string' }, artifacts: deliveryArtifactsSchema } }
+    answer: config.contract.finalSubmissionSchema ?? { type: 'string' }, artifacts: deliverySchemaForRun(config) } }
     : config.contract.finalSubmissionSchema;
   if (!schema) return null;
   return { name: FINAL_SUBMISSION_TOOL, description: atomic
-    ? 'Submit your final answer and optional workspace artifacts together. Use answer for the complete user-facing answer (or the required structured output object). Include only delivery artifacts, excluding references and temporary files. For a runnable web page use kind=web with its relative entry path and project root; documents and source files use kind=file. Omitted artifacts retain an earlier selection, otherwise the delivery is the text answer. This does not execute tools or establish acceptance. No separate declaration is needed.'
+    ? usesHistoricalDeliveryTools(config) ? historicalDescription : currentDescription
     : 'Submit the final structured answer for host verification. This does not execute a workspace action.',
     parameters: schema, readOnly: true, concurrentSafe: false, permissions: [], timeoutMs: 1,
     contextRole: 'none', observationRole: 'none', progressObservation: false, contextRetention: 'normal' };
+}
+export function finalSubmissionFailure(calls: readonly ToolCall[], config: RunConfiguration): ObjectValue {
+  if (calls.length !== 1) return { reason: 'final_submission_batch_invalid', message: 'Call submit_final_output by itself.' };
+  const call = calls[0]!;
+  const artifacts = call.arguments.artifacts;
+  if (config.deliveryScopePolicy === RESULT_DELIVERY_POLICY && Array.isArray(artifacts)) {
+    const index = artifacts.findIndex(item => item && typeof item === 'object' && !Array.isArray(item)
+      && item.kind === 'file' && Object.hasOwn(item, 'root'));
+    if (index >= 0) return { reason: 'invalid_file_delivery_scope', field: `artifacts[${index}].root`,
+      message: 'Remove root from file entries. Keep the answer and file paths. Only web entries require root.' };
+    const missingRoot = artifacts.findIndex(item => item && typeof item === 'object' && !Array.isArray(item)
+      && item.kind === 'web' && !Object.hasOwn(item, 'root'));
+    if (missingRoot >= 0) return { reason: 'invalid_web_delivery_scope', field: `artifacts[${missingRoot}].root`,
+      message: 'Add root to the web entry. Use the workspace-relative directory containing the page and its assets.' };
+  }
+  return { reason: 'final_submission_schema_invalid', message: 'Match the submit_final_output schema and use unique workspace-relative artifact paths.' };
 }
 export function submittedFinalText(call: ToolCall, config: RunConfiguration): string | null {
   const { finalSubmissionSchema: schema, finalSubmissionPayloadKey: key, finalOutputFormat: format } = config.contract;

@@ -164,6 +164,15 @@ test('owned cancellation kills TERM-ignoring descendants without accepting a PID
   assert.equal(result.status, 'canceled'); assert.equal(result.cancelRequested, true); assert.ok(result.exitCode < 0);
   await until(() => !alive(pid)); assert.equal(await h.kill(), true);
 });
+test('immediate owned cancellation confirms a newly launched task without a workload effect', async t => {
+  const f = fixture(t), handle = await f.start('/bin/sleep 2; printf effect > must-not-write');
+  handle.requestCancel();
+  const result = await handle.wait({ timeoutMs: 5000 });
+  assert.equal(result.status, 'canceled');
+  assert.equal(result.cancelRequested, true);
+  assert.equal(result.evidenceIncomplete, false);
+  assert.equal(existsSync(join(f.workspace, 'must-not-write')), false);
+});
 test('aborted/timed-out output waits do not cancel a background command', async t => {
   const f = fixture(t), h = await f.start('/bin/sleep 1; printf finished');
   await assert.rejects(h.wait({ timeoutMs: 0 }), { code: 'background_command_still_running' });

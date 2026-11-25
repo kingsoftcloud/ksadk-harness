@@ -7,6 +7,7 @@ import { ProtocolError } from './model-normalize.mjs';
 const strict = new Set(['openai', 'strict-openai', 'cerebras', 'groq']);
 const requiredAuto = new Set(['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-fable-5-1', 'claude-mythos-5-1']);
 const mandatory = new Set(['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5']);
+const gatewayMandatoryGlm = new Set(['glm-5.3', 'glm-5.3-flash', 'glm-5.3-flashx']);
 const ranks = { none: 0, minimal: 1, low: 2, medium: 3, high: 4, xhigh: 5, max: 5 };
 const normalized = model => String(model ?? '').trim().toLowerCase().replaceAll('_', '-');
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
@@ -44,25 +45,32 @@ export function applyAnthropicThinking(payload, profile, binding) {
   return { ...payload, thinking };
 }
 
-export function admitProviderCompatibilityPolicy(override) {
-  return { contract: 'provider-compat/v5', rule: admitInlineReasoningPolicy(override).rule };
+export function admitProviderCompatibilityPolicy(override, binding) {
+  const { rule } = admitInlineReasoningPolicy(override);
+  const needsThinkingGuard = binding?.protocol === 'openai-chat'
+    && gatewayMandatoryGlm.has(String(binding.model ?? '').trim().toLowerCase())
+    && resolveCompatibilityRule(rule, binding) === 'kspmas-gateway';
+  return { contract: needsThinkingGuard ? 'provider-compat/v6' : 'provider-compat/v5', rule };
 }
 
 export function resolveProviderCompatibility(policy, binding) {
   if (!policy) return null;
-  const version = ['provider-compat/v1', 'provider-compat/v2', 'provider-compat/v3', 'provider-compat/v4', 'provider-compat/v5'].indexOf(policy.contract) + 1;
+  const version = ['provider-compat/v1', 'provider-compat/v2', 'provider-compat/v3', 'provider-compat/v4', 'provider-compat/v5', 'provider-compat/v6'].indexOf(policy.contract) + 1;
   if (!version) throw new ProtocolError('invalid_provider_compatibility_policy');
   const rule = resolveCompatibilityRule(policy.rule, binding);
   const name = String(binding.model ?? '').trim().toLowerCase();
   const kimi = ['kspmas-gateway', 'moonshot'].includes(rule)
     && ['kimi-k2.7-code', 'kimi-k2.7-code-highspeed'].includes(name);
   const modern = version >= 3;
-  const reasoningRequired = modern && rule === 'kspmas-gateway' && name === 'glm-5.3-flash';
+  const gatewayFlash = rule === 'kspmas-gateway' && name === 'glm-5.3-flash';
+  const gatewayMandatoryThinking = version >= 6 && rule === 'kspmas-gateway' && gatewayMandatoryGlm.has(name);
+  const reasoningRequired = gatewayMandatoryThinking || modern && gatewayFlash;
   const disabledEfforts = mandatory.has(name) || reasoningRequired ? [] : name === 'claude-haiku-5-5' ? ['low', 'medium', 'high'] : null;
   return { rule, supportsUsage: !strict.has(rule), supportsThinking: !strict.has(rule) && !kimi,
     supportsToolArgumentStreaming: version >= 2
       && ['zai', 'kspmas-gateway'].includes(rule) && incrementalToolModels.has(normalized(binding.model)),
-    reasoningRequired, modern, firstToolLowEffort: version >= 5 && reasoningRequired,
+    reasoningRequired, modern, firstToolLowEffort: version >= 5 && gatewayFlash,
+    minimumReasoningEffort: gatewayMandatoryThinking ? 'low' : null,
     // This route already uses the supported non-thinking mode for tool work.
     // A bounded summary has no tools: omitting the switch can instead select
     // the provider's default high reasoning and consume its whole output cap.
@@ -118,6 +126,7 @@ export function applyProviderChatCompatibility(payload, request, binding) {
   if (requested === null && request.purpose === 'compaction' && compat.rule === 'kspmas-gateway'
     && ['glm-5.2', 'deepseek-v4-flash'].includes(name)) effort = 'none';
   if (requested === null && request.purpose === 'compaction' && compat.reasoningRequired) effort = 'low';
+  if (compat.minimumReasoningEffort && (effort === 'none' || effort === 'minimal')) effort = compat.minimumReasoningEffort;
   effort = compat.supportsEffort ? clampReasoningEffort(model, effort) : null;
   if (effort !== null) result.reasoning_effort = effort;
   if (result.stream) result.stream_options = { ...(object(result.stream_options) ? result.stream_options : {}), include_usage: true };

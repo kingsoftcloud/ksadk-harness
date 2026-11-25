@@ -11,11 +11,13 @@ import { chmodSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolve, relative } from 'node:path';
-import { rm, mkdir, readFile } from 'node:fs/promises';
+import { rm, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { nativeToolCatalog } from './native-tool-catalog.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const pkgDir = resolve(root, 'packages/agentkit-harness-node');
 const outDir = resolve(pkgDir, 'dist');
+const { version } = JSON.parse(await readFile(resolve(pkgDir, 'package.json'), 'utf8'));
 
 // Externalize the shared adapters' relative `agentkit-harness-core/dist` import
 // to the public npm name. Matches any import path containing the core package
@@ -103,6 +105,7 @@ const rpcDist = resolve(outDir, 'rpc-entry.mjs');
 await assertClosureAndBoundary('rpc-entry', rpcResult, rpcDist);
 execFileSync(process.execPath, ['--check', rpcDist]);
 chmodSync(rpcDist, 0o755);
+await writeFile(resolve(outDir, 'studio-tool-catalog.json'), JSON.stringify(nativeToolCatalog(version), null, 2) + '\n');
 for (const path of Object.keys(rpcResult.metafile.inputs)) {
   const norm = path.replace(/\\/g, '/');
   if (/packages\/agentkit-harness-node\/src\/native\//.test(norm)) bundledAdapters.add(relative(root, path).replace(/\\/g, '/'));

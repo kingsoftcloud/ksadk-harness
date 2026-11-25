@@ -371,9 +371,16 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
     || record.configuration.contextSources.some(source => source.hostProjection)
     || record.configuration.tools.some(tool => tool.hostEffectProtocol === ENGINE_HOST_EFFECT);
   const continueOnSubscription = (runId, record) => {
-    if (hasScopedCallbacks(record)) driven.delete(runId);
+    if (detachOnShutdown && hasScopedCallbacks(record)) driven.delete(runId);
     else drive(runId);
   };
+  function requireLocalCallbacks(record) {
+    if (detachOnShutdown) return;
+    if (record.configuration.hooks.length > 0 && !host.services.hooks
+      || record.configuration.contextSources.some(source => source.hostProjection) && !host.services.context
+      || record.configuration.hostVerification && !host.services.verification)
+      throw rpcError(ERRORS.params, 'the Run requires its original host services');
+  }
 
   const handlers = {
     async initialize(params) {
@@ -383,9 +390,9 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
       // callbacks and approval authority of a concurrent execution owner.
       if (params.host?.observeOnly !== true || !host) host = { name: text(params.host?.name) ? params.host.name : 'unknown',
         services: { approvals: params.services?.approvals === true, tools: params.services?.tools === true,
-          context: detachOnShutdown && params.services?.context === ENGINE_CONTEXT,
-          hooks: detachOnShutdown && params.services?.hooks === ENGINE_HOOKS,
-          verification: detachOnShutdown && params.services?.verification === ENGINE_VERIFICATION,
+          context: params.services?.context === ENGINE_CONTEXT,
+          hooks: params.services?.hooks === ENGINE_HOOKS,
+          verification: params.services?.verification === ENGINE_VERIFICATION,
           toolEffects: detachOnShutdown && params.services?.toolEffects === ENGINE_HOST_EFFECT,
           toolReceipts: detachOnShutdown && params.services?.toolEffects === ENGINE_HOST_EFFECT
             && params.services?.toolReceipts === TOOL_RECEIPT_OBSERVATION_CONTRACT,
@@ -429,7 +436,10 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
       const runId = text(params.runId) ? params.runId : `run-${createHash('sha256').update(randomUUID()).digest('hex').slice(0, 24)}`;
       const existing = lookup(runId);
       if (existing) {
-        if (!hasScopedCallbacks(existing)) drive(runId);
+        if (!runtime.terminal(existing.snapshot)) {
+          requireLocalCallbacks(existing);
+          if (!detachOnShutdown || !hasScopedCallbacks(existing)) drive(runId);
+        }
         return { ...status(runId), existing: true };
       }
       viewStore?.pin(startup.stateDir, runId, viewRef);
@@ -438,8 +448,10 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
         hostVerification: params.hostVerification,
         executionPolicy: params.executionPolicy,
         ...(params.preset === undefined ? {} : { preset: params.preset }), maxModelCalls: params.maxModelCalls ?? null });
-      // A subscribed host is required to service budgeted context and Hook callbacks.
-      if (!params.hostContext?.sources?.length && !params.hostHooks?.hooks?.length && !hostEffects && !params.hostVerification) drive(runId);
+      // HTTP needs a subscriber to serve run-scoped callbacks. The owned stdio
+      // pipe already has the necessary callback handlers on the other end.
+      if (!detachOnShutdown || !params.hostContext?.sources?.length && !params.hostHooks?.hooks?.length && !hostEffects && !params.hostVerification)
+        drive(runId);
       return { ...status(runId), preset: started.preset, hostTools: started.hostTools, existing: false };
     },
     async 'run/status'(params) {
@@ -524,6 +536,7 @@ export async function serveEngine({ input, output, log = () => {}, startup, env 
       const record = requireRun(params);
       if (active.has(params.runId)) throw rpcError(ERRORS.runBusy, 'run is already running');
       const before = status(params.runId);
+      if (!before.terminal) requireLocalCallbacks(record);
       if (before.phase === 'paused') runtime.submit(params.runId, { commandId: `resume-${randomUUID()}`, kind: 'resume', payload: {} });
       if (!before.terminal) continueOnSubscription(params.runId, record);
       return status(params.runId);

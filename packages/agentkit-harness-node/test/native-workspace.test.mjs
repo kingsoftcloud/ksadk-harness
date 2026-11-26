@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createNativeWorkspaceTools } from '../src/native/workspace-tools.mjs';
+import { searchWorkspace } from '../src/native/workspace-search-worker.mjs';
 
 function setup({ authorize, sessionId = 's1' } = {}) {
   const base = mkdtempSync(join(tmpdir(), 'nws-main-'));
@@ -299,6 +300,46 @@ test('search_workspace_files matches literal and regex with context and truncati
     const empty = await call('search_workspace_files', { query: '   ' });
     assert.equal(empty.status, 'error');
     assert.match(empty.content.error_message, /query is required/);
+  } finally { cleanup(); }
+});
+
+test('workspace search skips dependency directories unless explicitly targeted', async () => {
+  const { call, workspaceRoot, cleanup } = setup();
+  try {
+    for (const dir of ['node_modules/pkg', 'src', 'src/.venv', '.git']) {
+      mkdirSync(join(workspaceRoot, dir), { recursive: true });
+      writeFileSync(join(workspaceRoot, dir, 'value.txt'), 'needle');
+    }
+    const result = await call('search_workspace_files', { query: 'needle' });
+    assert.deepEqual(result.content.results.map(match => match.path), ['src/value.txt']);
+    assert.equal(result.content.truncated, false);
+    const explicit = await call('search_workspace_files', { path: 'node_modules/pkg', query: 'needle' });
+    assert.deepEqual(explicit.content.results.map(match => match.path), ['node_modules/pkg/value.txt']);
+  } finally { cleanup(); }
+});
+
+test('workspace search skips a stalled file and reports partial results from later files', async () => {
+  const { workspaceRoot, cleanup } = setup();
+  try {
+    mkdirSync(join(workspaceRoot, 'src'));
+    writeFileSync(join(workspaceRoot, 'slow.txt'), '');
+    writeFileSync(join(workspaceRoot, 'src', 'ready.txt'), 'needle');
+    const root = realpathSync(workspaceRoot);
+    let expired;
+    const result = await searchWorkspace({ args: { query: 'needle', path: '.' }, root, base: root }, {
+      fileTimeoutMs: 25,
+      read: (file, _root, signal) => {
+        if (file === join(root, 'slow.txt')) {
+          expired = signal;
+          return new Promise(() => {});
+        }
+        return Promise.resolve(readFileSync(file, 'utf8'));
+      },
+    });
+    assert.equal(expired?.aborted, true);
+    assert.equal(result.truncated, true);
+    assert.equal(result.skipped_slow_paths, 1);
+    assert.deepEqual(result.results.map(match => match.path), ['src/ready.txt']);
   } finally { cleanup(); }
 });
 

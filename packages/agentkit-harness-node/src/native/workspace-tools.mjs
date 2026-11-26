@@ -19,7 +19,7 @@ import { publicErrorMessage, publicErrorCode, publicFailureContent } from '@king
 import { createHash } from 'node:crypto';
 import {
   chmodSync, closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readdirSync,
-  readFileSync, readlinkSync, readSync, realpathSync, rmdirSync, statSync,
+  readlinkSync, readSync, realpathSync, rmdirSync, statSync,
   unlinkSync,
 } from 'node:fs';
 import { basename, join } from 'node:path';
@@ -30,13 +30,14 @@ import { prepareWorkspaceEdits } from './workspace-edit-match.mjs';
 import { prepareWorkspacePatch } from './workspace-patch.mjs';
 import { workspaceChangeDisplay } from './workspace-display.mjs';
 import { readBoundedWorkspaceImage } from './workspace-image.mjs';
+import { runWorkspaceSearch } from './workspace-search.mjs';
 import { createWorkspaceCheckpointJournal, captureCheckpointFile, checkpointStatesEqual, WORKSPACE_CHECKPOINT_POLICY, CONVERSATION_WORKSPACE_CONTROL } from './workspace-checkpoints.mjs';
 import { parseStructuredPatch } from '@kingsoftcloud/agentkit-harness-core/patch-parser';
 import { canonical } from '@kingsoftcloud/agentkit-harness-core';
 import { captureWorkspaceSubject } from './workspace-subject-observer.mjs';
 
 import {
-  WorkspacePathError, escapeRegex, fnmatch, publishWorkspaceBytes, sha256,
+  WorkspacePathError, fnmatch, publishWorkspaceBytes, sha256,
   TWO_MB, resolveWorkspacePath, workspaceRelative,
 } from './workspace-paths.mjs';
 import {
@@ -886,87 +887,9 @@ export function createNativeWorkspaceTools({
 
   function searchWorkspaceFiles(args, ctx) {
     const query = String(args.query ?? '');
+    if (!query.trim()) return { ok: false, error_message: 'query is required' };
     const path = String(args.path ?? '.');
-    const isRegex = Boolean(args.is_regex);
-    const glob = args.glob ?? null;
-    const caseSensitive = Boolean(args.case_sensitive);
-    const contextLines = Number(args.context_lines ?? 0);
-    const maxResults = Number(args.max_results ?? 100);
-    const needle = query.trim();
-    if (!needle) return { ok: false, error_message: 'query is required' };
-    const base = resolvePath(path);
-    if (!existsSync(base)) return { ok: false, error_code: 'workspace_path_not_found', error_message: `workspace path not found: ${path}` };
-    const candidates = [];
-    if (lstatSync(base, { bigint: true }).isFile()) {
-      candidates.push(base);
-    } else {
-      // Real files beneath the base subtree; symlinked directories are not
-      // followed so the search cannot escape the workspace root.
-      const stack = [base];
-      while (stack.length) {
-        const cur = stack.pop();
-        let dirents;
-        try { dirents = readdirSync(cur, { withFileTypes: true }); } catch { continue; }
-        for (const d of dirents) {
-          const abs = join(cur, d.name);
-          if (d.isFile()) candidates.push(abs);
-          else if (d.isDirectory() && !d.isSymbolicLink()) stack.push(abs);
-        }
-      }
-    }
-    let filtered = candidates;
-    if (glob) {
-      filtered = candidates.filter((c) => {
-        const rel = relativeOf(c);
-        return fnmatch(rel, glob) || fnmatch(basename(c), glob);
-      });
-    }
-    let pattern;
-    try {
-      pattern = new RegExp(isRegex ? needle : escapeRegex(needle), caseSensitive ? '' : 'i');
-    } catch (e) {
-      return { ok: false, error_code: 'invalid_search_pattern', error_message: publicErrorMessage(e) };
-    }
-    const limit = Math.max(1, Math.min(maxResults || 100, 5000));
-    const contextLimit = Math.max(0, Math.min(contextLines || 0, 20));
-    const results = [];
-    let truncated = false;
-    outer:
-    for (const item of filtered) {
-      if (ctx?.signal?.aborted) return { ok: false, error_code: 'canceled', error_message: 'workspace search canceled' };
-      let size;
-      try { size = Number(lstatSync(item, { bigint: true }).size); } catch { continue; }
-      if (size > 1024 * 1024) continue;
-      let payload;
-      try { payload = readFileSync(item); } catch { continue; }
-      let text;
-      try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(payload); }
-      catch { continue; }
-      const lines = splitlines(text);
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        if (!pattern.test(line)) continue;
-        if (results.length >= limit) { truncated = true; break outer; }
-        results.push({
-          path: relativeOf(item),
-          line: i + 1,
-          text: line,
-          snippet: line,
-          context_before: lines.slice(Math.max(0, i - contextLimit), i),
-          context_after: lines.slice(i + 1, i + 1 + contextLimit),
-        });
-      }
-    }
-    return {
-      ok: true,
-      query,
-      searched_path: path,
-      results,
-      match_count: results.length,
-      truncated,
-      context_lines: contextLimit,
-      search_backend: 'node',
-    };
+    return runWorkspaceSearch({ args: { ...args, query, path }, root: pinnedRootReal, base: resolvePath(path) }, ctx?.signal);
   }
 
   function deleteWorkspaceFile(args) {
@@ -1208,14 +1131,14 @@ export function createNativeWorkspaceTools({
       return { status: 'error', content: { ok: false, error_type: publicErrorCode(e, 'internal_error'), error_message: publicErrorMessage(e) } };
     } finally { activeMutations = previousMutations; activeGuard = previousGuard; activeCheckpoint = previousCheckpoint; activeDisplayChanges = previousDisplayChanges;
       activePublications = previousPublications; activeReads = previousReads; release?.(); }
-    // The only asynchronous implementation parses captured read-only bytes.
+    // The read-only syntax and search implementations can run asynchronously.
     // Restore mutation tracking before any await so concurrent writers cannot
     // attribute their publications to this invocation.
     if (result && typeof result.then === 'function') {
       try { result = await result; }
       catch (error) {
         if (signal?.aborted) return canceled();
-        return { status: 'error', content: { ok: false, error_type: publicErrorCode(error, 'python_syntax_unavailable'),
+        return { status: 'error', content: { ok: false, error_type: publicErrorCode(error, name === 'search_workspace_files' ? 'workspace_search_failed' : 'python_syntax_unavailable'),
           error_message: publicErrorMessage(error) } };
       }
     }

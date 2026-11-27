@@ -169,6 +169,10 @@ export function createLocalCommandTransport({ workspaceRoot, stateRoot, sessionI
       const args = structuredClone(request.call.arguments);
       let command, cwd, readOnlyCommand = false;
       const escalation = desktopSandbox && args.sandbox_permissions === 'danger-full-access';
+      // A standing authorization in a legacy run does not grant a one-time
+      // escape from the requested desktop sandbox.
+      if (escalation && request.definition.approvalPolicy !== 'durable-preflight/v1')
+        return errorResult('sandbox_escalation_requires_approval', { executed: false });
       const executionShell = escalation ? LOCAL_COMMAND_SHELL : shellPolicy;
       if (request.call.name === 'run_command') {
         command = args.command.trim();

@@ -8,7 +8,7 @@ import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { localControlSettings, resolveLocalProcessLauncher } from './local-process.mjs';
 import { localEnvironmentPolicy, localOutputPolicy } from './local-output-policy.mjs';
-import { ISOLATED_COMMAND_SHELL, shellCommandArgv } from './command-shell.mjs';
+import { DESKTOP_WORKSPACE_SHELL, ISOLATED_COMMAND_SHELL, shellCommandArgv } from './command-shell.mjs';
 import { LOCAL_BACKGROUND_CONTRACT, START_GRACE_MS, TERMINAL, LocalCommandError,
   check, createPrivate, delay, digest, failCommandStart, fsyncPrivate, lockUntil, openPrivate, privateDirectory, privateFile,
   readAll, readRecord, readWindow, syncDirectory, tryLock, validId, writeRecord } from './local-command-state.mjs';
@@ -47,7 +47,7 @@ export function commandRequest({ command, cwd, env, timeoutMs, settings = {}, ou
   if (outPolicy) request.outputPolicy = outPolicy;
   if (envPolicy) request.environmentPolicy = envPolicy;
   shellCommandArgv(command, shellPolicy, { workspaceRoot, cwd: request.cwd });
-  if (shellPolicy === ISOLATED_COMMAND_SHELL) request.workspaceRoot = workspaceRoot;
+  if ([ISOLATED_COMMAND_SHELL, DESKTOP_WORKSPACE_SHELL].includes(shellPolicy)) request.workspaceRoot = workspaceRoot;
   if (shellPolicy) request.shellPolicy = shellPolicy;
   check(Buffer.byteLength(JSON.stringify(request)) <= 1024 * 1024, 'background_command_request_too_large');
   return request;

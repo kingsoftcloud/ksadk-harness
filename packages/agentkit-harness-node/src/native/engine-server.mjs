@@ -654,10 +654,13 @@ export function engineStartupFromArgs(argv, env) {
     subAgents,
     sessionId: values.session ?? 'engine-session', approval, approvalTimeoutMs: number('AGENTKIT_ENGINE_APPROVAL_TIMEOUT_MS') ?? 600000,
     scope: { tenantId: values.tenant ?? 'local', workspaceId: 'local', userId: values.user ?? 'local-user', agentId: values.agent ?? 'engine' },
+    ...(env.AGENTKIT_ENGINE_DESKTOP_WORKSPACE_SANDBOX === '1' && process.platform === 'darwin'
+      ? { commandSandbox: 'seatbelt-workspace/v1' } : {}),
     model: { protocol: env.AGENTKIT_ENGINE_MODEL_PROTOCOL ?? 'openai-chat', name: need(env.AGENTKIT_ENGINE_MODEL_NAME, 'AGENTKIT_ENGINE_MODEL_NAME'),
       compatibilityRule: env.AGENTKIT_ENGINE_MODEL_COMPAT_RULE ?? env.KSADK_MODEL_COMPAT_RULE,
       baseUrl: need(env.AGENTKIT_ENGINE_MODEL_BASE_URL, 'AGENTKIT_ENGINE_MODEL_BASE_URL'),
       apiKeyEnv: env.AGENTKIT_ENGINE_MODEL_API_KEY_ENV ?? 'AGENTKIT_ENGINE_MODEL_API_KEY',
+      reasoningEffort: env.AGENTKIT_ENGINE_MODEL_REASONING_EFFORT,
       contextWindow: number('AGENTKIT_ENGINE_MODEL_CONTEXT_WINDOW'), maxOutputTokens: number('AGENTKIT_ENGINE_MODEL_MAX_OUTPUT_TOKENS'),
       requestOutputTokens: number('AGENTKIT_ENGINE_MODEL_REQUEST_OUTPUT_TOKENS'), images: env.AGENTKIT_ENGINE_MODEL_IMAGES === '1' } };
 }

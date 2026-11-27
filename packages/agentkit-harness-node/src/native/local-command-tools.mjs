@@ -11,7 +11,7 @@ import { checkGovernedCommand, LOCAL_COMMAND_POLICY, GOVERNED_COMMAND_POLICY } f
 import { checkPlanCommand, PLAN_COMMAND_POLICY } from './command-plan.mjs';
 import { commandFailureEvidence, commandExceptionCause } from './local-command-evidence.mjs';
 import { captureCommandWorkspace, commandWorkspaceChange } from './command-workspace-observation.mjs';
-import { ISOLATED_COMMAND_SHELL, LOCAL_COMMAND_SHELL, shellCommandArgv } from './command-shell.mjs';
+import { DESKTOP_WORKSPACE_SHELL, ISOLATED_COMMAND_SHELL, LOCAL_COMMAND_SHELL, shellCommandArgv } from './command-shell.mjs';
 
 export const LOCAL_COMMAND_TOOLS_CONTRACT = 'agentkit.local-command-tools/v1';
 export const LOCAL_COMMAND_PROGRESS_CONTRACT = 'agentkit.local-command-progress/v1';
@@ -26,13 +26,17 @@ const base = (name, properties, required, mutating, timeoutMs) => ({ name,
   readOnly: !mutating, concurrentSafe: !mutating, permissions: mutating ? [name === 'stop_command' ? 'sandbox:cancel' : 'sandbox:execute'] : [],
   timeoutMs, contextRole: 'none', observationRole: 'none', progressObservation: false, contextRetention: 'normal',
   ...(!mutating ? { recoveryPolicy: 'safe-read/v1' } : {}) });
-export function localCommandToolDefinitions(settings = {}) {
+export function localCommandToolDefinitions(settings = {}, desktopSandbox = false) {
   const limits = localControlSettings(settings);
   return [
     base('sandbox_status', {}, [], false, 10000),
     { ...base('run_command', { command: { type: 'string', minLength: 1 }, cwd: { anyOf: [{ type: 'string' }, { type: 'null' }] },
       timeout: schemas.nullableSeconds, env: { anyOf: [{ type: 'object', additionalProperties: { type: 'string' } }, { type: 'null' }] },
-      background: { type: 'boolean' }, background_timeout: schemas.nullableSeconds }, ['command'], true, limits.wallSeconds * 1000 + 15000),
+      background: { type: 'boolean' }, background_timeout: schemas.nullableSeconds,
+      ...(desktopSandbox ? { sandbox_permissions: { type: 'string', enum: ['danger-full-access'],
+        description: 'Request one-time user approval to run outside workspace confinement if required by the task.' } } : {}),
+    }, ['command'], true, limits.wallSeconds * 1000 + 15000),
+    ...(desktopSandbox ? { description: 'Run a governed Bash command under the workspace file sandbox. Use sandbox_permissions only when the command needs wider file access. Background commands return an owned task_id.' } : {}),
     backgroundCommandPolicy: 'owned-command-launch/v1', workspaceChangePolicy: 'observed-command/v1' },
     base('read_command_output', { task_id: { type: 'string', pattern: '^[a-f0-9]{64}$' }, stdout_cursor: schemas.cursor,
       stderr_cursor: schemas.cursor, max_bytes: { type: 'integer', minimum: 4, maximum: 65536 },
@@ -70,7 +74,8 @@ export function createLocalCommandTransport({ workspaceRoot, stateRoot, sessionI
   const outPolicy = localOutputPolicy(outputPolicy);
   const envPolicy = localEnvironmentPolicy(environmentPolicy);
   if (outPolicy) durableForeground = true;
-  const root = realpathSync(workspaceRoot), policy = localControlSettings(settings), definitions = localCommandToolDefinitions(policy);
+  const desktopSandbox = shellPolicy === DESKTOP_WORKSPACE_SHELL;
+  const root = realpathSync(workspaceRoot), policy = localControlSettings(settings), definitions = localCommandToolDefinitions(policy, desktopSandbox);
   shellCommandArgv(':', shellPolicy, { workspaceRoot: root, cwd: root });
   // Under persisted-stream/v1 the automatic foreground receipt uses a bounded
   // window matching previewBytes (clamped to the 4..65536 UTF-8 cursor range).
@@ -163,6 +168,8 @@ export function createLocalCommandTransport({ workspaceRoot, stateRoot, sessionI
       if (rejection) return { status: 'error', content: rejection };
       const args = structuredClone(request.call.arguments);
       let command, cwd, readOnlyCommand = false;
+      const escalation = desktopSandbox && args.sandbox_permissions === 'danger-full-access';
+      const executionShell = escalation ? LOCAL_COMMAND_SHELL : shellPolicy;
       if (request.call.name === 'run_command') {
         command = args.command.trim();
         if (!command) return errorResult('command_required');
@@ -178,14 +185,17 @@ export function createLocalCommandTransport({ workspaceRoot, stateRoot, sessionI
           readOnlyCommand = await checkPlanCommand(command, { cwd, workspaceRoot: root, signal: request.signal });
       }
       guard();
-      const decision = await authorize(request, { readOnlyCommand }); guard();
+      const sandboxedCommand = desktopSandbox && !escalation && request.call.name === 'run_command'
+        && !args.env && !args.background && !request.definition.hostApprovalRequired;
+      const decision = await authorize(request, { readOnlyCommand, sandboxedCommand, escalation }); guard();
       if (decision !== 'allow') return decision?.status === 'approval_required' && typeof decision.interactionId === 'string'
         ? decision : errorResult('policy_denied');
       if (request.call.name === 'sandbox_status') return { status: 'ok', content: { ok: true, backend: 'local_process', enabled: true,
-        isolated: shellPolicy === ISOLATED_COMMAND_SHELL, sandbox_id: `local_process:${sessionId}`, timeout_seconds: policy.wallSeconds,
+        isolated: desktopSandbox || shellPolicy === ISOLATED_COMMAND_SHELL, sandbox_id: `local_process:${sessionId}`, timeout_seconds: policy.wallSeconds,
         boundary: shellPolicy === ISOLATED_COMMAND_SHELL
           ? 'Only the workspace and temporary files are writable. The command has no Host process or network access.'
-          : 'Shares Host filesystem, allowlisted environment and network. Not an OS security sandbox.',
+          : desktopSandbox ? 'Only workspace and temporary files are writable under the desktop file sandbox.'
+            : 'Shares Host filesystem, allowlisted environment and network. Not an OS security sandbox.',
         shell: '/bin/bash', shell_policy: shellPolicy,
         contracts: [LOCAL_COMMAND_TOOLS_CONTRACT, LOCAL_PROCESS_CONTRACT, LOCAL_COMMAND_POLICY, GOVERNED_COMMAND_POLICY] } };
       if (request.call.name === 'read_command_output' || request.call.name === 'stop_command') {
@@ -217,7 +227,7 @@ export function createLocalCommandTransport({ workspaceRoot, stateRoot, sessionI
         dispatched = true;
         const operationKey = request.operationKey, expectedTaskId = store.commandId(operationKey);
         known = { content: { backend: 'sandbox/local_process', task_id: expectedTaskId } };
-        const handle = await store.start({ operationKey, command, cwd, env, settings: policy, shellPolicy, workspaceRoot: root,
+        const handle = await store.start({ operationKey, command, cwd, env, settings: policy, shellPolicy: executionShell, workspaceRoot: root,
           outputPolicy: outPolicy, environmentPolicy: envPolicy,
           timeoutMs: deadline(args.background ? args.background_timeout : args.timeout), assertCurrent: guard });
         if (!args.background) {
@@ -270,7 +280,7 @@ export function createLocalCommandTransport({ workspaceRoot, stateRoot, sessionI
           ? { backgroundCommandFinished: true } : {}) };
       } else {
         dispatched = true;
-        const result = await runBoundedProcess({ argv: shellCommandArgv(command, shellPolicy, { workspaceRoot: root, cwd }), cwd, env, settings: policy, signal: request.signal,
+        const result = await runBoundedProcess({ argv: shellCommandArgv(command, executionShell, { workspaceRoot: root, cwd }), cwd, env, settings: policy, signal: request.signal,
           timeoutMs: deadline(args.timeout), onOutput: progress });
         const incomplete = result.controls.status === 'failed' || !!result.cleanupError;
         const resourceReason = result.exitCode === -osConstants.signals.SIGXCPU ? 'cpu_time'

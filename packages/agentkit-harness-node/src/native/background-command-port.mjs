@@ -60,9 +60,10 @@ export function createBackgroundCommandPort({ scope, store, readers = {} }) {
     async observe(request) {
       request.signal.throwIfAborted();
       check(same(request.scope, pinnedScope), 'background_command_scope_mismatch');
-      const current = store.load(pinnedScope, request.runId);
+      const current = store.authority
+        ? store.authority(pinnedScope, request.runId) : store.load(pinnedScope, request.runId);
       const config = current.snapshot.taskContract ? { ...current.configuration, contract: current.snapshot.taskContract } : current.configuration;
-      const intent = current.intents.find(item => item.operationKey === current.snapshot.pendingIntent) ?? null;
+      const intent = current.pendingIntent ?? current.intents?.find(item => item.operationKey === current.snapshot.pendingIntent);
       const expected = commandProbe(current.snapshot, config, intent), { signal, ...plain } = request;
       check(expected && same(expected, plain), 'background_command_owner_mismatch');
       check(new Set(request.refs.map(ref => ref.taskId)).size === request.refs.length, 'background_command_owner_mismatch');

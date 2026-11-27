@@ -475,6 +475,21 @@ export class SqliteRunStore extends TransactionalRunStore {
         } catch (error) { db.exec('ROLLBACK'); throw error; }
       },
     });
+    // Both effect rows and their source identity come from one SQLite read snapshot.
+    // The primary key lookup leaves unrelated output, events, and intents on disk.
+    this.commandLaunchEvidence = (scope, runId, operationKey) => {
+      open();
+      const row = db.prepare(`SELECT json_extract(r.data,'$.snapshot.scope') AS scope,
+        json_extract(r.data,'$.snapshot.sessionId') AS sessionId,
+        json_extract(r.data,'$.configuration.tools') AS tools,
+        (SELECT data FROM native_items WHERE run_key=r.key AND collection='intents' AND item_key=?) AS launch,
+        (SELECT data FROM native_items WHERE run_key=r.key AND collection='receipts' AND item_key=?) AS receipt
+        FROM native_runs r WHERE r.key=?`).get(operationKey, operationKey, runKey(scope, runId));
+      invariant(row, 'run_not_found');
+      return { scope: parseNativeJson(row.scope), sessionId: row.sessionId, tools: parseNativeJson(row.tools),
+        launch: row.launch === null ? null : parseNativeJson(row.launch),
+        receipt: row.receipt === null ? null : parseNativeJson(row.receipt) };
+    };
     /** Read-only observability state and an append-only event suffix from one
      * SQLite snapshot. Execution receipts, transcripts and configuration are
      * deliberately excluded; this view cannot authorize execution. */

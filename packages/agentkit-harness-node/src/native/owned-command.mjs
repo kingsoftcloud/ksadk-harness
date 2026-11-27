@@ -64,19 +64,27 @@ export function createOwnedCommandOutputReader({ scope, store, readers = {}, isC
   } });
 }
 
+function commandLaunchEvidence(store, scope, ref) {
+  if (store.commandLaunchEvidence)
+    return store.commandLaunchEvidence(scope, ref.sourceRunId, ref.operationKey);
+  const { snapshot, configuration, intents, receipts } = store.load(scope, ref.sourceRunId);
+  return { scope: snapshot.scope, sessionId: snapshot.sessionId, tools: configuration.tools,
+    launch: intents.find(item => item.operationKey === ref.operationKey),
+    receipt: receipts.find(item => item.operationKey === ref.operationKey) };
+}
+
 /** The backend is a fact in the canonical launch receipt, never a model hint. */
 export function ownedCommandReceipt({ scope, store, current, ref: input, includeCommand = false, verifyStartFailure = false }) {
-  const ref = backgroundCommandRef(input), source = store.load(scope, ref.sourceRunId);
-  const receipt = source.receipts.find(item => item.operationKey === ref.operationKey);
-  const launch = source.intents.find(item => item.operationKey === ref.operationKey);
+  const ref = backgroundCommandRef(input), source = commandLaunchEvidence(store, scope, ref);
+  const { launch, receipt } = source;
   const calls = launch?.payload.calls, results = receipt?.result.results;
   const result = Array.isArray(results) && results.length === 1 ? results[0] : null;
   const definition = Array.isArray(calls) && calls.length === 1
-    ? source.configuration.tools.find(tool => tool.name === calls[0].name) : null;
+    ? source.tools.find(tool => tool.name === calls[0].name) : null;
   const requiresStartFailureProof = verifyStartFailure && calls?.[0]?.name === 'run_command'
     && result?.status === 'uncertain' && ['sandbox/local_process', 'sandbox/e2b'].includes(result.content?.backend)
     && result.content.status === 'unknown' && result.content.task_id === ref.taskId;
-  check(same(source.snapshot.scope, scope) && source.snapshot.sessionId === current.snapshot.sessionId
+  check(same(source.scope, scope) && source.sessionId === current.snapshot.sessionId
     && receipt?.status === 'committed' && launch?.kind === 'tool'
     && definition?.backgroundCommandPolicy === 'owned-command-launch/v1' && (result?.status === 'ok' || requiresStartFailureProof)
     && same(result.backgroundCommandRef ?? null, ref), 'background_command_launcher_receipt_mismatch');

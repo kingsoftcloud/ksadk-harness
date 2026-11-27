@@ -20,7 +20,7 @@ import { ENGINE_HOST_EFFECT } from './engine-host-effects.mjs';
 import { ENGINE_VERIFICATION } from './engine-verification.mjs';
 import { createEngineManagedService, MANAGED_NATIVE_KERNEL_CONTRACT, MANAGED_NATIVE_KERNEL_PATH } from './engine-managed-service.mjs';
 import { isAgentKernelPlatformPath } from './native-managed-kernel-http.mjs';
-import { ISOLATED_COMMAND_SHELL, shellCommandArgv } from './command-shell.mjs';
+import { DESKTOP_WORKSPACE_SHELL, ISOLATED_COMMAND_SHELL, shellCommandArgv } from './command-shell.mjs';
 
 export const ENGINE_SERVICE_CONTRACT = 'agentkit.engine-service/v1';
 // Bound the authenticated frame separately from the current-turn media budget.
@@ -193,7 +193,7 @@ export function createEngineService({ startup, token, env = process.env, fetchIm
     throw new Error('engine_service_workspace_state_overlap');
   if (process.platform === 'win32') privateDirectory(stateDir);
   if (startup.commandSandbox !== undefined) {
-    if (startup.commandSandbox !== ISOLATED_COMMAND_SHELL) throw new Error('engine_service_sandbox_invalid');
+    if (![ISOLATED_COMMAND_SHELL, DESKTOP_WORKSPACE_SHELL].includes(startup.commandSandbox)) throw new Error('engine_service_sandbox_invalid');
     const [command, ...args] = shellCommandArgv(':', startup.commandSandbox, { workspaceRoot: workspace, cwd: workspace });
     const probe = spawnSync(command, args, { cwd: workspace, env: { PATH: '/bin:/usr/bin' }, timeout: 5000, stdio: 'ignore' });
     if (probe.status !== 0) throw new Error('engine_service_sandbox_unavailable');

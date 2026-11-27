@@ -63,7 +63,7 @@ const approvalDenialMessages = {
   approval_cancelled: 'This approval was cancelled. The action did not run. Do not request it again unless the user asks to continue.',
 };
 
-function durableDecision(record, request, explainDenial = false, workspaceWriteSafe = false) {
+function durableDecision(record, request, explainDenial = false, workspaceWriteSafe = false, sandboxEscalation = false) {
   const { call, operationKey } = request;
   const interactionId = `engine-permission-${digest({ runId: request.runId, call, definition: request.definition })}`;
   // Walk backward only within the lifetime of this call. A reused provider
@@ -86,7 +86,8 @@ function durableDecision(record, request, explainDenial = false, workspaceWriteS
   }
   return { status: 'approval_required', approvalPolicy: DURABLE_APPROVAL, interactionId,
     content: { contract: ENGINE_APPROVAL_CONTRACT, code: 'approval_required', argumentDigest: digest(call.arguments),
-      subject: engineApprovalSubject(call), ...(workspaceWriteSafe ? { workspaceWriteSafe } : {}) } };
+      subject: engineApprovalSubject(call), ...(workspaceWriteSafe ? { workspaceWriteSafe } : {}),
+      ...(sandboxEscalation ? { sandboxEscalation } : {}) } };
 }
 
 function admitExecutionPolicy(policy, legacyMaxModelCalls) {
@@ -109,9 +110,11 @@ export function admitEngineModel(model) {
     && (model.requestOutputTokens == null || Number.isSafeInteger(model.requestOutputTokens) && model.requestOutputTokens > 0)
     && (model.images === undefined || typeof model.images === 'boolean')
     && (model.compatibilityRule === undefined || isProviderCompatibilityRule(model.compatibilityRule))
+    && (model.reasoningEffort === undefined || ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(model.reasoningEffort))
     && typeof model.apiKey === 'function', 'engine_model_invalid');
   const contextWindow = model.contextWindow ?? 128000;
   return { protocol: model.protocol ?? 'openai-chat', modelName: model.name, baseUrl: model.baseUrl, parameters: {},
+    ...(model.reasoningEffort === undefined ? {} : { reasoningEffort: model.reasoningEffort }),
     ...(model.compatibilityRule === undefined ? {} : { compatibilityRule: model.compatibilityRule }),
     input: model.images ? ['text', 'image'] : ['text'], contextWindow,
     maxOutputTokens: presetRequestOutputTokens({ configured: model.requestOutputTokens ?? null,
@@ -200,7 +203,7 @@ export function admitHostTools(tools, reserved, durableApprovals = false, hostRe
       contextRole: 'none', observationRole: 'none', progressObservation: false, contextRetention: 'normal',
       recoveryPolicy: readOnly ? 'safe-read/v1' : tool.receiptObservation ? 'receipt-observation/v1' : 'manual',
       ...(tool.effectProtocol ? { hostEffectProtocol: tool.effectProtocol,
-        ...(durableApprovals ? { approvalPolicy: DURABLE_APPROVAL } : {}) } : {}),
+        ...(durableApprovals && !(tool.name === 'web_search' && tool.readOnly === true) ? { approvalPolicy: DURABLE_APPROVAL } : {}) } : {}),
       ...(tool.deferred ? { discovery: { deferred: true } } : {}) };
   });
 }
@@ -222,9 +225,9 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
   const roles = nativeChildRoles({ subAgents });
   const supportsImages = description.input.includes('image');
   const store = runStore ?? new SqliteRunStore(join(stateDir, 'runs.sqlite'));
-  const decide = async (request, explainDenial = false, workspaceWriteSafe = false) => {
+  const decide = async (request, explainDenial = false, workspaceWriteSafe = false, sandboxEscalation = false) => {
     if (request.definition?.approvalPolicy === DURABLE_APPROVAL)
-      return durableDecision(store.load(request.scope, request.runId), request, explainDenial, workspaceWriteSafe);
+      return durableDecision(store.load(request.scope, request.runId), request, explainDenial, workspaceWriteSafe, sandboxEscalation);
     return await authorize(request) === 'allow' ? 'allow' : 'deny';
   };
   const artifacts = await createNativeArtifactStore({ directory: join(stateDir, 'artifacts'), scope });
@@ -236,7 +239,8 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
   const commands = windows ? null : createNativeLocalCommandTools({ workspaceRoot: root, stateRoot: join(stateDir, 'commands'), sessionId,
     settings: local.settings, sourceEnv: local.environment, outputPolicy: local.outputPolicy, environmentPolicy: local.environmentPolicy,
     shellPolicy: commandSandbox,
-    artifacts, authorize: (request, info) => decide(request, true, info?.readOnlyCommand),
+    artifacts, authorize: (request, info) => request.definition.readOnly && !request.definition.approvalPolicy ? 'allow' : decide(request, true,
+      !info?.escalation && (info?.readOnlyCommand || info?.sandboxedCommand), info?.escalation),
     classifyApproval: true, captureWorkspace: request => workspace.capture(request),
     resolveOwnedCommand: createOwnedCommandResolver({ scope, store }) });
   const search = engineWebConfig(sourceEnv);
@@ -327,6 +331,7 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
   const profile = { profileId: 'engine', profileVersion: digest(description), providerFamily: description.protocol,
     compatibilityDigest: digest(description), supportsImages, discoveredToolExposure: 'direct-after-search/v1', streamTimeoutPolicy: 'idle/v1',
     ...(chatUsage ? { chatUsagePolicy: chatUsage } : {}), maxRetries: 2, maxProviderRetries: 3, ...context.profile,
+    ...(description.reasoningEffort === undefined ? {} : { reasoningEffort: description.reasoningEffort }),
     maxOutputTokens: description.maxOutputTokens, contextWindow: description.contextWindow,
     requestTimeoutMs: description.requestTimeoutMs, providerReplayMode: 'reasoning_content',
     providerCompatibilityPolicy: admitProviderCompatibilityPolicy(providerRule, {
@@ -421,7 +426,7 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
     invariant(!policy || internal.every(name => !policy.rules.has(name) || policy.rules.get(name) === 'inherit'),
       'engine_tool_policy_internal_control_unsupported');
     const hosted = restrictEngineTools(admitHostTools(hostTools, reserved, durableApprovals, typeof callHostReceipt === 'function'), policy, DURABLE_APPROVAL);
-    const builtins = restrictEngineTools(durableApprovals ? bound.map(tool => route.get(tool.name) === workspace && tool.readOnly
+    const builtins = restrictEngineTools(durableApprovals ? bound.map(tool => tool.readOnly && (route.get(tool.name) === workspace || route.get(tool.name) === commands)
       ? tool : { ...tool, approvalPolicy: DURABLE_APPROVAL }) : bound, policy, DURABLE_APPROVAL);
     const childControls = durableApprovals ? restrictEngineTools(childDefinitions, policy, DURABLE_APPROVAL) : [];
     const searchable = builtins.some(tool => tool.discovery) || hosted.some(tool => tool.discovery);
@@ -523,7 +528,7 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
           && receipt.status === 'committed')?.result.results?.find(result => result.interactionId === pending.hostInteractionId)?.content
         : null;
       return { interactionId: pending.interactionId, callId: pending.callId, tool: call.name,
-        ...(tools.some(tool => tool.name === call.name && (tool.hostApprovalRequired
+        ...(commandApproval?.sandboxEscalation === true || tools.some(tool => tool.name === call.name && (tool.hostApprovalRequired
           || tool.hostEffectProtocol === ENGINE_HOST_EFFECT)) ? { requiresUserApproval: true } : {}),
         ...(snapshot.childApproval ? { childRunId: snapshot.childApproval.childRunId } : {}),
         ...(!snapshot.childApproval && (commandApproval?.workspaceWriteSafe === true || route.get(call.name) === workspace

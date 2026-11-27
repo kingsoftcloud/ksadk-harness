@@ -2,6 +2,21 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 export const LOCAL_COMMAND_SHELL = 'bash-execution/v1';
 export const ISOLATED_COMMAND_SHELL = 'bubblewrap-workspace/v1';
+export const DESKTOP_WORKSPACE_SHELL = 'seatbelt-workspace/v1';
+
+function workspaceSeatbelt(workspaceRoot, cwd) {
+  if (process.platform !== 'darwin' || !workspaceRoot || !cwd || !isAbsolute(workspaceRoot)
+    || !isAbsolute(cwd) || resolve(workspaceRoot) !== workspaceRoot || workspaceRoot === '/')
+    throw Error('desktop_command_workspace_invalid');
+  const within = relative(workspaceRoot, cwd);
+  if (within === '..' || within.startsWith('..' + sep) || isAbsolute(within))
+    throw Error('isolated_command_cwd_outside_workspace');
+  // File effects follow DSH's workspace-write mode. Use canonical workspace
+  // paths and a literal SBPL parameter rather than interpolating the directory.
+  return ['/usr/bin/sandbox-exec', '-D', 'WORKSPACE=' + workspaceRoot, '-p',
+    '(version 1) (allow default) (deny file-write*) '
+    + '(allow file-write* (subpath (param "WORKSPACE")) (literal "/dev/null") (subpath "/private/tmp"))'];
+}
 
 /** A missing policy belongs to a persisted legacy request. Never reinterpret
  * it under a new shell during supervision/recovery. No PATH-based fallback.
@@ -9,6 +24,7 @@ export const ISOLATED_COMMAND_SHELL = 'bubblewrap-workspace/v1';
 export function shellCommandArgv(command, policy = null, { workspaceRoot, cwd } = {}) {
   if (policy === null) return ['/bin/sh', '-c', command];
   if (policy === LOCAL_COMMAND_SHELL) return ['/bin/bash', '-c', command];
+  if (policy === DESKTOP_WORKSPACE_SHELL) return [...workspaceSeatbelt(workspaceRoot, cwd), '/bin/bash', '-c', command];
   if (policy !== ISOLATED_COMMAND_SHELL) throw Error('unsupported_command_shell');
   if (process.platform !== 'linux' || typeof workspaceRoot !== 'string' || typeof cwd !== 'string'
     || !isAbsolute(workspaceRoot) || !isAbsolute(cwd) || resolve(workspaceRoot) !== workspaceRoot

@@ -141,13 +141,20 @@ test('the real observer joins the Native loop, records one notice and dispatches
 test('SQLite reopen and a continuation retain source receipt ownership while observing in the current run', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'native-command-port-')), filename = join(directory, 'run.sqlite');
   let store = new SqliteRunStore(filename); t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
+  const probeStore = {
+    authority: (...args) => store.authority(...args),
+    commandLaunchEvidence: (...args) => store.commandLaunchEvidence(...args),
+    load: () => assert.fail('observing a command must not read the full Run history'),
+  };
   const host = await setup(t, { store, reader: async () => ({ status: 'running' }) });
   const first = new NativeKernel({ store, digest, owner: 'old-run', now: () => 100, ports: {
-    background: host.port, model: { generate: async () => final() }, tools: { execute: async () => assert.fail() },
+    background: createBackgroundCommandPort({ store: probeStore, scope, readers: host.readers }),
+    model: { generate: async () => final() }, tools: { execute: async () => assert.fail() },
   } });
   const previous = await first.runUntilIdle(scope, 'run'); assert.equal(previous.phase, 'completed'); assert.equal(previous.backgroundCommands[0].notified, false);
+  assert.ok(host.reads.length > 0, 'the original running command was observed');
   store.close(); store = new SqliteRunStore(filename); const reads = [];
-  const port = createBackgroundCommandPort({ store, scope, readers: { local_process: async request => {
+  const port = createBackgroundCommandPort({ store: probeStore, scope, readers: { local_process: async request => {
     reads.push(request); return { status: 'completed', exitCode: 0, stdout: 'after restart' };
   } } });
   const second = new NativeKernel({ store, digest, owner: 'new-run', now: () => 200, ports: {

@@ -350,7 +350,7 @@ export function createNativeWorkspaceTools({
         ok: false,
         error_message: 'start_line must be <= end_line',
         path: rel,
-        requested_range: { start, end: args.end_line },
+        requested_range: { start, end: args.end_line ?? null },
         total_lines: totalLines,
         suggested_action: `Re-read the current file with read_workspace_file(path='${rel}', start_line=${Math.max(1, Math.min(start, totalLines))}) before editing.`,
       };

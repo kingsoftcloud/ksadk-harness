@@ -12,10 +12,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import crypto from 'node:crypto';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   configure, MemoryRunStore, NativeKernel, canonical, toolInputRejection,
 } from '../../agentkit-harness-core/dist/index.mjs';
 import { createNativeModelPort } from '../src/native/model-port.mjs';
+import { createEngineRuntime } from '../src/native/engine-runtime.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const sse = (d) => `data: ${typeof d === 'string' ? d : JSON.stringify(d)}\n\n`;
@@ -106,6 +110,46 @@ function passingVerifier() {
     };
   };
 }
+
+test('integration: a workspace read past EOF with no end_line lets the model correct the range', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'native-read-range-'));
+  const workspaceRoot = join(root, 'workspace');
+  let server, runtime;
+  t.after(async () => {
+    await runtime?.close();
+    await server?.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  await mkdir(workspaceRoot);
+  await writeFile(join(workspaceRoot, 'two.txt'), 'first\nsecond');
+  const calls = [
+    { id: 'past-eof', name: 'read_workspace_file', args: { path: 'two.txt', start_line: 5 } },
+    { id: 'corrected', name: 'read_workspace_file', args: { path: 'two.txt', start_line: 1 } },
+    { id: 'answer', name: 'submit_final_output', args: { answer: 'Read both lines.' } },
+  ];
+  server = await startServer((_req, _body, index) => {
+    const { id, name, args } = calls[index];
+    const toolCall = { index: 0, id, type: 'function', function: { name, arguments: JSON.stringify(args) } };
+    return { status: 200, headers: SSE_HEADERS, body: [sse(ochunk({ tool_calls: [toolCall] }, 'tool_calls')), sseDone()] };
+  });
+  const { scope, runId, sessionId } = identity();
+  runtime = await createEngineRuntime({ workspaceRoot, stateDir: join(root, 'state'), sessionId, scope,
+    model: { name: 'fixture', baseUrl: `http://127.0.0.1:${server.port}/v1`, apiKey: async () => 'fixture' },
+    sourceEnv: {}, authorize: async () => 'deny' });
+  runtime.start({ runId, objective: 'Read the two-line file and report what it contains.', preset: 'official', maxModelCalls: 4 });
+  const result = await runtime.run(runId);
+  assert.equal(result.phase, 'completed');
+  assert.equal(server.requests.length, 3);
+  const toolResult = (request, id) => JSON.parse(request).messages.find(message => message.role === 'tool' && message.tool_call_id === id)?.content;
+  const error = JSON.parse(toolResult(server.requests[1], 'past-eof'));
+  assert.equal(error.ok, false);
+  assert.match(error.error_message, /start_line must be <= end_line/);
+  assert.deepEqual(error.requested_range, { start: 5, end: null });
+  assert.equal(error.total_lines, 2);
+  const corrected = JSON.parse(toolResult(server.requests[2], 'corrected'));
+  assert.equal(corrected.ok, true);
+  assert.match(corrected.content, /1 \| first\n2 \| second/);
+});
 
 test('integration: tool replay round-trips through the kernel and the run completes verified', async () => {
   const server = await startServer((req, body, idx) => {

@@ -225,9 +225,11 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
   const roles = nativeChildRoles({ subAgents });
   const supportsImages = description.input.includes('image');
   const store = runStore ?? new SqliteRunStore(join(stateDir, 'runs.sqlite'));
+  const approvalEvidence = request => store.toolApprovalEvidence?.(request.scope, request.runId, request.call.callId)
+    ?? store.load(request.scope, request.runId);
   const decide = async (request, explainDenial = false, workspaceWriteSafe = false, sandboxEscalation = false) => {
     if (request.definition?.approvalPolicy === DURABLE_APPROVAL)
-      return durableDecision(store.load(request.scope, request.runId), request, explainDenial, workspaceWriteSafe, sandboxEscalation);
+      return durableDecision(approvalEvidence(request), request, explainDenial, workspaceWriteSafe, sandboxEscalation);
     return await authorize(request) === 'allow' ? 'allow' : 'deny';
   };
   const artifacts = await createNativeArtifactStore({ directory: join(stateDir, 'artifacts'), scope });
@@ -316,6 +318,16 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
         ? preflight(request, dispatch) : dispatch();
     },
     checkPlanMode: async request => (ownerOf(request).checkPlanMode ?? (async () => true))(request),
+    recoverApproval(request) {
+      const { call, definition } = request;
+      // Only the local governed launcher uses this proof. A prior grant means
+      // the process may have started, so continue through ordinary reconciliation.
+      if (!commands || route.get(call.name) !== commands || call.name !== 'run_command'
+        || call.arguments.background !== true || call.arguments.sandbox_permissions === 'danger-full-access'
+        || definition.approvalPolicy !== DURABLE_APPROVAL) return null;
+      const decision = durableDecision(approvalEvidence(request), request);
+      return decision?.status === 'approval_required' ? decision : null;
+    },
     observeReceipt(request) {
       if (ownerOf(request) === hostPort && request.definition?.hostEffectProtocol === ENGINE_HOST_EFFECT
         && request.definition.recoveryPolicy === 'receipt-observation/v1') return callHostReceipt?.(request);
@@ -523,10 +535,14 @@ export async function createEngineRuntime({ workspaceRoot, stateDir, sessionId, 
       const tools = snapshot.childApproval
         ? store.authority(snapshot.childApproval.childScope, snapshot.childApproval.childRunId).configuration.tools
         : configuration.tools;
-      const commandApproval = !snapshot.childApproval && call.name === 'run_command'
-        ? store.load(scope, snapshot.runId).receipts.find(receipt => receipt.operationKey === pending.operationKey
-          && receipt.status === 'committed')?.result.results?.find(result => result.interactionId === pending.hostInteractionId)?.content
-        : null;
+      let commandApproval = null;
+      if (!snapshot.childApproval && call.name === 'run_command') {
+        const receipt = store.effectReceipt
+          ? store.effectReceipt(scope, snapshot.runId, pending.operationKey)
+          : store.load(scope, snapshot.runId).receipts.find(item => item.operationKey === pending.operationKey);
+        if (receipt?.status === 'committed')
+          commandApproval = receipt.result.results?.find(result => result.interactionId === pending.hostInteractionId)?.content;
+      }
       return { interactionId: pending.interactionId, callId: pending.callId, tool: call.name,
         ...(commandApproval?.sandboxEscalation === true || tools.some(tool => tool.name === call.name && (tool.hostApprovalRequired
           || tool.hostEffectProtocol === ENGINE_HOST_EFFECT)) ? { requiresUserApproval: true } : {}),

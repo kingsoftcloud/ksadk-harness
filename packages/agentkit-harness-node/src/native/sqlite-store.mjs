@@ -490,6 +490,39 @@ export class SqliteRunStore extends TransactionalRunStore {
         launch: row.launch === null ? null : parseNativeJson(row.launch),
         receipt: row.receipt === null ? null : parseNativeJson(row.receipt) };
     };
+    this.effectReceipt = (scope, runId, operationKey) => {
+      open();
+      const row = db.prepare(`SELECT data FROM native_items
+        WHERE run_key=? AND collection='receipts' AND item_key=?`).get(runKey(scope, runId), operationKey);
+      return row ? parseNativeJson(row.data) : null;
+    };
+    // Limit approval evidence to this invocation. A completed call starts a
+    // new lifetime even if the model provider reuses its call ID.
+    this.toolApprovalEvidence = (scope, runId, callId) => {
+      open();
+      const key = runKey(scope, runId);
+      db.exec('BEGIN');
+      try {
+        const rows = db.prepare(`SELECT json_extract(data,'$.kind') AS kind,
+          json_extract(data,'$.payload.interactionId') AS interactionId,
+          json_extract(data,'$.payload.decision') AS decision,
+          json_extract(data,'$.payload.denialReason') AS denialReason
+          FROM native_events WHERE run_key=? AND json_extract(data,'$.payload.callId')=?
+          AND json_extract(data,'$.kind') IN ('tool.completed','approval.resolved') ORDER BY seq DESC`).all(key, callId);
+        const events = [], receipts = [];
+        for (const { kind, interactionId, decision, denialReason } of rows) {
+          if (kind === 'tool.completed') break;
+          events.push({ kind, payload: { callId, interactionId, decision, denialReason } });
+          const operationKey = interactionId?.slice(0, -':approval'.length);
+          if (operationKey) {
+            const receipt = this.effectReceipt(scope, runId, operationKey);
+            if (receipt) receipts.push(receipt);
+          }
+        }
+        db.exec('COMMIT');
+        return { events: events.reverse(), receipts };
+      } catch (error) { db.exec('ROLLBACK'); throw error; }
+    };
     /** Read-only observability state and an append-only event suffix from one
      * SQLite snapshot. Execution receipts, transcripts and configuration are
      * deliberately excluded; this view cannot authorize execution. */

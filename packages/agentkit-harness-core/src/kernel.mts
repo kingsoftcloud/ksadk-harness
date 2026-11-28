@@ -606,6 +606,24 @@ export class NativeKernel {
         ...(changes.todos && changes.todos.revision !== snapshot.todos?.revision
           ? [{ kind: 'todo.updated', payload: this.policies.forRun(config).todo.todoUpdateFact({ ...snapshot, ...changes }, changes.messages!.length) }] : [])]);
     }
+    if (intent.kind === 'tool' && stagedCalls?.length === 1 && this.ports.tools.recoverApproval) {
+      const call = stagedCalls[0]!;
+      const definition = config.tools.find(tool => tool.name === call.name);
+      if (definition?.approvalPolicy === 'durable-preflight/v1') {
+        const result = this.ports.tools.recoverApproval({ scope: copy(snapshot.scope), runId: snapshot.runId,
+          operationKey: intent.operationKey, call: copy(call), definition: copy(definition) });
+        if (result) {
+          const results = [result];
+          const changes = reduceTools(snapshot, results, [call], intent, config, this.digest, this.policies);
+          const policy = 'durable-preflight/v1';
+          return settle(snapshot, intent, { operationKey: intent.operationKey, status: 'committed',
+            result: { results: results as never, recoveryPolicy: policy } }, changes, elapsedMs,
+          [...observedFacts, { kind: 'effect.reconciled', payload: { operationKey: intent.operationKey, policy } },
+            { kind: 'approval.requested', payload: { callId: call.callId, name: call.name,
+              status: result.status, content: result.content, interactionId: changes.pendingInteraction!.interactionId } }]);
+        }
+      }
+    }
     if (intent.kind === 'child' && config.childLifecyclePolicy === 'owned-background/v2' && this.ports.children?.reconcile) {
       const abort = new AbortController();
       let timer: ReturnType<typeof setTimeout> | undefined;

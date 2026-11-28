@@ -689,6 +689,9 @@ export interface ToolPort {
   approvalPolicy?: 'durable-preflight/v1';
   execute(request: ToolRequest, lifecycle?: import('./tool-execution.mjs').ToolExecutionLifecycle): Promise<ToolResult>;
   checkPlanMode?(request: ToolRequest): Promise<boolean>;
+  /** Recover an approval request only when the tool could not have dispatched. */
+  recoverApproval?(request: Pick<ToolRequest, 'scope' | 'runId' | 'operationKey' | 'call' | 'definition'>):
+    (ToolResult & { status: 'approval_required' }) | null;
   observeReceipt?(request: ToolReceiptRequest): Promise<ToolReceiptObservation>;
   repairWorkspace?(request: WorkspaceRepairRequest): Promise<WorkspaceRepairResult>;
 }

@@ -4,6 +4,8 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, statSyn
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { prepareEffect } from '@kingsoftcloud/agentkit-harness-core';
+import { SqliteRunStore } from '../src/native/sqlite-store.mjs';
 import { PassThrough } from 'node:stream';
 import { setTimeout as sleep } from 'node:timers/promises';
 import test from 'node:test';
@@ -53,6 +55,39 @@ test('stdio can cancel a cold Run without reissuing its original Host callbacks'
   const terminal = await engine.follow(runId, undefined, { waitMs: 100 });
   assert.equal(terminal.phase, 'canceled');
   assert.equal(modelCalls, 0);
+});
+
+test('resuming a claimed local command recovers its ungranted approval without a full journal read or dispatch', {
+  skip: !['darwin', 'linux'].includes(process.platform),
+}, async t => {
+  const root = mkdtempSync(join(realpathSync(tmpdir()), 'studio-approval-recovery-'));
+  const workspace = join(root, 'workspace'), stateDir = join(root, 'state');
+  mkdirSync(workspace); mkdirSync(stateDir, { mode: 0o700 });
+  const scope = { tenantId: 't', workspaceId: 'w', userId: 'u', agentId: 'a' };
+  const runId = 'approval-recovery';
+  const store = new SqliteRunStore(join(stateDir, 'runs.sqlite'));
+  const runtime = await createEngineRuntime({ workspaceRoot: workspace, stateDir, sessionId: 'session', scope, runStore: store,
+    model: { name: 'fixture', baseUrl: 'https://example.test/v1', apiKey: async () => 'fixture' },
+    authorize: async () => assert.fail('A missing durable approval must stay local'),
+    fetchImpl: async () => assert.fail('A recovered approval must precede any model request') });
+  t.after(async () => { await runtime.close(); await rm(root, { recursive: true, force: true }); });
+  runtime.start({ runId, objective: 'Run the fixture.', durableApprovals: true });
+  const { snapshot, configuration } = store.authority(scope, runId);
+  assert.equal(configuration.tools.find(item => item.name === 'run_command').approvalPolicy, 'durable-preflight/v1');
+  const call = { name: 'run_command', callId: 'call', arguments: { command: 'touch never.txt', background: true } };
+  const batch = prepareEffect(snapshot, 'tool', 'executing_tools', { calls: [call], interaction: null }, {
+    pendingTools: [call], messages: [...snapshot.messages, { role: 'assistant', content: '', toolCalls: [call] }],
+  });
+  const lease = store.acquire(scope, runId, 'previous-worker', 1, 1);
+  store.commit(scope, runId, lease, 1, snapshot.revision, batch);
+  store.claim(scope, runId, lease, 1, batch.snapshot.pendingIntent);
+  store.release(scope, runId, lease);
+  store.load = () => assert.fail('Local approval must use scoped evidence');
+  runtime.ports.tools.execute = async () => assert.fail('An unapproved command must not dispatch during recovery');
+  const resumed = await runtime.run(runId);
+  assert.equal(resumed.phase, 'awaiting_interaction');
+  assert.equal(runtime.pendingApproval(resumed, configuration).tool, 'run_command');
+  assert.equal(existsSync(join(workspace, 'never.txt')), false);
 });
 
 test('unavailable host receipts yield a bounded idle wait without fabricating a result', async () => {
